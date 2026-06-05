@@ -190,13 +190,22 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
                 cfg.security.attack.enabled)
     logger.info("=" * 60)
 
+    # ── Client resources for Flower simulation ────────────────────────────────
+    # num_gpus=0.0: virtual client actors run on CPU. The actual training
+    # device (self.device inside FedSecClient) is set separately and can
+    # still be CUDA; this only controls Ray actor resource reservations.
+    # Setting num_gpus > 0 here multiplies by the number of concurrent
+    # actors, quickly exceeding the single GPU available on Colab and
+    # causing Ray to stall waiting for resources that never free up.
+    client_resources = {"num_cpus": 1, "num_gpus": 0.0}
+
     # ── Run simulation ────────────────────────────────────────────────────────
     fl.simulation.start_simulation(
         client_fn=client_fn,
         num_clients=cfg.federation.num_clients,
         config=server_config,
         strategy=server.strategy,
-        client_resources={"num_cpus": 1, "num_gpus": 0.0},
+        client_resources=client_resources,
         ray_init_args={"ignore_reinit_error": True, "log_to_driver": False},
     )
 

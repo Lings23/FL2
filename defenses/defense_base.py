@@ -61,27 +61,71 @@ class BaseDefense(ABC):
 
     @staticmethod
     def _flatten(params: List[np.ndarray]) -> np.ndarray:
-        return np.concatenate([p.ravel() for p in params])
+        """Flatten only floating-point parameters into a 1-D float32 vector.
+
+        Non-floating buffers (e.g. BatchNorm ``num_batches_tracked``, which
+        has dtype int64) are skipped so that distance / cosine computations
+        are not corrupted by integer values.
+        """
+        return np.concatenate(
+            [p.ravel().astype(np.float32)
+             for p in params
+             if np.issubdtype(p.dtype, np.floating)]
+        )
 
     @staticmethod
     def _unflatten(flat: np.ndarray, template: List[np.ndarray]) -> List[np.ndarray]:
-        result, offset = [], 0
+        """Reconstruct a parameter list from a flat float32 vector.
+
+        Non-floating parameters are copied unchanged from *template* so that
+        integer buffers (e.g. BatchNorm step counters) are preserved as-is.
+        """
+        result: List[np.ndarray] = []
+        offset = 0
         for p in template:
-            n = p.size
-            result.append(flat[offset:offset + n].reshape(p.shape))
-            offset += n
+            if np.issubdtype(p.dtype, np.floating):
+                n = p.size
+                result.append(
+                    flat[offset: offset + n].reshape(p.shape).astype(p.dtype, copy=False)
+                )
+                offset += n
+            else:
+                # Integer / bool buffers: keep the template value unchanged
+                result.append(p.copy())
         return result
 
     @staticmethod
     def _weighted_average(updates: UpdateList) -> List[np.ndarray]:
-        """Standard weighted average (FedAvg numerics)."""
+        """Dtype-safe weighted average (FedAvg numerics).
+
+        The fix for the ``_UFuncOutputCastingError``:
+        PyTorch state dicts can contain integer-typed buffers (e.g.
+        ``num_batches_tracked`` in BatchNorm layers, dtype int64).
+        Accumulating  ``w * p``  (float64) into a ``zeros_like`` array that
+        inherited the int64 dtype raises a casting error in NumPy ≥ 1.24.
+
+        Solution: always accumulate in float32, then cast each output tensor
+        back to its original dtype at the end — rounding integer buffers.
+        """
         total = sum(n for _, n in updates)
-        agg = [np.zeros_like(p) for p in updates[0][0]]
+        orig_dtypes = [p.dtype for p in updates[0][0]]
+
+        # Always accumulate in float32 to avoid int-dtype casting errors
+        agg = [np.zeros_like(p, dtype=np.float32) for p in updates[0][0]]
+
         for params, n in updates:
             w = n / total
             for i, p in enumerate(params):
-                agg[i] += w * p
-        return agg
+                agg[i] += w * p.astype(np.float32)
+
+        # Restore original dtypes; round integer buffers (e.g. step counters)
+        result: List[np.ndarray] = []
+        for arr, dt in zip(agg, orig_dtypes):
+            if np.issubdtype(dt, np.integer):
+                result.append(np.round(arr).astype(dt))
+            else:
+                result.append(arr.astype(dt, copy=False))
+        return result
 
 
 # ── Standard FedAvg (no defense) ─────────────────────────────────────────────
@@ -248,7 +292,6 @@ class FoolsGoldDefense(BaseDefense):
             self._history = np.zeros((self._num_clients, dim), dtype=np.float32)
 
         # Map update positions to client slots
-        clients = list(range(n))  # positional IDs for this round
         vectors = np.array([self._flatten(p) for p, _ in updates], dtype=np.float32)
 
         # Update history

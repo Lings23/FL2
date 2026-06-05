@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+
+# Data and generated artifacts
+data/cifar-10-batches-py/
+data/cifar-10-python.tar.gz
+logs/
+checkpoints/
+
+# Local/editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Ray runtime
+/tmp/ray/

@@ -5,23 +5,23 @@ Flower FlowerClient implementation.
 
 Design goals
 ------------
-• Clean separation of training logic from FL protocol
-• Attack injection hooks for security experiments
-• Differential privacy wrapper support
-• Metrics returned in fit() / evaluate() for server-side aggregation
+- Clean separation of training logic from FL protocol
+- Attack injection hooks for security experiments
+- Differential privacy wrapper support
+- Metrics returned in fit() / evaluate() for server-side aggregation
 
 Extension points
 ----------------
-• Override on_before_fit()  to inject custom local behaviour before training
-• Override on_after_fit()   to intercept / poison the uploaded gradient/model
-• Override on_evaluate()    to add custom local metrics
+- Override on_before_fit()  to inject custom local behaviour before training
+- Override on_after_fit()   to intercept / poison the uploaded gradient/model
+- Override on_evaluate()    to add custom local metrics
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -49,13 +49,12 @@ from models.model_factory import get_parameters, set_parameters
 logger = logging.getLogger(__name__)
 
 
-# ── Trainer (stateless, reusable) ────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# LocalTrainer
+# ---------------------------------------------------------------------------
 
 class LocalTrainer:
-    """
-    Encapsulates a single local training loop.
-    Separated from FlowerClient for testability.
-    """
+    """Encapsulates a single local training loop."""
 
     def __init__(
         self,
@@ -80,9 +79,7 @@ class LocalTrainer:
                    momentum=self.cfg.momentum,
                    weight_decay=self.cfg.weight_decay)
 
-    def _build_scheduler(
-        self, optimizer: torch.optim.Optimizer, num_steps: int
-    ) -> Optional[Any]:
+    def _build_scheduler(self, optimizer, num_steps: int):
         s = self.cfg.lr_scheduler.lower()
         if s == "cosine":
             return CosineAnnealingLR(optimizer, T_max=num_steps)
@@ -90,12 +87,7 @@ class LocalTrainer:
             return StepLR(optimizer, step_size=max(1, num_steps // 3), gamma=0.1)
         return None
 
-    def train(
-        self,
-        train_loader: DataLoader,
-        epochs: int,
-    ) -> Dict[str, float]:
-        """Run local training; return training metrics dict."""
+    def train(self, train_loader: DataLoader, epochs: int) -> Dict[str, float]:
         self.model.to(self.device)
         self.model.train()
 
@@ -103,9 +95,7 @@ class LocalTrainer:
         total_steps = epochs * len(train_loader)
         scheduler = self._build_scheduler(optimizer, total_steps)
 
-        running_loss = 0.0
-        correct = 0
-        total = 0
+        running_loss = correct = total = 0
         t0 = time.time()
 
         for _epoch in range(epochs):
@@ -117,20 +107,15 @@ class LocalTrainer:
                 logits = self.model(batch_x)
                 loss = self.criterion(logits, batch_y)
 
-                # ── DP gradient clipping (before backward) ────────────────
                 if self.dp_cfg and self.dp_cfg.enabled:
                     loss.backward()
                     nn.utils.clip_grad_norm_(
-                        self.model.parameters(), self.dp_cfg.max_grad_norm
-                    )
-                    # Add Gaussian noise
+                        self.model.parameters(), self.dp_cfg.max_grad_norm)
                     with torch.no_grad():
                         for p in self.model.parameters():
                             if p.grad is not None:
                                 noise = torch.randn_like(p.grad) * (
-                                    self.dp_cfg.noise_multiplier
-                                    * self.dp_cfg.max_grad_norm
-                                )
+                                    self.dp_cfg.noise_multiplier * self.dp_cfg.max_grad_norm)
                                 p.grad += noise
                     optimizer.step()
                 else:
@@ -154,13 +139,10 @@ class LocalTrainer:
 
     @torch.no_grad()
     def evaluate(self, val_loader: DataLoader) -> Dict[str, float]:
-        """Evaluate model on a validation loader."""
         self.model.to(self.device)
         self.model.eval()
 
-        loss_sum = 0.0
-        correct = 0
-        total = 0
+        loss_sum = correct = total = 0
 
         for batch_x, batch_y in val_loader:
             batch_x = batch_x.to(self.device)
@@ -177,7 +159,9 @@ class LocalTrainer:
         }
 
 
-# ── Flower Client ─────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# FedSecClient
+# ---------------------------------------------------------------------------
 
 class FedSecClient(fl.client.Client):
     """
@@ -185,17 +169,13 @@ class FedSecClient(fl.client.Client):
 
     Parameters
     ----------
-    client_id    : int
-        Unique client identifier (used to flag as malicious in simulations).
-    model        : nn.Module
-        The model to train locally.
-    train_loader : DataLoader
-        Local training data.
-    val_loader   : DataLoader
-        Local validation data.
+    client_id    : unique client identifier
+    model        : the model to train locally
+    train_loader : local training data
+    val_loader   : local validation data
     client_cfg   : ClientConfig
-    attack_cfg   : AttackConfig   (may be None)
-    dp_cfg       : DPConfig       (may be None)
+    attack_cfg   : AttackConfig  (may be None)
+    dp_cfg       : DPConfig      (may be None)
     device       : torch.device
     """
 
@@ -222,63 +202,43 @@ class FedSecClient(fl.client.Client):
         )
         self.trainer = LocalTrainer(model, client_cfg, self.device, dp_cfg)
 
-    # ── Extension hooks ───────────────────────────────────────────────────────
+    # Extension hooks
 
     def on_before_fit(self, parameters: List[np.ndarray], config: Dict) -> None:
-        """
-        Called before local training.
-        Override in attack subclasses (e.g. data poisoning prep).
-        """
+        """Called before local training. Override for data-poisoning attacks."""
         pass
 
     def on_after_fit(
         self, parameters: List[np.ndarray], metrics: Dict
     ) -> List[np.ndarray]:
-        """
-        Called after local training; receives and RETURNS parameters.
-        Override to inject model poisoning / gradient manipulation attacks.
-
-        Default: pass-through.
-        """
+        """Called after local training. Override for model-poisoning attacks."""
         return parameters
 
     def on_evaluate(
         self, parameters: List[np.ndarray], config: Dict
     ) -> Tuple[float, int, Dict]:
-        """
-        Override to add custom evaluation logic
-        (e.g. attack success rate measurement).
-        """
+        """Override to add custom evaluation logic."""
         return self._default_evaluate(parameters, config)
 
-    # ── Flower protocol ───────────────────────────────────────────────────────
+    # Flower protocol
 
     def fit(self, ins: FitIns) -> FitRes:
         server_params = parameters_to_ndarrays(ins.parameters)
         config = ins.config
 
-        # 1. Load global model
         set_parameters(self.model, server_params)
-
-        # 2. Pre-fit hook
         self.on_before_fit(server_params, config)
 
-        # 3. Local training
         metrics = self.trainer.train(
             self.train_loader,
             epochs=int(config.get("local_epochs", self.client_cfg.local_epochs)),
         )
 
-        # 4. Collect parameters
         updated_params = get_parameters(self.model)
-
-        # 5. Post-fit hook (attack injection point)
         updated_params = self.on_after_fit(updated_params, metrics)
 
-        logger.debug(
-            "Client %d | loss=%.4f acc=%.4f",
-            self.client_id, metrics["train_loss"], metrics["train_accuracy"],
-        )
+        logger.debug("Client %d | loss=%.4f acc=%.4f",
+                     self.client_id, metrics["train_loss"], metrics["train_accuracy"])
 
         return FitRes(
             status=Status(code=Code.OK, message=""),
@@ -297,8 +257,6 @@ class FedSecClient(fl.client.Client):
             metrics={k: float(v) for k, v in metrics.items()},
         )
 
-    # ── Default evaluate ──────────────────────────────────────────────────────
-
     def _default_evaluate(
         self, parameters: List[np.ndarray], config: Dict
     ) -> Tuple[float, int, Dict]:
@@ -310,11 +268,8 @@ class FedSecClient(fl.client.Client):
             val_metrics,
         )
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
-
     @property
     def is_malicious(self) -> bool:
-        """Returns True if this client is flagged as malicious."""
         return getattr(self, "_is_malicious", False)
 
     @is_malicious.setter
@@ -322,10 +277,12 @@ class FedSecClient(fl.client.Client):
         self._is_malicious = val
 
 
-# ── Client factory (used by Flower simulation) ────────────────────────────────
+# ---------------------------------------------------------------------------
+# Client factory
+# ---------------------------------------------------------------------------
 
 def make_client_fn(
-    models_map: Dict[int, nn.Module],
+    model_factory: Callable[[], nn.Module],
     loaders_map: Dict[int, Tuple[DataLoader, DataLoader]],
     client_cfg: ClientConfig,
     attack_cfg: Optional[AttackConfig] = None,
@@ -334,13 +291,21 @@ def make_client_fn(
     device: Optional[torch.device] = None,
 ):
     """
-    Returns a Flower-compatible client_fn(cid: str) -> fl.client.Client.
+    Return a Flower-compatible client_fn(cid: str) -> fl.client.Client.
+
+    Memory fix: accepts a *model_factory* callable instead of a pre-built
+    models_map dict.  Each time Flower asks for client `cid`, a fresh model
+    is instantiated inside the actor process rather than being passed in
+    (and kept alive) from the parent process.  This eliminates the
+    ~200 MB x num_clients footprint that caused OOM kills on Colab.
 
     Parameters
     ----------
-    models_map   : {client_id: model}        — one model instance per client
-    loaders_map  : {client_id: (train, val)} — data loaders per client
-    malicious_ids: set of int client IDs that should run attack behaviour
+    model_factory : callable () -> nn.Module
+        Returns a freshly constructed model.  Called once per client_fn
+        invocation inside the Ray actor.
+    loaders_map   : {client_id: (train_loader, val_loader)}
+    malicious_ids : set of int client IDs that run attack behaviour
     """
     from attacks.attack_client import get_attack_client_class
 
@@ -349,7 +314,8 @@ def make_client_fn(
 
     def client_fn(cid: str) -> fl.client.Client:
         cid_int = int(cid)
-        model = models_map[cid_int]
+        # Build a fresh model inside the actor -- not shared with the parent
+        model = model_factory()
         train_loader, val_loader = loaders_map[cid_int]
 
         if cid_int in malicious_ids and attack_cfg and attack_cfg.enabled:

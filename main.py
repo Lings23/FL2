@@ -4,7 +4,7 @@ main.py
 Main entry point for federated security experiments.
 
 Runs Flower simulation using the VirtualClientEngine
-(no actual network — all clients run in the same process).
+(no actual network -- all clients run in the same process).
 
 Usage
 -----
@@ -12,11 +12,11 @@ Usage
 python main.py
 
 # Override specific keys
-python main.py --config config/config.yaml \\
-    --override federation.num_rounds=20 \\
-    --override security.attack.enabled=true \\
-    --override security.attack.type=label_flip \\
-    --override security.defense.enabled=true \\
+python main.py --config config/config.yaml \
+    --override federation.num_rounds=20 \
+    --override security.attack.enabled=true \
+    --override security.attack.type=label_flip \
+    --override security.defense.enabled=true \
     --override security.defense.type=krum
 
 # Sweep example (see experiments/ for full sweep scripts)
@@ -26,18 +26,17 @@ python main.py --experiment backdoor_vs_fltrust
 from __future__ import annotations
 
 import argparse
-import copy
 import logging
+import os
 import random
 import sys
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-# Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import flwr as fl
@@ -53,7 +52,9 @@ from utils.metrics import MetricTracker
 logger = logging.getLogger(__name__)
 
 
-# ── Seed ──────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Seed
+# ---------------------------------------------------------------------------
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -65,10 +66,12 @@ def set_seed(seed: int) -> None:
     torch.backends.cudnn.benchmark = False
 
 
-# ── Setup helpers ─────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Data pipeline
+# ---------------------------------------------------------------------------
 
 def build_data_pipeline(cfg: Config):
-    """Returns partitioner, per-client loaders, and test loader."""
+    """Returns per-client DataLoader pairs and a test DataLoader."""
     dataset = get_dataset(cfg.dataset.name, cfg.dataset.data_dir)
     train_ds = dataset.load_train()
 
@@ -81,7 +84,6 @@ def build_data_pipeline(cfg: Config):
         val_split=cfg.dataset.val_split,
     )
 
-    # Log partition summary
     logger.info("\n%s", partitioner.summary())
 
     loaders_map: Dict[int, Tuple[DataLoader, DataLoader]] = {}
@@ -98,18 +100,39 @@ def build_data_pipeline(cfg: Config):
     return loaders_map, test_loader, dataset
 
 
-def build_model_pool(cfg: Config) -> Dict[int, torch.nn.Module]:
-    """Create one model instance per client (required for simulation)."""
-    return {
-        cid: get_model(
+# ---------------------------------------------------------------------------
+# Model factory
+# ---------------------------------------------------------------------------
+
+def build_model_factory(cfg: Config) -> Callable[[], torch.nn.Module]:
+    """Return a callable that builds one fresh model instance on demand.
+
+    Memory fix: the old build_model_pool() pre-allocated one model per
+    client in the *parent* process and kept all of them resident for the
+    entire run (~200 MB x num_clients for ResNet-18, ~2 GB for 10 clients).
+    When Ray then spawned actor processes, each actor also deserialized its
+    own copy, causing the node to exceed the 95 % memory threshold and
+    trigger OOM kills mid-round.
+
+    With a factory, each Ray actor calls _factory() exactly once after it
+    starts, the model is created inside the actor's address space, and it
+    is garbage-collected when the actor goes idle between rounds.  The
+    parent process only holds one model at a time: the server-side global
+    model used for evaluation and checkpointing.
+    """
+    def _factory() -> torch.nn.Module:
+        return get_model(
             architecture=cfg.model.architecture,
             num_classes=cfg.dataset.num_classes,
             pretrained=cfg.model.pretrained,
             dataset_name=cfg.dataset.name,
         )
-        for cid in range(cfg.federation.num_clients)
-    }
+    return _factory
 
+
+# ---------------------------------------------------------------------------
+# Security helpers
+# ---------------------------------------------------------------------------
 
 def determine_malicious_ids(cfg: Config) -> set:
     """Randomly select malicious client IDs based on configured fraction."""
@@ -122,7 +145,9 @@ def determine_malicious_ids(cfg: Config) -> set:
     return mal_ids
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Main simulation
+# ---------------------------------------------------------------------------
 
 def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTracker:
     set_seed(cfg.project.seed)
@@ -131,13 +156,13 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
 
-    # ── Data ──────────────────────────────────────────────────────────────────
+    # Data
     loaders_map, test_loader, dataset_obj = build_data_pipeline(cfg)
 
-    # ── Models ────────────────────────────────────────────────────────────────
-    models_map = build_model_pool(cfg)
+    # Model factory (actors build their own models; nothing held here)
+    model_factory = build_model_factory(cfg)
 
-    # Global model (for server-side evaluation)
+    # Global model: lives only in the server process for eval / checkpointing
     global_model = get_model(
         architecture=cfg.model.architecture,
         num_classes=cfg.dataset.num_classes,
@@ -145,12 +170,12 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
         dataset_name=cfg.dataset.name,
     )
 
-    # ── Security setup ────────────────────────────────────────────────────────
+    # Security
     malicious_ids = determine_malicious_ids(cfg)
 
-    # ── Client factory ────────────────────────────────────────────────────────
+    # Client factory
     client_fn = make_client_fn(
-        models_map=models_map,
+        model_factory=model_factory,
         loaders_map=loaders_map,
         client_cfg=cfg.client,
         attack_cfg=cfg.security.attack if cfg.security.attack.enabled else None,
@@ -159,19 +184,17 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
         device=device,
     )
 
-    # ── Server ────────────────────────────────────────────────────────────────
+    # Server
     server, server_config = build_server(cfg, global_model, test_loader, device)
 
-    # ── Metric tracker ────────────────────────────────────────────────────────
+    # Metric tracker
     tracker = MetricTracker(log_dir=cfg.project.log_dir, experiment_name=experiment_name)
 
-    # Monkey-patch strategy to capture metrics each round
     orig_aggregate_evaluate = server.strategy.aggregate_evaluate  # type: ignore
 
     def _patched_aggregate_evaluate(server_round, results, failures):
         loss, metrics = orig_aggregate_evaluate(server_round, results, failures)
         if loss is not None:
-            # Avoid duplicate 'loss' key if already in metrics
             safe_metrics = {k: v for k, v in (metrics or {}).items() if k != "loss"}
             tracker.log(round=server_round, split="server",
                         loss=loss,
@@ -190,16 +213,27 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
                 cfg.security.attack.enabled)
     logger.info("=" * 60)
 
-    # ── Client resources for Flower simulation ────────────────────────────────
-    # num_gpus=0.0: virtual client actors run on CPU. The actual training
-    # device (self.device inside FedSecClient) is set separately and can
-    # still be CUDA; this only controls Ray actor resource reservations.
-    # Setting num_gpus > 0 here multiplies by the number of concurrent
-    # actors, quickly exceeding the single GPU available on Colab and
-    # causing Ray to stall waiting for resources that never free up.
-    client_resources = {"num_cpus": 1, "num_gpus": 0.0}
+    # ------------------------------------------------------------------
+    # Ray / Flower client resource configuration
+    # ------------------------------------------------------------------
+    # num_gpus=0.0
+    #   Keeps Ray's quota accounting from multiplying the single Colab GPU
+    #   across concurrent actors and stalling the scheduler.
+    #
+    # RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
+    #   By default Ray sets CUDA_VISIBLE_DEVICES="" inside actors when
+    #   num_gpus=0, hiding the GPU from PyTorch.  This env-var disables
+    #   that override so actors can still use CUDA for training.
+    #   Must be set before Ray initialises (i.e. before start_simulation).
+    #
+    # num_cpus=2
+    #   Limits concurrent actors to floor(available_cpus / 2).  On a
+    #   Colab instance with ~2 vCPUs this means at most 1 actor runs at a
+    #   time, halving peak memory versus num_cpus=1 (which allows up to
+    #   clients_per_round actors simultaneously).
+    os.environ["RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO"] = "0"
+    client_resources = {"num_cpus": 2, "num_gpus": 0.0}
 
-    # ── Run simulation ────────────────────────────────────────────────────────
     fl.simulation.start_simulation(
         client_fn=client_fn,
         num_clients=cfg.federation.num_clients,
@@ -214,10 +248,12 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
     return tracker
 
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 def parse_args():
-    p = argparse.ArgumentParser(description="FedSec — Federated Security Framework")
+    p = argparse.ArgumentParser(description="FedSec -- Federated Security Framework")
     p.add_argument("--config", default="config/config.yaml",
                    help="Path to YAML config file")
     p.add_argument("--override", action="append", default=[],
@@ -232,11 +268,9 @@ def main():
     args = parse_args()
     cfg = load_config(args.config)
 
-    # Apply CLI overrides
     overrides = {}
     for ov in args.override:
         k, _, v = ov.partition("=")
-        # Attempt type coercion
         try:
             v_typed = int(v)
         except ValueError:

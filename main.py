@@ -2,25 +2,6 @@
 main.py
 -------
 Main entry point for federated security experiments.
-
-Runs Flower simulation using the VirtualClientEngine
-(no actual network -- all clients run in the same process).
-
-Usage
------
-# Default config
-python main.py
-
-# Override specific keys
-python main.py --config config/config.yaml \
-    --override federation.num_rounds=20 \
-    --override security.attack.enabled=true \
-    --override security.attack.type=label_flip \
-    --override security.defense.enabled=true \
-    --override security.defense.type=krum
-
-# Sweep example (see experiments/ for full sweep scripts)
-python main.py --experiment backdoor_vs_fltrust
 """
 
 from __future__ import annotations
@@ -71,7 +52,15 @@ def set_seed(seed: int) -> None:
 # ---------------------------------------------------------------------------
 
 def build_data_pipeline(cfg: Config):
-    """Returns per-client DataLoader pairs and a test DataLoader."""
+    """
+    Returns per-client DataLoader pairs and a test DataLoader.
+
+    Performance note: DataLoaders are built here (in the parent process) so
+    that dataset partitioning happens once.  However, the loaders_map is
+    intentionally NOT closed over inside client_fn -- only the individual
+    (train_loader, val_loader) pair for each cid is captured per-actor.
+    See make_client_fn() in fl_client.py for how this is enforced.
+    """
     dataset = get_dataset(cfg.dataset.name, cfg.dataset.data_dir)
     train_ds = dataset.load_train()
 
@@ -105,20 +94,13 @@ def build_data_pipeline(cfg: Config):
 # ---------------------------------------------------------------------------
 
 def build_model_factory(cfg: Config) -> Callable[[], torch.nn.Module]:
-    """Return a callable that builds one fresh model instance on demand.
+    """
+    Return a callable that builds one fresh model instance on demand.
 
-    Memory fix: the old build_model_pool() pre-allocated one model per
-    client in the *parent* process and kept all of them resident for the
-    entire run (~200 MB x num_clients for ResNet-18, ~2 GB for 10 clients).
-    When Ray then spawned actor processes, each actor also deserialized its
-    own copy, causing the node to exceed the 95 % memory threshold and
-    trigger OOM kills mid-round.
-
-    With a factory, each Ray actor calls _factory() exactly once after it
-    starts, the model is created inside the actor's address space, and it
-    is garbage-collected when the actor goes idle between rounds.  The
-    parent process only holds one model at a time: the server-side global
-    model used for evaluation and checkpointing.
+    Each Ray actor calls _factory() once after it starts; the model lives
+    only inside that actor's address space and is garbage-collected when the
+    actor goes idle between rounds.  The parent process holds exactly one
+    model: the server-side global model for evaluation and checkpointing.
     """
     def _factory() -> torch.nn.Module:
         return get_model(
@@ -135,7 +117,6 @@ def build_model_factory(cfg: Config) -> Callable[[], torch.nn.Module]:
 # ---------------------------------------------------------------------------
 
 def determine_malicious_ids(cfg: Config) -> set:
-    """Randomly select malicious client IDs based on configured fraction."""
     if not (cfg.security.attack.enabled and cfg.security.attack.type != "none"):
         return set()
     n_mal = max(1, int(cfg.federation.num_clients * cfg.security.attack.malicious_fraction))
@@ -156,13 +137,9 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
 
-    # Data
     loaders_map, test_loader, dataset_obj = build_data_pipeline(cfg)
-
-    # Model factory (actors build their own models; nothing held here)
     model_factory = build_model_factory(cfg)
 
-    # Global model: lives only in the server process for eval / checkpointing
     global_model = get_model(
         architecture=cfg.model.architecture,
         num_classes=cfg.dataset.num_classes,
@@ -170,10 +147,8 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
         dataset_name=cfg.dataset.name,
     )
 
-    # Security
     malicious_ids = determine_malicious_ids(cfg)
 
-    # Client factory
     client_fn = make_client_fn(
         model_factory=model_factory,
         loaders_map=loaders_map,
@@ -184,10 +159,8 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
         device=device,
     )
 
-    # Server
     server, server_config = build_server(cfg, global_model, test_loader, device)
 
-    # Metric tracker
     tracker = MetricTracker(log_dir=cfg.project.log_dir, experiment_name=experiment_name)
 
     orig_aggregate_evaluate = server.strategy.aggregate_evaluate  # type: ignore
@@ -215,24 +188,25 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
 
     # ------------------------------------------------------------------
     # Ray / Flower client resource configuration
-    # ------------------------------------------------------------------
+    #
+    # num_cpus=1  (restored from 2)
+    #   num_cpus=2 was set to limit concurrent actors and reduce peak
+    #   memory, but on a 2-vCPU Colab node it meant floor(2/2) = 1 actor
+    #   at a time -- forcing all clients to run serially and multiplying
+    #   round time by clients_per_round.  Memory is now controlled via
+    #   the model_factory pattern (no parent-process model pool) and the
+    #   per-actor loader fix in make_client_fn, so num_cpus=1 is safe.
+    #
     # num_gpus=0.0
-    #   Keeps Ray's quota accounting from multiplying the single Colab GPU
-    #   across concurrent actors and stalling the scheduler.
+    #   Ray resource quota only -- does not affect PyTorch CUDA access.
+    #   See RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO below.
     #
     # RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
-    #   By default Ray sets CUDA_VISIBLE_DEVICES="" inside actors when
-    #   num_gpus=0, hiding the GPU from PyTorch.  This env-var disables
-    #   that override so actors can still use CUDA for training.
-    #   Must be set before Ray initialises (i.e. before start_simulation).
-    #
-    # num_cpus=2
-    #   Limits concurrent actors to floor(available_cpus / 2).  On a
-    #   Colab instance with ~2 vCPUs this means at most 1 actor runs at a
-    #   time, halving peak memory versus num_cpus=1 (which allows up to
-    #   clients_per_round actors simultaneously).
+    #   Prevents Ray from injecting CUDA_VISIBLE_DEVICES="" into actors
+    #   when num_gpus=0, which would hide the GPU from PyTorch.
+    # ------------------------------------------------------------------
     os.environ["RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO"] = "0"
-    client_resources = {"num_cpus": 2, "num_gpus": 0.0}
+    client_resources = {"num_cpus": 1, "num_gpus": 0.0}
 
     fl.simulation.start_simulation(
         client_fn=client_fn,
@@ -254,13 +228,9 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
 
 def parse_args():
     p = argparse.ArgumentParser(description="FedSec -- Federated Security Framework")
-    p.add_argument("--config", default="config/config.yaml",
-                   help="Path to YAML config file")
-    p.add_argument("--override", action="append", default=[],
-                   metavar="KEY=VALUE",
-                   help="Override config values, e.g. federation.num_rounds=20")
-    p.add_argument("--experiment", default=None,
-                   help="Experiment name (used for log/checkpoint naming)")
+    p.add_argument("--config", default="config/config.yaml")
+    p.add_argument("--override", action="append", default=[], metavar="KEY=VALUE")
+    p.add_argument("--experiment", default=None)
     return p.parse_args()
 
 

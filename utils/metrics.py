@@ -83,15 +83,27 @@ class MetricTracker:
         print(f"\n{'─'*60}")
         print(f"Experiment: {self.experiment_name}")
         print(f"{'─'*60}")
-        print(f"{'Round':>6}  {'Loss':>8}  {'Accuracy':>10}")
+        show_asr = any(r.get("asr") is not None for r in server_records)
+        if show_asr:
+            print(f"{'Round':>6}  {'Loss':>8}  {'Accuracy':>10}  {'ASR':>10}")
+        else:
+            print(f"{'Round':>6}  {'Loss':>8}  {'Accuracy':>10}")
         for r in server_records[-10:]:
             loss = r.get("loss")
             accuracy = r.get("accuracy")
+            asr = r.get("asr")
             loss = float("nan") if loss is None else loss
             accuracy = float("nan") if accuracy is None else accuracy
-            print(f"{r.get('round','?'):>6}  "
-                  f"{loss:>8.4f}  "
-                  f"{accuracy:>10.4f}")
+            if show_asr:
+                asr = float("nan") if asr is None else asr
+                print(f"{r.get('round','?'):>6}  "
+                      f"{loss:>8.4f}  "
+                      f"{accuracy:>10.4f}  "
+                      f"{asr:>10.4f}")
+            else:
+                print(f"{r.get('round','?'):>6}  "
+                      f"{loss:>8.4f}  "
+                      f"{accuracy:>10.4f}")
         best = self.best("accuracy")
         if best and best.get("accuracy") is not None:
             print(f"\nBest accuracy: {best.get('accuracy', 0):.4f} @ round {best.get('round')}")

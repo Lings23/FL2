@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from torch.utils.data import TensorDataset
+from torch.utils.data import DataLoader, TensorDataset
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -209,6 +209,77 @@ class TestConfigLoader:
         from config.config_loader import load_config
         with pytest.raises(FileNotFoundError):
             load_config("nonexistent.yaml")
+
+
+# ── Server ASR tests ──────────────────────────────────────────────────────────
+
+class TargetModel(torch.nn.Module):
+    def __init__(self, target: int = 2, num_classes: int = 4):
+        super().__init__()
+        self.target = target
+        self.num_classes = num_classes
+
+    def forward(self, x):
+        logits = torch.zeros(x.size(0), self.num_classes, device=x.device)
+        logits[:, self.target] = 1.0
+        return logits
+
+
+class TestServerASR:
+    def test_dba_full_trigger_stamps_all_fragments(self):
+        from config.config_loader import AttackConfig
+        from server.fl_server import stamp_dba_full_trigger
+        from attacks.attack_client import get_dba_trigger_coords
+
+        cfg = AttackConfig(
+            enabled=True,
+            type="dba",
+            trigger_size=2,
+            trigger_value=1.0,
+            dba_trigger_num=3,
+            dba_gap=1,
+        )
+        x = torch.zeros(1, 3, 8, 8)
+        triggered = stamp_dba_full_trigger(x, cfg)
+        stamped = {tuple(coord) for coord in torch.nonzero(triggered[0, 0] == 1.0).tolist()}
+        expected = set().union(*[
+            set(get_dba_trigger_coords(i, (3, 8, 8), trigger_size=2,
+                                       dba_trigger_num=3, gap=1))
+            for i in range(3)
+        ])
+        assert stamped == expected
+        assert torch.count_nonzero(triggered[..., -2:, -2:]) == 0
+
+    def test_backdoor_trigger_stamps_bottom_right_only(self):
+        from config.config_loader import AttackConfig
+        from server.fl_server import stamp_backdoor_trigger
+
+        cfg = AttackConfig(enabled=True, type="backdoor", trigger_size=2, trigger_value=1.0)
+        x = torch.zeros(1, 3, 8, 8)
+        triggered = stamp_backdoor_trigger(x, cfg)
+        assert triggered[..., -2:, -2:].min().item() == pytest.approx(1.0)
+        assert torch.count_nonzero(triggered[..., :-2, :]) == 0
+        assert torch.count_nonzero(triggered[..., :, :-2]) == 0
+
+    def test_targeted_asr_excludes_target_label_samples(self):
+        from config.config_loader import AttackConfig
+        from server.fl_server import evaluate_targeted_asr
+
+        x = torch.zeros(4, 1, 8, 8)
+        y = torch.tensor([0, 2, 1, 3], dtype=torch.long)
+        loader = DataLoader(TensorDataset(x, y), batch_size=2)
+        cfg = AttackConfig(
+            enabled=True,
+            type="backdoor",
+            backdoor_target_label=2,
+            trigger_size=2,
+            trigger_value=1.0,
+        )
+        metrics = evaluate_targeted_asr(TargetModel(target=2), loader, torch.device("cpu"), cfg)
+        assert metrics is not None
+        assert metrics["asr_total"] == 3
+        assert metrics["asr"] == pytest.approx(1.0)
+        assert metrics["attack_type"] == "backdoor"
 
 
 # ── Attack dataset tests ──────────────────────────────────────────────────────

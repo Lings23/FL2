@@ -7,6 +7,7 @@ Implemented attacks
 -------------------
 • label_flip        — flip source → target labels during local training
 • backdoor          — stamp a pixel trigger + relabel to target class
+• dba               — distributed backdoor with per-client trigger fragments
 • gaussian_noise    — add Gaussian noise to uploaded model weights
 • model_replacement — scale update to replace global model (Bagdasaryan et al.)
 • byzantine         — send random weights (worst-case adversary)
@@ -90,6 +91,105 @@ class BackdoorDataset(Dataset):
         return x, y
 
 
+def get_dba_trigger_coords(
+    fragment_index: int,
+    image_shape: Tuple[int, ...],
+    trigger_size: int = 3,
+    dba_trigger_num: int = 4,
+    gap: int = 3,
+    base_row: int = 0,
+    base_col: int = 0,
+) -> List[Tuple[int, int]]:
+    """
+    Return clipped pixel coordinates for one DBA trigger fragment.
+
+    Fragments are laid out left-to-right from (base_row, base_col). The
+    returned coordinates are spatial (row, col); all channels are stamped by
+    DBADataset.
+    """
+    if len(image_shape) < 2:
+        raise ValueError(f"DBA expects image tensors with spatial dims, got {image_shape}")
+
+    height, width = image_shape[-2], image_shape[-1]
+    if height <= 0 or width <= 0:
+        raise ValueError(f"DBA expects positive spatial dims, got {image_shape}")
+
+    trigger_size = max(1, int(trigger_size))
+    fragment_index = int(fragment_index) % max(1, int(dba_trigger_num))
+    gap = max(0, int(gap))
+
+    start_row = int(base_row)
+    start_col = int(base_col) + fragment_index * (trigger_size + gap)
+    coords = []
+    for row in range(start_row, start_row + trigger_size):
+        for col in range(start_col, start_col + trigger_size):
+            clipped_row = min(max(row, 0), height - 1)
+            clipped_col = min(max(col, 0), width - 1)
+            coords.append((clipped_row, clipped_col))
+    return sorted(set(coords))
+
+
+class DBADataset(Dataset):
+    """
+    Stamps one DBA trigger fragment and relabels poisoned samples to target.
+
+    Each malicious client owns only one local fragment. The full trigger is
+    formed across clients after aggregation, not inside a single client.
+    """
+
+    def __init__(
+        self,
+        base: Dataset,
+        target_label: int,
+        fragment_index: int,
+        poison_fraction: float = 0.1,
+        trigger_size: int = 3,
+        trigger_value: float = 1.0,
+        dba_trigger_num: int = 4,
+        gap: int = 3,
+        base_row: int = 0,
+        base_col: int = 0,
+        seed: int = 0,
+    ):
+        self.base = base
+        self.target_label = target_label
+        self.fragment_index = fragment_index
+        self.trigger_size = trigger_size
+        self.trigger_value = trigger_value
+        self.dba_trigger_num = dba_trigger_num
+        self.gap = gap
+        self.base_row = base_row
+        self.base_col = base_col
+
+        rng = np.random.default_rng(seed)
+        n = len(base)  # type: ignore
+        poison_fraction = min(max(float(poison_fraction), 0.0), 1.0)
+        n_poison = int(n * poison_fraction)
+        if poison_fraction > 0.0 and n > 0:
+            n_poison = max(1, n_poison)
+        self.poison_indices = set(rng.choice(n, n_poison, replace=False).tolist())
+
+    def __len__(self): return len(self.base)  # type: ignore
+
+    def __getitem__(self, idx):
+        x, y = self.base[idx]
+        if idx in self.poison_indices:
+            x = x.clone()
+            coords = get_dba_trigger_coords(
+                fragment_index=self.fragment_index,
+                image_shape=tuple(x.shape),
+                trigger_size=self.trigger_size,
+                dba_trigger_num=self.dba_trigger_num,
+                gap=self.gap,
+                base_row=self.base_row,
+                base_col=self.base_col,
+            )
+            for row, col in coords:
+                x[..., row, col] = self.trigger_value
+            y = self.target_label
+        return x, y
+
+
 # ── Attack client implementations ─────────────────────────────────────────────
 
 class LabelFlipClient(FedSecClient):
@@ -129,6 +229,59 @@ class BackdoorClient(FedSecClient):
         )
         logger.debug("Client %d: backdoor attack activated (target=%d)",
                      self.client_id, self.attack_cfg.backdoor_target_label)
+
+
+class DBAClient(FedSecClient):
+    """Distributed backdoor attack with per-client local trigger fragments."""
+
+    def on_before_fit(self, parameters: List[np.ndarray], config: Dict) -> None:
+        self._global_params_cache = [p.copy() for p in parameters]
+        fragment_index = self.client_id % max(1, self.attack_cfg.dba_trigger_num)
+        poisoned_ds = DBADataset(
+            self.train_loader.dataset,
+            target_label=self.attack_cfg.backdoor_target_label,
+            fragment_index=fragment_index,
+            poison_fraction=self.attack_cfg.poison_fraction,
+            trigger_size=self.attack_cfg.trigger_size,
+            trigger_value=self.attack_cfg.trigger_value,
+            dba_trigger_num=self.attack_cfg.dba_trigger_num,
+            gap=self.attack_cfg.dba_gap,
+            base_row=self.attack_cfg.dba_base_row,
+            base_col=self.attack_cfg.dba_base_col,
+            seed=self.client_id,
+        )
+        self.train_loader = DataLoader(
+            poisoned_ds,
+            batch_size=self.train_loader.batch_size,
+            shuffle=True,
+            num_workers=0,
+        )
+        logger.debug(
+            "Client %d: DBA attack activated (fragment=%d target=%d)",
+            self.client_id,
+            fragment_index,
+            self.attack_cfg.backdoor_target_label,
+        )
+
+    def on_after_fit(
+        self, parameters: List[np.ndarray], metrics: Dict
+    ) -> List[np.ndarray]:
+        if not self.attack_cfg.dba_scale_update:
+            return parameters
+
+        global_params = getattr(self, "_global_params_cache", parameters)
+        scaled = [
+            global_params[i] + self.attack_cfg.dba_boost_factor * (
+                parameters[i] - global_params[i]
+            )
+            for i in range(len(parameters))
+        ]
+        logger.debug(
+            "Client %d: DBA update scaled (boost=%.1f)",
+            self.client_id,
+            self.attack_cfg.dba_boost_factor,
+        )
+        return scaled
 
 
 class GaussianNoiseClient(FedSecClient):
@@ -202,6 +355,7 @@ class ModelReplacementClient(FedSecClient):
 ATTACK_REGISTRY: Dict[str, Type[FedSecClient]] = {
     "label_flip":        LabelFlipClient,
     "backdoor":          BackdoorClient,
+    "dba":               DBAClient,
     "gaussian_noise":    GaussianNoiseClient,
     "byzantine":         ByzantineClient,
     "model_replacement": ModelReplacementClient,

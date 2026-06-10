@@ -233,3 +233,57 @@ class TestAttackDatasets:
         assert y == 0, "All samples should be relabelled to target"
         assert x[..., -2:, -2:].min().item() == pytest.approx(1.0, abs=1e-5), \
             "Trigger pixels must be stamped"
+
+    def test_dba_relabels_poisoned_samples(self):
+        from attacks.attack_client import DBADataset
+        base = TensorDataset(torch.zeros(4, 3, 8, 8), torch.ones(4, dtype=torch.long))
+        ds = DBADataset(base, target_label=7, fragment_index=0,
+                        poison_fraction=1.0, trigger_size=2, trigger_value=1.0)
+        _, y = ds[0]
+        assert int(y) == 7, "DBA poisoned samples should use target label"
+
+    def test_dba_fragment_indices_have_different_positions(self):
+        from attacks.attack_client import get_dba_trigger_coords
+        coords_0 = set(get_dba_trigger_coords(0, (3, 8, 8), trigger_size=2,
+                                              dba_trigger_num=4, gap=1))
+        coords_1 = set(get_dba_trigger_coords(1, (3, 8, 8), trigger_size=2,
+                                              dba_trigger_num=4, gap=1))
+        assert coords_0
+        assert coords_1
+        assert coords_0 != coords_1
+        assert coords_0.isdisjoint(coords_1)
+
+    def test_dba_local_fragment_only_stamps_own_coords(self):
+        from attacks.attack_client import DBADataset, get_dba_trigger_coords
+        base = TensorDataset(torch.zeros(1, 3, 8, 8), torch.zeros(1, dtype=torch.long))
+        ds = DBADataset(base, target_label=3, fragment_index=1,
+                        poison_fraction=1.0, trigger_size=2, trigger_value=1.0,
+                        dba_trigger_num=4, gap=1)
+        x, _ = ds[0]
+        stamped = {tuple(coord) for coord in torch.nonzero(x[0] == 1.0, as_tuple=False).tolist()}
+        own = set(get_dba_trigger_coords(1, tuple(x.shape), trigger_size=2,
+                                         dba_trigger_num=4, gap=1))
+        full = set().union(*[
+            set(get_dba_trigger_coords(i, tuple(x.shape), trigger_size=2,
+                                       dba_trigger_num=4, gap=1))
+            for i in range(4)
+        ])
+        assert stamped == own
+        assert stamped != full
+
+    def test_dba_scales_model_update(self):
+        from attacks.attack_client import DBAClient
+        client = DBAClient.__new__(DBAClient)
+        client.client_id = 0
+        client.attack_cfg = type("Cfg", (), {
+            "dba_scale_update": True,
+            "dba_boost_factor": 3.0,
+        })()
+        client._global_params_cache = [np.array([1.0, 2.0], dtype=np.float32)]
+        local = [np.array([2.0, 4.0], dtype=np.float32)]
+        scaled = client.on_after_fit(local, {})
+        np.testing.assert_allclose(scaled[0], np.array([4.0, 8.0], dtype=np.float32))
+
+    def test_dba_registered(self):
+        from attacks.attack_client import DBAClient, get_attack_client_class
+        assert get_attack_client_class("dba") is DBAClient

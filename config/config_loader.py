@@ -81,6 +81,15 @@ class AttackConfig:
     malicious_fraction: float = 0.2
     backdoor_target_label: int = 0
     trigger_pattern: str = "pixel"
+    poison_fraction: float = 0.1
+    trigger_size: int = 3
+    trigger_value: float = 1.0
+    dba_trigger_num: int = 4
+    dba_gap: int = 3
+    dba_base_row: int = 0
+    dba_base_col: int = 0
+    dba_scale_update: bool = True
+    dba_boost_factor: float = 10.0
     source_label: int = 0
     target_label: int = 1
 

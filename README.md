@@ -8,7 +8,7 @@ A highly modular and extensible federated learning research framework built on [
 
 ## ✨ Key Features
 
-- **Extensive Attack Models:** Simulates malicious clients with Data Poisoning (Label Flip, Backdoor) and Model Poisoning (Byzantine, Gaussian Noise, Model Replacement).
+- **Extensive Attack Models:** Simulates malicious clients with Data Poisoning (Label Flip, Backdoor, DBA) and Model Poisoning (Byzantine, Gaussian Noise, Model Replacement).
 - **Robust Defenses:** Built-in aggregation mechanisms to defend against attacks, including Krum, Trimmed Mean, Median, FLTrust, and FoolsGold.
 - **Advanced FL Strategies:** Out-of-the-box support for `FedAvg`, `FedProx` (with proximal regularization), `FedYogi`, and `FedAdam` (server-side adaptive optimizers).
 - **Data Partitioning:** Supports various distribution setups like IID, non-IID (sharded), and Dirichlet (LDA) heterogeneous data splitting.
@@ -138,7 +138,7 @@ differential_privacy:
 security:
   attack:
     enabled: true
-    type: label_flip     # label_flip | backdoor | gaussian_noise | byzantine | model_replacement
+    type: label_flip     # label_flip | backdoor | dba | gaussian_noise | byzantine | model_replacement
     malicious_fraction: 0.2
   defense:
     enabled: true

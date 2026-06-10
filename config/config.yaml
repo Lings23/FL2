@@ -61,11 +61,20 @@ security:
   # Attack settings (for simulation)
   attack:
     enabled: false
-    type: "none"                # none | label_flip | backdoor | gaussian_noise | byzantine | model_replacement
+    type: "none"                # none | label_flip | backdoor | dba | gaussian_noise | byzantine | model_replacement
     malicious_fraction: 0.2     # fraction of malicious clients
-    # Backdoor specific
+    # Backdoor / DBA specific
     backdoor_target_label: 0
     trigger_pattern: "pixel"    # pixel | pattern
+    poison_fraction: 0.1
+    trigger_size: 3
+    trigger_value: 1.0
+    dba_trigger_num: 4
+    dba_gap: 3
+    dba_base_row: 0
+    dba_base_col: 0
+    dba_scale_update: true
+    dba_boost_factor: 10.0
     # Label flip specific
     source_label: 0
     target_label: 1

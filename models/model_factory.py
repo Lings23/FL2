@@ -85,7 +85,7 @@ def get_model(
     Parameters
     ----------
     architecture : str
-        One of: mnist_cnn, resnet18, resnet34, resnet50,
+        One of: mnist_cnn/cnn, mlp, resnet18, resnet34, resnet50,
                 mobilenet_v2, efficientnet_b0, lstm
     num_classes  : int
         Number of output classes (replaces the head if needed).
@@ -106,7 +106,7 @@ def get_model(
     # ------------------------------------------------------------------
     # mnist_cnn: lightweight CNN for 28x28 grayscale tasks
     # ------------------------------------------------------------------
-    if arch == "mnist_cnn":
+    if arch in ("mnist_cnn", "cnn"):
         if ds and ds not in {"mnist", "fashion_mnist", "emnist", ""}:
             logger.warning(
                 "mnist_cnn is designed for 28x28 grayscale inputs; "
@@ -114,6 +114,22 @@ def get_model(
                 "Consider resnet18 for RGB or larger inputs.", ds
             )
         return MnistCNN(num_classes=num_classes, in_channels=in_channels)
+
+    # ------------------------------------------------------------------
+    # MLP: simple fully-connected baseline for 28x28 image datasets
+    # ------------------------------------------------------------------
+    elif arch == "mlp":
+        if ds and ds not in {"mnist", "fashion_mnist", "emnist", ""}:
+            logger.warning(
+                "mlp assumes flattened 28x28 inputs; dataset=%r may not fit.",
+                ds,
+            )
+        return nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(in_channels * 28 * 28, 200),
+            nn.ReLU(inplace=True),
+            nn.Linear(200, num_classes),
+        )
 
     # ------------------------------------------------------------------
     # ResNet-18
@@ -197,7 +213,7 @@ def get_model(
     else:
         raise ValueError(
             f"Unknown architecture {architecture!r}. "
-            f"Available: mnist_cnn, resnet18, resnet34, resnet50, "
+            f"Available: mnist_cnn/cnn, mlp, resnet18, resnet34, resnet50, "
             f"mobilenet_v2, efficientnet_b0, lstm"
         )
 

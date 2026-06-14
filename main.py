@@ -163,18 +163,35 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
 
     tracker = MetricTracker(log_dir=cfg.project.log_dir, experiment_name=experiment_name)
 
+    orig_evaluate = server.strategy.evaluate  # type: ignore
     orig_aggregate_evaluate = server.strategy.aggregate_evaluate  # type: ignore
+
+    def _patched_evaluate(server_round, parameters):
+        result = orig_evaluate(server_round, parameters)
+        if result is not None:
+            loss, metrics = result
+            safe_metrics = {k: v for k, v in metrics.items() if k != "accuracy"}
+            tracker.log(round=server_round, split="server",
+                        loss=loss,
+                        accuracy=metrics.get("accuracy"),
+                        **safe_metrics)
+        return result
 
     def _patched_aggregate_evaluate(server_round, results, failures):
         loss, metrics = orig_aggregate_evaluate(server_round, results, failures)
         if loss is not None:
-            safe_metrics = {k: v for k, v in (metrics or {}).items() if k != "loss"}
-            tracker.log(round=server_round, split="server",
+            accuracy = (metrics or {}).get("accuracy", (metrics or {}).get("val_accuracy"))
+            safe_metrics = {
+                k: v for k, v in (metrics or {}).items()
+                if k not in {"loss", "accuracy"}
+            }
+            tracker.log(round=server_round, split="client_avg",
                         loss=loss,
-                        accuracy=safe_metrics.get("accuracy", safe_metrics.get("val_accuracy")),
+                        accuracy=accuracy,
                         **safe_metrics)
         return loss, metrics
 
+    server.strategy.evaluate = _patched_evaluate  # type: ignore
     server.strategy.aggregate_evaluate = _patched_aggregate_evaluate  # type: ignore
 
     logger.info("=" * 60)

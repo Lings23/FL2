@@ -186,6 +186,102 @@ class TestDefenses:
         assert agg[0].mean() > 0, "FLTrust should upweight aligned updates"
 
 
+class TestTimeConsistencyDefense:
+    def _defense(self, **custom_params):
+        from config.config_loader import DefenseConfig
+        from defenses.defense_base import get_defense
+
+        defaults = {
+            "projection_dim": 8,
+            "windows": {"instant": 1, "short": 3, "mid": 4, "long": 6},
+            "cold_start_rounds": 3,
+            "offline_reset_rounds": 1,
+            "min_effective_weight": 1e-4,
+        }
+        defaults.update(custom_params)
+        return get_defense(
+            DefenseConfig(enabled=True, type="time_consistency", custom_params=defaults),
+            num_clients=5,
+        )
+
+    def _updates(self, vectors, samples=10):
+        return [
+            ([np.asarray(v, dtype=np.float32), np.array([idx], dtype=np.int64)], samples)
+            for idx, v in enumerate(vectors)
+        ]
+
+    def test_cold_start_frequency_features_are_neutral(self):
+        d = self._defense()
+        global_params = [np.zeros(4, dtype=np.float32), np.array([0], dtype=np.int64)]
+        d.set_context(1, ["7"], global_params)
+        d.aggregate(self._updates([np.zeros(4, dtype=np.float32)]))
+
+        state = d._states["7"]
+        np.testing.assert_allclose(state.feature_history[-1][4:], np.zeros(3), atol=1e-6)
+        assert 0.0 <= state.final_trust <= 1.0
+
+    def test_histories_are_keyed_by_real_client_id(self):
+        d = self._defense()
+        global_params = [np.zeros(4, dtype=np.float32), np.array([0], dtype=np.int64)]
+
+        d.set_context(1, ["1", "2"], global_params)
+        d.aggregate(self._updates([np.ones(4), -np.ones(4)]))
+        d.set_context(2, ["2"], global_params)
+        d.aggregate(self._updates([-np.ones(4) * 0.5]))
+
+        assert len(d._states["1"].signature_history) == 1
+        assert len(d._states["2"].signature_history) == 2
+
+    def test_offline_client_resets_after_threshold(self):
+        d = self._defense(offline_reset_rounds=1)
+        global_params = [np.zeros(4, dtype=np.float32), np.array([0], dtype=np.int64)]
+
+        d.set_context(1, ["1"], global_params)
+        d.aggregate(self._updates([np.ones(4)]))
+        d.set_context(3, ["1"], global_params)
+        d.aggregate(self._updates([np.ones(4) * 2]))
+
+        state = d._states["1"]
+        assert state.participation_count == 1
+        assert len(state.signature_history) == 1
+
+    def test_single_zero_update_and_integer_buffer_are_safe(self):
+        d = self._defense()
+        global_params = [np.zeros(3, dtype=np.float32), np.array([2], dtype=np.int64)]
+        d.set_context(1, ["solo"], global_params)
+        aggregated = d.aggregate(self._updates([np.zeros(3, dtype=np.float32)]))
+
+        np.testing.assert_allclose(aggregated[0], np.zeros(3), atol=1e-6)
+        assert aggregated[1].dtype == np.int64
+        assert aggregated[1][0] == 0
+
+    def test_outlier_update_is_softly_downweighted(self):
+        d = self._defense()
+        global_params = [np.zeros(4, dtype=np.float32), np.array([0], dtype=np.int64)]
+        updates = self._updates([
+            np.ones(4, dtype=np.float32) * 0.10,
+            np.ones(4, dtype=np.float32) * 0.11,
+            np.ones(4, dtype=np.float32) * 10.0,
+        ])
+        d.set_context(1, ["good-a", "good-b", "bad"], global_params)
+        d.aggregate(updates)
+
+        assert d.last_client_weights["bad"] > 0.0
+        assert d.last_client_weights["bad"] < d.last_client_weights["good-a"]
+        assert d.last_round_metrics["time_consistency_trust_min"] <= d.last_round_metrics["time_consistency_trust_mean"]
+
+    def test_periodic_magnitude_pattern_produces_frequency_signal(self):
+        d = self._defense(windows={"instant": 1, "short": 3, "mid": 4, "long": 6})
+        global_params = [np.zeros(4, dtype=np.float32), np.array([0], dtype=np.int64)]
+        for rnd, scale in enumerate([1.0, 2.0, 1.0, 2.0, 1.0, 2.0], start=1):
+            d.set_context(rnd, ["periodic"], global_params)
+            d.aggregate(self._updates([np.ones(4, dtype=np.float32) * scale]))
+
+        state = d._states["periodic"]
+        assert state.feature_history[-1][4] > 0.0
+        assert state.feature_history[-1][5] > 0.0
+
+
 # ── Config loader tests ───────────────────────────────────────────────────────
 
 class TestConfigLoader:

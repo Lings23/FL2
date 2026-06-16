@@ -47,6 +47,7 @@ DEFAULT_DEFENSES = [
     "trimmed_mean",
     "median",
     "foolsgold",
+    "time_consistency",
 ]
 
 

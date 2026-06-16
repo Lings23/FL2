@@ -82,14 +82,26 @@ security:
   # Defense settings
   defense:
     enabled: false
-    type: "none"                # none | krum | trimmed_mean | flame | foolsgold | your_defense
+    type: "none"                # none | krum | trimmed_mean | median | fltrust | foolsgold | time_consistency | your_defense
     # Krum
     krum_num_to_select: 1
     # Trimmed Mean
     trim_fraction: 0.1
     # FLTrust
     root_dataset_size: 100
-    # Extension point: add your defense parameters here
+    # Extension point: add your defense parameters here.
+    # Example for time_consistency:
+    # custom_params:
+    #   projection_dim: 2048
+    #   windows: {instant: 1, short: 5, mid: 15, long: 30}
+    #   fixed_scale_weights: [0.45, 0.30, 0.20, 0.05]
+    #   cold_start_rounds: 10
+    #   offline_reset_rounds: 10
+    #   trust_update_rate_cold: 0.35
+    #   trust_update_rate_normal: 0.15
+    #   sigmoid_scale: 8.0
+    #   sigmoid_center: 0.5
+    #   min_effective_weight: 1e-4
     custom_params: {}
 
 # ── Evaluation ───────────────────────────────────────────────

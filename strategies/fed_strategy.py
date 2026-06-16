@@ -155,8 +155,10 @@ class FedSecStrategy(Strategy):
             (parameters_to_ndarrays(fit_res.parameters), fit_res.num_examples)
             for _, fit_res in results
         ]
+        client_ids = [str(client.cid) for client, _ in results]
 
         # ── Defense aggregation ───────────────────────────────────────────────
+        self.defense.set_context(server_round, client_ids, self.global_params)
         aggregated = self.defense.aggregate(updates)
 
         # ── Optional server-side optimizer (FedYogi) ──────────────────────────
@@ -174,6 +176,11 @@ class FedSecStrategy(Strategy):
         if results:
             raw = [(r.num_examples, r.metrics) for _, r in results if r.metrics]
             fit_metrics = _weighted_avg_metrics(raw)
+
+        defense_metrics = getattr(self.defense, "last_round_metrics", {})
+        for key, value in defense_metrics.items():
+            if isinstance(value, (int, float, np.floating)):
+                fit_metrics[key] = float(value)
 
         logger.info("Round %d aggregation done (defense=%s)",
                     server_round, self.defense.__class__.__name__)

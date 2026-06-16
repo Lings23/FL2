@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Type
 
 import numpy as np
 
@@ -52,6 +52,20 @@ class BaseDefense(ABC):
 
     def __init__(self, cfg: DefenseConfig):
         self.cfg = cfg
+
+    def set_context(
+        self,
+        server_round: int,
+        client_ids: Sequence[str],
+        global_params: Sequence[np.ndarray],
+    ) -> None:
+        """Optional per-round context for stateful defenses.
+
+        Stateless defenses can ignore this hook. Stateful defenses use it to
+        key histories by real client ids and to compute model deltas from the
+        previous global parameters.
+        """
+        return None
 
     @abstractmethod
     def aggregate(self, updates: UpdateList) -> List[np.ndarray]:
@@ -331,7 +345,7 @@ class FoolsGoldDefense(BaseDefense):
 
 # ── Registry & factory ────────────────────────────────────────────────────────
 
-DEFENSE_REGISTRY: Dict[str, Type[BaseDefense]] = {
+DEFENSE_REGISTRY: Dict[str, Any] = {
     "none":          FedAvgDefense,
     "fedavg":        FedAvgDefense,
     "krum":          KrumDefense,
@@ -339,6 +353,7 @@ DEFENSE_REGISTRY: Dict[str, Type[BaseDefense]] = {
     "median":        MedianDefense,
     "fltrust":       FLTrustDefense,
     "foolsgold":     FoolsGoldDefense,
+    "time_consistency": "TimeConsistencyDefense",
     # ── Extension point ────────────────────────────────────────────────────
     # "your_defense": YourDefenseClass,
 }
@@ -352,6 +367,9 @@ def get_defense(cfg: DefenseConfig, **kwargs: Any) -> BaseDefense:
             f"Unknown defense {key!r}. Available: {list(DEFENSE_REGISTRY)}"
         )
     cls = DEFENSE_REGISTRY[key]
+    if cls == "TimeConsistencyDefense":
+        from defenses.time_consistency_defense import TimeConsistencyDefense
+        cls = TimeConsistencyDefense
     # Pass extra kwargs (e.g. num_clients for FoolsGold)
     try:
         return cls(cfg, **kwargs)

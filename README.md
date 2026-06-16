@@ -9,7 +9,7 @@ A highly modular and extensible federated learning research framework built on [
 ## ✨ Key Features
 
 - **Extensive Attack Models:** Simulates malicious clients with Data Poisoning (Label Flip, Backdoor, DBA) and Model Poisoning (Byzantine, Gaussian Noise, Model Replacement).
-- **Robust Defenses:** Built-in aggregation mechanisms to defend against attacks, including Krum, Trimmed Mean, Median, FLTrust, and FoolsGold.
+- **Robust Defenses:** Built-in aggregation mechanisms to defend against attacks, including Krum, Trimmed Mean, Median, FLTrust, FoolsGold, and Time Consistency.
 - **Advanced FL Strategies:** Out-of-the-box support for `FedAvg`, `FedProx` (with proximal regularization), `FedYogi`, and `FedAdam` (server-side adaptive optimizers).
 - **Data Partitioning:** Supports various distribution setups like IID, non-IID (sharded), and Dirichlet (LDA) heterogeneous data splitting.
 - **Differential Privacy (DP):** Integrated DP-SGD wrapper for local client training, allowing custom noise multipliers and gradient clipping.
@@ -94,6 +94,16 @@ python main.py \
   --experiment label_flip_vs_krum
 ```
 
+Launch the S1-S7 time-consistency defense, which maintains per-client temporal
+trust histories and performs soft trust-weighted aggregation:
+
+```bash
+python main.py \
+  --override security.defense.enabled=true \
+  --override security.defense.type=time_consistency \
+  --experiment time_consistency_baseline
+```
+
 ### 4. Automated Grid Sweeps
 
 Easily iterate over multiple configurations to compare defenses against different attacks.
@@ -142,7 +152,7 @@ security:
     malicious_fraction: 0.2
   defense:
     enabled: true
-    type: krum           # krum | trimmed_mean | median | fltrust | foolsgold | none
+    type: krum           # krum | trimmed_mean | median | fltrust | foolsgold | time_consistency | none
 ```
 
 *(You can override ANY key directly from the CLI via `--override key.subkey=value`)*

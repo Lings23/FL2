@@ -255,6 +255,25 @@ class TestTimeConsistencyDefense:
         assert aggregated[1].dtype == np.int64
         assert aggregated[1][0] == 0
 
+    def test_scaled_integer_buffers_do_not_change_signature_length(self):
+        d = self._defense()
+        global_params = [
+            np.zeros(3, dtype=np.float32),
+            np.array([2, 3, 4], dtype=np.int64),
+        ]
+        updates = [
+            ([np.ones(3, dtype=np.float32), np.array([2, 3, 4], dtype=np.int64)], 10),
+            ([np.ones(3, dtype=np.float32) * 2.0, np.array([2.0, 3.0, 4.0], dtype=np.float64)], 10),
+        ]
+
+        d.set_context(1, ["normal", "scaled-buffer"], global_params)
+        aggregated = d.aggregate(updates)
+
+        assert len(d._states["normal"].signature_history[-1]) == 3
+        assert len(d._states["scaled-buffer"].signature_history[-1]) == 3
+        assert aggregated[1].dtype == np.int64
+        assert sum(d.last_client_aggregation_weights.values()) == pytest.approx(1.0)
+
     def test_outlier_update_is_softly_downweighted(self):
         d = self._defense()
         global_params = [np.zeros(4, dtype=np.float32), np.array([0], dtype=np.int64)]
@@ -280,6 +299,27 @@ class TestTimeConsistencyDefense:
         state = d._states["periodic"]
         assert state.feature_history[-1][4] > 0.0
         assert state.feature_history[-1][5] > 0.0
+
+    def test_logs_client_weights_each_round(self, caplog):
+        import logging
+
+        d = self._defense()
+        global_params = [np.zeros(4, dtype=np.float32), np.array([0], dtype=np.int64)]
+        updates = self._updates([
+            np.ones(4, dtype=np.float32) * 0.10,
+            np.ones(4, dtype=np.float32) * 10.0,
+        ])
+
+        with caplog.at_level(logging.INFO, logger="defenses.time_consistency_defense"):
+            d.set_context(1, ["benign", "suspect"], global_params)
+            d.aggregate(updates)
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("TimeConsistency round 1 client weights" in m for m in messages)
+        assert any("cid=benign" in m and "aggregation_weight=" in m for m in messages)
+        assert any("cid=suspect" in m and "effective_weight=" in m for m in messages)
+        assert sum(d.last_client_aggregation_weights.values()) == pytest.approx(1.0)
+
 
 
 # ── Config loader tests ───────────────────────────────────────────────────────

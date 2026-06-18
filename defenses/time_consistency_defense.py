@@ -117,9 +117,11 @@ class TimeConsistencyDefense(BaseDefense):
         self._client_ids: List[str] = []
         self._global_params: List[np.ndarray] | None = None
 
+        self.log_client_weights = bool(params.get("log_client_weights", True))
         self.last_round_metrics: Dict[str, float] = {}
         self.last_client_trusts: Dict[str, float] = {}
         self.last_client_weights: Dict[str, float] = {}
+        self.last_client_aggregation_weights: Dict[str, float] = {}
 
         logger.info(
             "TimeConsistencyDefense init | projection_dim=%d windows=%s",
@@ -146,14 +148,11 @@ class TimeConsistencyDefense(BaseDefense):
             return self._weighted_average(updates)
 
         client_ids = self._resolve_client_ids(len(updates))
-        global_flat = self._flatten(self._global_params)
-        vectors = []
         signatures = []
         norms = []
 
         for params, _ in updates:
-            delta_flat = self._flatten(params) - global_flat
-            vectors.append(delta_flat)
+            delta_flat = self._floating_delta(params, self._global_params)
             signature = self._signature(delta_flat)
             signatures.append(signature)
             norms.append(float(np.linalg.norm(signature)))
@@ -216,6 +215,27 @@ class TimeConsistencyDefense(BaseDefense):
         if len(self._client_ids) == n_updates:
             return list(self._client_ids)
         return [str(i) for i in range(n_updates)]
+
+    def _floating_delta(
+        self,
+        params: Sequence[np.ndarray],
+        reference_params: Sequence[np.ndarray],
+    ) -> np.ndarray:
+        """Flatten deltas using the global model's floating tensors as template.
+
+        Some attacks scale every state-dict entry and can accidentally convert
+        integer buffers such as BatchNorm ``num_batches_tracked`` to floating
+        arrays. If we flatten by the submitted dtype, those buffers appear only
+        for malicious clients and make temporal signatures different lengths.
+        """
+        chunks = []
+        for param, ref in zip(params, reference_params):
+            if not np.issubdtype(ref.dtype, np.floating):
+                continue
+            chunks.append(param.astype(np.float32).ravel() - ref.astype(np.float32).ravel())
+        if not chunks:
+            return np.array([], dtype=np.float32)
+        return np.concatenate(chunks)
 
     def _get_state(self, cid: str, default_initial_trust: float | None = None) -> ClientTrustState:
         current_round = self._server_round
@@ -580,8 +600,18 @@ class TimeConsistencyDefense(BaseDefense):
     ) -> None:
         trusts = np.asarray(trust_scores, dtype=np.float32)
         weights = np.asarray(effective_weights, dtype=np.float32)
+        total_weight = float(np.sum(weights))
+        if total_weight <= self.eps or not np.isfinite(total_weight):
+            normalized_weights = np.ones_like(weights) / max(1, len(weights))
+        else:
+            normalized_weights = weights / total_weight
+
         self.last_client_trusts = {cid: float(score) for cid, score in zip(client_ids, trust_scores)}
         self.last_client_weights = {cid: float(weight) for cid, weight in zip(client_ids, effective_weights)}
+        self.last_client_aggregation_weights = {
+            cid: float(weight) for cid, weight in zip(client_ids, normalized_weights)
+        }
+        self._log_client_weights(client_ids, trust_scores, effective_weights, normalized_weights)
         self.last_round_metrics = {
             "time_consistency_trust_mean": float(np.mean(trusts)) if trusts.size else 0.0,
             "time_consistency_trust_min": float(np.min(trusts)) if trusts.size else 0.0,
@@ -589,6 +619,31 @@ class TimeConsistencyDefense(BaseDefense):
             "time_consistency_effective_weight_min": float(np.min(weights)) if weights.size else 0.0,
             "time_consistency_effective_weight_max": float(np.max(weights)) if weights.size else 0.0,
         }
+
+    def _log_client_weights(
+        self,
+        client_ids: Sequence[str],
+        trust_scores: Sequence[float],
+        effective_weights: Sequence[float],
+        normalized_weights: Sequence[float],
+    ) -> None:
+        if not self.log_client_weights:
+            return
+
+        rows = sorted(
+            zip(client_ids, trust_scores, effective_weights, normalized_weights),
+            key=lambda row: row[3],
+        )
+        details = "; ".join(
+            f"cid={cid} trust={trust:.4f} effective_weight={effective:.4f} "
+            f"aggregation_weight={agg:.4f}"
+            for cid, trust, effective, agg in rows
+        )
+        logger.info(
+            "TimeConsistency round %d client weights | %s",
+            self._server_round,
+            details,
+        )
 
     def _trim(self, values: List) -> None:
         overflow = len(values) - self.max_history

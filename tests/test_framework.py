@@ -289,6 +289,64 @@ class TestTimeConsistencyDefense:
         assert d.last_client_weights["bad"] < d.last_client_weights["good-a"]
         assert d.last_round_metrics["time_consistency_trust_min"] <= d.last_round_metrics["time_consistency_trust_mean"]
 
+    def test_model_replacement_delta_is_clipped(self):
+        global_params = [np.zeros(4, dtype=np.float32), np.array([0], dtype=np.int64)]
+        vectors = [np.ones(4, dtype=np.float32) * 0.10 for _ in range(6)]
+        vectors += [np.ones(4, dtype=np.float32) * 1.00 for _ in range(4)]
+        updates = self._updates(vectors)
+        weights = [1.0] * len(updates)
+
+        clipped_defense = self._defense(
+            enable_delta_clipping=True,
+            enable_trust_caps=False,
+            norm_clip_factor=2.0,
+        )
+        clipped_defense.set_context(1, [str(i) for i in range(len(updates))], global_params)
+        clipped = clipped_defense._aggregate_with_effective_weights(updates, weights)
+
+        plain_defense = self._defense(enable_delta_clipping=False, enable_trust_caps=False)
+        plain_defense.set_context(1, [str(i) for i in range(len(updates))], global_params)
+        plain = plain_defense._aggregate_with_effective_weights(updates, weights)
+
+        assert clipped_defense._last_clipped_clients == 4
+        assert clipped_defense._last_clip_norm == pytest.approx(0.4, abs=1e-6)
+        assert np.linalg.norm(clipped[0]) < np.linalg.norm(plain[0]) * 0.5
+
+    def test_low_trust_clients_are_capped(self):
+        d = self._defense(low_trust_weight_cap=0.01)
+        constrained = d._apply_trust_weight_constraints(
+            trust_scores=[0.30, 0.80, 0.80],
+            effective_weights=[100.0, 1.0, 1.0],
+        )
+        normalized = np.asarray(constrained) / np.sum(constrained)
+
+        assert normalized[0] <= 0.01 + 1e-9
+        assert d._last_capped_clients == 1
+        assert d._last_quarantined_clients == 0
+
+    def test_quarantined_clients_get_zero_weight(self):
+        d = self._defense(quarantine_threshold=0.25)
+        constrained = d._apply_trust_weight_constraints(
+            trust_scores=[0.20, 0.80, 0.80],
+            effective_weights=[100.0, 1.0, 1.0],
+        )
+        normalized = np.asarray(constrained) / np.sum(constrained)
+
+        assert normalized[0] == pytest.approx(0.0)
+        assert d._last_quarantined_clients == 1
+
+    def test_all_quarantined_falls_back_safely(self):
+        d = self._defense(quarantine_threshold=0.9)
+        constrained = d._apply_trust_weight_constraints(
+            trust_scores=[0.10, 0.20, 0.30],
+            effective_weights=[1.0, 2.0, 3.0],
+        )
+        normalized = np.asarray(constrained) / np.sum(constrained)
+
+        assert np.isfinite(normalized).all()
+        assert normalized.sum() == pytest.approx(1.0)
+        np.testing.assert_allclose(normalized, np.array([1.0, 2.0, 3.0]) / 6.0)
+
     def test_periodic_magnitude_pattern_produces_frequency_signal(self):
         d = self._defense(windows={"instant": 1, "short": 3, "mid": 4, "long": 6})
         global_params = [np.zeros(4, dtype=np.float32), np.array([0], dtype=np.int64)]

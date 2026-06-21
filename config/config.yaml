@@ -102,6 +102,14 @@ security:
     #   sigmoid_scale: 8.0
     #   sigmoid_center: 0.5
     #   min_effective_weight: 1e-4
+    #   enable_delta_clipping: true
+    #   norm_clip_mad_k: 2.5
+    #   norm_clip_factor: 2.0
+    #   enable_trust_caps: true
+    #   low_trust_threshold: 0.35
+    #   quarantine_threshold: 0.25
+    #   low_trust_weight_cap: 0.01
+    #   quarantine_weight: 0.0
     #   log_client_weights: true
     custom_params: {}
 

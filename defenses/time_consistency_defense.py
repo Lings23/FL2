@@ -9,7 +9,7 @@ matches FedSec's existing Flower/PyTorch aggregation surface:
 * per-client histories are keyed by the real Flower client id;
 * high-dimensional updates are reduced to deterministic signatures for
   temporal feature extraction;
-* aggregation remains a soft weighted update, never a hard client drop.
+* aggregation combines soft trust weighting with hard impact constraints.
 """
 
 from __future__ import annotations
@@ -80,6 +80,15 @@ class TimeConsistencyDefense(BaseDefense):
         self.sigmoid_center = float(params.get("sigmoid_center", 0.5))
         self.min_effective_weight = float(params.get("min_effective_weight", 1e-4))
 
+        self.enable_delta_clipping = bool(params.get("enable_delta_clipping", True))
+        self.norm_clip_mad_k = float(params.get("norm_clip_mad_k", 2.5))
+        self.norm_clip_factor = float(params.get("norm_clip_factor", 2.0))
+        self.enable_trust_caps = bool(params.get("enable_trust_caps", True))
+        self.low_trust_threshold = float(params.get("low_trust_threshold", 0.35))
+        self.quarantine_threshold = float(params.get("quarantine_threshold", 0.25))
+        self.low_trust_weight_cap = float(params.get("low_trust_weight_cap", 0.01))
+        self.quarantine_weight = float(params.get("quarantine_weight", 0.0))
+
         self.trust_score_scale = float(params.get("trust_score_scale", 4.0))
         self.direction_threshold = float(params.get("direction_threshold", 0.65))
         self.direction_window = int(params.get("direction_window", 3))
@@ -122,6 +131,12 @@ class TimeConsistencyDefense(BaseDefense):
         self.last_client_trusts: Dict[str, float] = {}
         self.last_client_weights: Dict[str, float] = {}
         self.last_client_aggregation_weights: Dict[str, float] = {}
+        self._last_clip_norm: float = 0.0
+        self._last_clipped_clients: int = 0
+        self._last_clipped_mask: List[bool] = []
+        self._last_quarantined_clients: int = 0
+        self._last_capped_clients: int = 0
+        self._last_constraint_tags: List[str] = []
 
         logger.info(
             "TimeConsistencyDefense init | projection_dim=%d windows=%s",
@@ -192,6 +207,7 @@ class TimeConsistencyDefense(BaseDefense):
             effective_weight = trust_weight * max(1, int(updates[idx][1]))
             effective_weights.append(effective_weight)
 
+        effective_weights = self._apply_trust_weight_constraints(trust_scores, effective_weights)
         aggregated = self._aggregate_with_effective_weights(updates, effective_weights)
         self._record_round_metrics(client_ids, trust_scores, effective_weights)
         return aggregated
@@ -568,22 +584,34 @@ class TimeConsistencyDefense(BaseDefense):
         effective_weights: Sequence[float],
     ) -> List[np.ndarray]:
         weights = np.asarray(effective_weights, dtype=np.float64)
-        weights = np.maximum(weights, self.min_effective_weight)
+        weights = np.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0)
+        weights = np.maximum(weights, 0.0)
         total = float(weights.sum())
         if total <= self.eps or not np.isfinite(total):
             weights = np.ones(len(updates), dtype=np.float64)
             total = float(weights.sum())
 
         assert self._global_params is not None
+        delta_norms = self._delta_norms(updates)
+        clip_norm = self._compute_clip_norm(delta_norms)
+        self._last_clip_norm = 0.0 if not np.isfinite(clip_norm) else float(clip_norm)
+        self._last_clipped_mask = [
+            bool(np.isfinite(clip_norm) and norm > clip_norm + self.eps)
+            for norm in delta_norms
+        ]
+        self._last_clipped_clients = int(sum(self._last_clipped_mask))
+
         result: List[np.ndarray] = []
         for param_idx, global_param in enumerate(self._global_params):
             dtype = global_param.dtype
             if np.issubdtype(dtype, np.floating):
                 delta = np.zeros_like(global_param, dtype=np.float32)
-                for weight, (params, _) in zip(weights, updates):
-                    delta += (weight / total) * (
+                for weight, norm, (params, _) in zip(weights, delta_norms, updates):
+                    client_delta = (
                         params[param_idx].astype(np.float32) - global_param.astype(np.float32)
                     )
+                    client_delta = self._clip_delta(client_delta, float(norm), clip_norm)
+                    delta += (weight / total) * client_delta
                 result.append((global_param.astype(np.float32) + delta).astype(dtype, copy=False))
             else:
                 acc = np.zeros_like(global_param, dtype=np.float32)
@@ -591,6 +619,126 @@ class TimeConsistencyDefense(BaseDefense):
                     acc += (weight / total) * params[param_idx].astype(np.float32)
                 result.append(np.round(acc).astype(dtype))
         return result
+
+    def _delta_norms(self, updates: UpdateList) -> np.ndarray:
+        assert self._global_params is not None
+        norms = []
+        for params, _ in updates:
+            total_sq = 0.0
+            for param, global_param in zip(params, self._global_params):
+                if not np.issubdtype(global_param.dtype, np.floating):
+                    continue
+                diff = param.astype(np.float32) - global_param.astype(np.float32)
+                total_sq += float(np.sum(diff * diff))
+            norms.append(math.sqrt(max(0.0, total_sq)))
+        return np.asarray(norms, dtype=np.float64)
+
+    def _compute_clip_norm(self, norms: np.ndarray) -> float:
+        if not self.enable_delta_clipping:
+            return float("inf")
+
+        finite = norms[np.isfinite(norms)]
+        if finite.size == 0:
+            return float("inf")
+
+        median = float(np.median(finite))
+        mad = float(np.median(np.abs(finite - median)))
+        if mad > self.eps:
+            clip_norm = median + self.norm_clip_mad_k * 1.4826 * mad
+        else:
+            clip_norm = self.norm_clip_factor * median
+        return float(max(0.0, clip_norm))
+
+    def _clip_delta(self, delta: np.ndarray, norm: float, clip_norm: float) -> np.ndarray:
+        if not self.enable_delta_clipping or not np.isfinite(clip_norm):
+            return delta
+        if norm <= clip_norm + self.eps:
+            return delta
+        if norm <= self.eps:
+            return delta
+        return delta * float(clip_norm / (norm + self.eps))
+
+    def _apply_trust_weight_constraints(
+        self,
+        trust_scores: Sequence[float],
+        effective_weights: Sequence[float],
+    ) -> List[float]:
+        self._last_quarantined_clients = 0
+        self._last_capped_clients = 0
+        self._last_constraint_tags = ["" for _ in effective_weights]
+
+        weights = np.asarray(effective_weights, dtype=np.float64)
+        weights = np.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0)
+        weights = np.maximum(weights, 0.0)
+        total = float(weights.sum())
+        if (
+            not self.enable_trust_caps
+            or total <= self.eps
+            or not np.isfinite(total)
+            or len(weights) == 0
+        ):
+            return weights.tolist()
+
+        trusts = np.asarray(trust_scores, dtype=np.float64)
+        normalized = weights / total
+        constrained = normalized.copy()
+        fixed = np.zeros(len(weights), dtype=bool)
+        free = np.ones(len(weights), dtype=bool)
+
+        quarantined = trusts < self.quarantine_threshold
+        if quarantined.any():
+            constrained[quarantined] = max(0.0, self.quarantine_weight)
+            fixed[quarantined] = True
+            free[quarantined] = False
+
+        capped = (trusts >= self.quarantine_threshold) & (trusts < self.low_trust_threshold)
+        if capped.any():
+            capped_values = np.minimum(constrained[capped], max(0.0, self.low_trust_weight_cap))
+            constrained[capped] = capped_values
+            fixed[capped] = True
+            free[capped] = False
+
+        fixed_sum = float(constrained[fixed].sum())
+        if fixed_sum <= self.eps and not free.any():
+            self._last_constraint_tags = ["" for _ in effective_weights]
+            return weights.tolist()
+
+        if free.any():
+            remaining = max(0.0, 1.0 - fixed_sum)
+            free_base_sum = float(normalized[free].sum())
+            if remaining <= self.eps:
+                constrained[free] = 0.0
+            elif free_base_sum > self.eps:
+                constrained[free] = normalized[free] / free_base_sum * remaining
+            else:
+                constrained[free] = remaining / int(free.sum())
+        else:
+            constrained_sum = float(constrained.sum())
+            if constrained_sum <= self.eps:
+                self._last_constraint_tags = ["" for _ in effective_weights]
+                return weights.tolist()
+            constrained = constrained / constrained_sum
+
+        final_sum = float(constrained.sum())
+        if final_sum <= self.eps or not np.isfinite(final_sum):
+            self._last_constraint_tags = ["" for _ in effective_weights]
+            return weights.tolist()
+
+        constrained = constrained / final_sum
+        self._last_quarantined_clients = int(
+            np.count_nonzero(quarantined & (constrained <= self.eps))
+        )
+        self._last_capped_clients = int(np.count_nonzero(capped))
+        tags = []
+        for is_quarantined, is_capped in zip(quarantined, capped):
+            if is_quarantined:
+                tags.append("quarantined")
+            elif is_capped:
+                tags.append("capped")
+            else:
+                tags.append("")
+        self._last_constraint_tags = tags
+        return (constrained * total).tolist()
 
     def _record_round_metrics(
         self,
@@ -618,6 +766,10 @@ class TimeConsistencyDefense(BaseDefense):
             "time_consistency_trust_max": float(np.max(trusts)) if trusts.size else 0.0,
             "time_consistency_effective_weight_min": float(np.min(weights)) if weights.size else 0.0,
             "time_consistency_effective_weight_max": float(np.max(weights)) if weights.size else 0.0,
+            "time_consistency_clipped_clients": float(self._last_clipped_clients),
+            "time_consistency_clip_norm": float(self._last_clip_norm),
+            "time_consistency_quarantined_clients": float(self._last_quarantined_clients),
+            "time_consistency_capped_clients": float(self._last_capped_clients),
         }
 
     def _log_client_weights(
@@ -631,18 +783,25 @@ class TimeConsistencyDefense(BaseDefense):
             return
 
         rows = sorted(
-            zip(client_ids, trust_scores, effective_weights, normalized_weights),
+            zip(client_ids, trust_scores, effective_weights, normalized_weights, range(len(client_ids))),
             key=lambda row: row[3],
         )
-        details = "; ".join(
-            f"cid={cid} trust={trust:.4f} effective_weight={effective:.4f} "
-            f"aggregation_weight={agg:.4f}"
-            for cid, trust, effective, agg in rows
-        )
+        details = []
+        for cid, trust, effective, agg, idx in rows:
+            flags = []
+            if idx < len(self._last_constraint_tags) and self._last_constraint_tags[idx]:
+                flags.append(self._last_constraint_tags[idx])
+            if idx < len(self._last_clipped_mask) and self._last_clipped_mask[idx]:
+                flags.append("clipped")
+            suffix = f" flags={','.join(flags)}" if flags else ""
+            details.append(
+                f"cid={cid} trust={trust:.4f} effective_weight={effective:.4f} "
+                f"aggregation_weight={agg:.4f}{suffix}"
+            )
         logger.info(
             "TimeConsistency round %d client weights | %s",
             self._server_round,
-            details,
+            "; ".join(details),
         )
 
     def _trim(self, values: List) -> None:

@@ -7,11 +7,13 @@ Core unit tests — run with:  pytest tests/ -v
 from __future__ import annotations
 
 import sys
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
+from PIL import Image
 from torch.utils.data import DataLoader, TensorDataset
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -71,6 +73,31 @@ class TestFederatedPartitioner:
         assert len(train_sub) > 0
         assert len(val_sub) > 0
         assert len(train_sub) + len(val_sub) <= 30  # ~100/4
+
+
+class TestDatasetLoading:
+    def test_dataset_config_defaults_to_huggingface(self):
+        from config.config_loader import DatasetConfig
+
+        assert DatasetConfig().download_source == "huggingface"
+
+    def test_get_dataset_accepts_torchvision_source(self, tmp_path):
+        from data.dataset import CIFAR10Dataset, get_dataset
+
+        dataset = get_dataset("cifar10", str(tmp_path), download_source="torchvision")
+        assert isinstance(dataset, CIFAR10Dataset)
+        assert dataset.download_source == "torchvision"
+
+    def test_huggingface_cifar10_decodes_image_bytes(self):
+        from data.dataset import HuggingFaceCIFAR10Dataset
+
+        buf = BytesIO()
+        Image.new("RGB", (32, 32), color=(255, 0, 0)).save(buf, format="PNG")
+
+        img = HuggingFaceCIFAR10Dataset._decode_image({"bytes": buf.getvalue()})
+
+        assert img.mode == "RGB"
+        assert img.size == (32, 32)
 
 
 # ── Model factory tests ───────────────────────────────────────────────────────

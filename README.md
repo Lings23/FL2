@@ -134,6 +134,7 @@ federation:
 
 dataset:
   name: cifar10          # cifar10 | mnist | femnist
+  download_source: huggingface # cifar10 only: huggingface | torchvision
   partition: dirichlet   # iid | non_iid | dirichlet
   dirichlet_alpha: 0.5   # degree of heterogeneity
 
@@ -156,6 +157,10 @@ security:
 ```
 
 *(You can override ANY key directly from the CLI via `--override key.subkey=value`)*
+
+CIFAR-10 defaults to Hugging Face Parquet files under `data/huggingface_cifar10/`.
+Install the updated requirements so `pyarrow` is available, or switch back with
+`--override dataset.download_source=torchvision`.
 
 ---
 

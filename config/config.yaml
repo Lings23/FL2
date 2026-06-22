@@ -23,6 +23,7 @@ federation:
 dataset:
   name: "cifar10"               # cifar10 | mnist | femnist
   data_dir: "data/"
+  download_source: "huggingface" # huggingface | torchvision
   partition: "iid"              # iid | non_iid | dirichlet
   dirichlet_alpha: 0.5          # used when partition=dirichlet
   num_classes: 10

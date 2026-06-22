@@ -18,19 +18,22 @@ Extension interface:
 
 from __future__ import annotations
 
+import io
 import os
 import random
 import logging
+import urllib.request
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import datasets, transforms
 from torchvision.transforms import Compose
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +84,9 @@ class BaseDataset(ABC):
         input_shape  -> Tuple[int, ...]
     """
 
-    def __init__(self, data_dir: str = "data/"):
+    def __init__(self, data_dir: str = "data/", download_source: str = "huggingface"):
         self.data_dir = Path(data_dir)
+        self.download_source = download_source.lower()
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -114,16 +118,106 @@ class BaseDataset(ABC):
 class CIFAR10Dataset(BaseDataset):
     num_classes = 10
     input_shape = (3, 32, 32)
+    HF_REPO = "uoft-cs/cifar10"
+    HF_BASE_URL = "https://huggingface.co/datasets/uoft-cs/cifar10/resolve/main/plain_text"
+    HF_FILES = {
+        "train": "train-00000-of-00001.parquet",
+        "test": "test-00000-of-00001.parquet",
+    }
 
     def load_train(self) -> Dataset:
-        return datasets.CIFAR10(
-            root=self.data_dir, train=True, download=True,
-            transform=cifar10_transforms(train=True))
+        if self.download_source == "huggingface":
+            return HuggingFaceCIFAR10Dataset(
+                self.data_dir, split="train", transform=cifar10_transforms(train=True)
+            )
+        if self.download_source == "torchvision":
+            return datasets.CIFAR10(
+                root=self.data_dir, train=True, download=True,
+                transform=cifar10_transforms(train=True))
+        raise ValueError("Unsupported CIFAR-10 download_source: "
+                         f"{self.download_source!r}. Use 'huggingface' or 'torchvision'.")
 
     def load_test(self) -> Dataset:
-        return datasets.CIFAR10(
-            root=self.data_dir, train=False, download=True,
-            transform=cifar10_transforms(train=False))
+        if self.download_source == "huggingface":
+            return HuggingFaceCIFAR10Dataset(
+                self.data_dir, split="test", transform=cifar10_transforms(train=False)
+            )
+        if self.download_source == "torchvision":
+            return datasets.CIFAR10(
+                root=self.data_dir, train=False, download=True,
+                transform=cifar10_transforms(train=False))
+        raise ValueError("Unsupported CIFAR-10 download_source: "
+                         f"{self.download_source!r}. Use 'huggingface' or 'torchvision'.")
+
+
+class HuggingFaceCIFAR10Dataset(Dataset):
+    """CIFAR-10 loader backed by the Hugging Face Parquet dataset."""
+
+    def __init__(self, data_dir: Path, split: str, transform=None):
+        if split not in CIFAR10Dataset.HF_FILES:
+            raise ValueError(f"Unknown CIFAR-10 split {split!r}")
+        self.root = Path(data_dir) / "huggingface_cifar10"
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.split = split
+        self.transform = transform
+        self.parquet_path = self.root / CIFAR10Dataset.HF_FILES[split]
+        self._ensure_downloaded()
+
+        try:
+            import pandas as pd
+            self.frame = pd.read_parquet(self.parquet_path)
+        except ImportError as exc:
+            raise ImportError(
+                "Hugging Face CIFAR-10 uses Parquet files. Install pyarrow with "
+                "`pip install pyarrow` or set `dataset.download_source=torchvision`."
+            ) from exc
+
+        if "label" not in self.frame or "img" not in self.frame:
+            raise ValueError(
+                "Unexpected Hugging Face CIFAR-10 schema; expected 'img' and 'label' columns."
+            )
+        self.targets = self.frame["label"].astype(int).tolist()
+
+    def _ensure_downloaded(self) -> None:
+        if self.parquet_path.exists() and self.parquet_path.stat().st_size > 0:
+            return
+        url = f"{CIFAR10Dataset.HF_BASE_URL}/{self.parquet_path.name}"
+        logger.info("Downloading CIFAR-10 %s split from Hugging Face: %s", self.split, url)
+        try:
+            urllib.request.urlretrieve(url, self.parquet_path)
+        except Exception as exc:
+            if self.parquet_path.exists():
+                self.parquet_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                "Failed to download CIFAR-10 from Hugging Face. "
+                "Check network access or set `dataset.download_source=torchvision`."
+            ) from exc
+
+    def __len__(self) -> int:
+        return len(self.frame)
+
+    def __getitem__(self, idx: int):
+        row = self.frame.iloc[idx]
+        img = self._decode_image(row["img"])
+        label = int(row["label"])
+        if self.transform:
+            img = self.transform(img)
+        return img, label
+
+    @staticmethod
+    def _decode_image(value: Any) -> Image.Image:
+        if isinstance(value, Image.Image):
+            return value.convert("RGB")
+        if isinstance(value, dict):
+            data = value.get("bytes")
+            if data is not None:
+                return Image.open(io.BytesIO(data)).convert("RGB")
+            path = value.get("path")
+            if path:
+                return Image.open(path).convert("RGB")
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return Image.open(io.BytesIO(bytes(value))).convert("RGB")
+        raise TypeError(f"Unsupported Hugging Face CIFAR-10 image value: {type(value)!r}")
 
 
 class MNISTDataset(BaseDataset):
@@ -325,8 +419,8 @@ DATASET_REGISTRY: Dict[str, type] = {
 }
 
 
-def get_dataset(name: str, data_dir: str = "data/") -> BaseDataset:
+def get_dataset(name: str, data_dir: str = "data/", download_source: str = "huggingface") -> BaseDataset:
     name = name.lower()
     if name not in DATASET_REGISTRY:
         raise ValueError(f"Unknown dataset {name!r}. Available: {list(DATASET_REGISTRY)}")
-    return DATASET_REGISTRY[name](data_dir=data_dir)
+    return DATASET_REGISTRY[name](data_dir=data_dir, download_source=download_source)

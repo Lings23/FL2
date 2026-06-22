@@ -39,6 +39,7 @@ class FederationConfig:
 class DatasetConfig:
     name: str = "cifar10"           # cifar10 | mnist | femnist
     data_dir: str = "data/"
+    download_source: str = "huggingface"  # huggingface | torchvision
     partition: str = "iid"          # iid | non_iid | dirichlet
     dirichlet_alpha: float = 0.5
     num_classes: int = 10

@@ -61,7 +61,11 @@ def build_data_pipeline(cfg: Config):
     (train_loader, val_loader) pair for each cid is captured per-actor.
     See make_client_fn() in fl_client.py for how this is enforced.
     """
-    dataset = get_dataset(cfg.dataset.name, cfg.dataset.data_dir)
+    dataset = get_dataset(
+        cfg.dataset.name,
+        cfg.dataset.data_dir,
+        download_source=cfg.dataset.download_source,
+    )
     train_ds = dataset.load_train()
 
     partitioner = FederatedPartitioner(

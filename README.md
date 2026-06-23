@@ -158,8 +158,10 @@ security:
 
 *(You can override ANY key directly from the CLI via `--override key.subkey=value`)*
 
-CIFAR-10 defaults to Hugging Face Parquet files under `data/huggingface_cifar10/`.
-Install the updated requirements so `pyarrow` is available, or switch back with
+CIFAR-10 defaults to Hugging Face download. On first use it reads the Parquet
+split and writes a tensor cache under `data/huggingface_cifar10/cache/`; later
+runs load `train.pt`/`test.pt` directly. Install the updated requirements so
+`pyarrow` is available for the first cache build, or switch back with
 `--override dataset.download_source=torchvision`.
 
 ---

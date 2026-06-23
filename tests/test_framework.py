@@ -99,6 +99,29 @@ class TestDatasetLoading:
         assert img.mode == "RGB"
         assert img.size == (32, 32)
 
+    def test_huggingface_cifar10_uses_local_tensor_cache(self, tmp_path):
+        from data.dataset import HuggingFaceCIFAR10Dataset
+
+        cache_dir = tmp_path / "huggingface_cifar10" / "cache"
+        cache_dir.mkdir(parents=True)
+        torch.save(
+            {
+                "version": 1,
+                "images": torch.zeros((2, 32, 32, 3), dtype=torch.uint8),
+                "labels": torch.tensor([3, 7], dtype=torch.long),
+            },
+            cache_dir / "train.pt",
+        )
+
+        dataset = HuggingFaceCIFAR10Dataset(tmp_path, split="train", transform=None)
+        img, label = dataset[1]
+
+        assert len(dataset) == 2
+        assert dataset.targets == [3, 7]
+        assert img.mode == "RGB"
+        assert img.size == (32, 32)
+        assert label == 7
+
 
 # ── Model factory tests ───────────────────────────────────────────────────────
 

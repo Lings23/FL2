@@ -151,32 +151,62 @@ class CIFAR10Dataset(BaseDataset):
 
 
 class HuggingFaceCIFAR10Dataset(Dataset):
-    """CIFAR-10 loader backed by the Hugging Face Parquet dataset."""
+    """CIFAR-10 loader backed by Hugging Face download and local tensor cache."""
+
+    CACHE_VERSION = 1
 
     def __init__(self, data_dir: Path, split: str, transform=None):
         if split not in CIFAR10Dataset.HF_FILES:
             raise ValueError(f"Unknown CIFAR-10 split {split!r}")
         self.root = Path(data_dir) / "huggingface_cifar10"
         self.root.mkdir(parents=True, exist_ok=True)
+        self.cache_dir = self.root / "cache"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.split = split
         self.transform = transform
         self.parquet_path = self.root / CIFAR10Dataset.HF_FILES[split]
+        self.cache_path = self.cache_dir / f"{split}.pt"
+        self._load_or_build_cache()
+
+    def _load_or_build_cache(self) -> None:
+        if self.cache_path.exists() and self.cache_path.stat().st_size > 0:
+            try:
+                self._load_cache()
+                return
+            except Exception as exc:
+                logger.warning("Ignoring invalid CIFAR-10 cache %s: %s", self.cache_path, exc)
+                self.cache_path.unlink(missing_ok=True)
+
         self._ensure_downloaded()
+        self._build_cache_from_parquet()
+        self._load_cache()
 
+    def _load_cache(self) -> None:
+        cache = self._torch_load(self.cache_path)
+        if not isinstance(cache, dict) or "images" not in cache or "labels" not in cache:
+            raise ValueError("cache must contain images and labels")
+        if cache.get("version") != self.CACHE_VERSION:
+            raise ValueError("cache version mismatch")
+
+        images = cache["images"]
+        labels = cache["labels"]
+        if not isinstance(images, torch.Tensor) or not isinstance(labels, torch.Tensor):
+            raise ValueError("cache images and labels must be torch tensors")
+        if images.dtype != torch.uint8 or images.ndim != 4 or tuple(images.shape[1:]) != (32, 32, 3):
+            raise ValueError("cache images must be uint8 tensors with shape [N, 32, 32, 3]")
+        if labels.ndim != 1 or labels.shape[0] != images.shape[0]:
+            raise ValueError("cache labels must be a 1-D tensor aligned with images")
+
+        self.images = images.contiguous()
+        self.labels = labels.to(dtype=torch.long).contiguous()
+        self.targets = self.labels.tolist()
+
+    @staticmethod
+    def _torch_load(path: Path):
         try:
-            import pandas as pd
-            self.frame = pd.read_parquet(self.parquet_path)
-        except ImportError as exc:
-            raise ImportError(
-                "Hugging Face CIFAR-10 uses Parquet files. Install pyarrow with "
-                "`pip install pyarrow` or set `dataset.download_source=torchvision`."
-            ) from exc
-
-        if "label" not in self.frame or "img" not in self.frame:
-            raise ValueError(
-                "Unexpected Hugging Face CIFAR-10 schema; expected 'img' and 'label' columns."
-            )
-        self.targets = self.frame["label"].astype(int).tolist()
+            return torch.load(path, map_location="cpu", weights_only=True)
+        except TypeError:
+            return torch.load(path, map_location="cpu")
 
     def _ensure_downloaded(self) -> None:
         if self.parquet_path.exists() and self.parquet_path.stat().st_size > 0:
@@ -193,16 +223,55 @@ class HuggingFaceCIFAR10Dataset(Dataset):
                 "Check network access or set `dataset.download_source=torchvision`."
             ) from exc
 
+    def _build_cache_from_parquet(self) -> None:
+        try:
+            import pandas as pd
+            frame = pd.read_parquet(self.parquet_path)
+        except ImportError as exc:
+            raise ImportError(
+                "Hugging Face CIFAR-10 uses Parquet files. Install pyarrow with "
+                "`pip install pyarrow` or set `dataset.download_source=torchvision`."
+            ) from exc
+
+        if "label" not in frame or "img" not in frame:
+            raise ValueError(
+                "Unexpected Hugging Face CIFAR-10 schema; expected 'img' and 'label' columns."
+            )
+
+        logger.info("Building local CIFAR-10 cache: %s", self.cache_path)
+        images = torch.empty((len(frame), 32, 32, 3), dtype=torch.uint8)
+        for idx, value in enumerate(frame["img"]):
+            img = self._decode_image(value)
+            if img.size != (32, 32):
+                img = img.resize((32, 32), Image.BILINEAR)
+            arr = np.asarray(img, dtype=np.uint8)
+            if arr.shape != (32, 32, 3):
+                raise ValueError(f"Unexpected CIFAR-10 image shape {arr.shape}")
+            images[idx] = torch.from_numpy(arr.copy())
+
+        cache = {
+            "version": self.CACHE_VERSION,
+            "images": images,
+            "labels": torch.as_tensor(frame["label"].astype(int).to_numpy(), dtype=torch.long),
+        }
+        tmp_path = self.cache_path.with_suffix(".tmp")
+        torch.save(cache, tmp_path)
+        tmp_path.replace(self.cache_path)
+
     def __len__(self) -> int:
-        return len(self.frame)
+        return int(self.labels.shape[0])
 
     def __getitem__(self, idx: int):
-        row = self.frame.iloc[idx]
-        img = self._decode_image(row["img"])
-        label = int(row["label"])
+        img = self._image_from_cache(self.images[idx])
+        label = int(self.labels[idx].item())
         if self.transform:
             img = self.transform(img)
         return img, label
+
+    @staticmethod
+    def _image_from_cache(value: torch.Tensor) -> Image.Image:
+        arr = value.cpu().numpy()
+        return Image.fromarray(arr).convert("RGB")
 
     @staticmethod
     def _decode_image(value: Any) -> Image.Image:

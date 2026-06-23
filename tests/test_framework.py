@@ -608,10 +608,83 @@ class TestAttackDatasets:
             "dba_scale_update": True,
             "dba_boost_factor": 3.0,
         })()
-        client._global_params_cache = [np.array([1.0, 2.0], dtype=np.float32)]
-        local = [np.array([2.0, 4.0], dtype=np.float32)]
+        client._global_params_cache = [
+            np.array([1.0, 2.0], dtype=np.float32),
+            np.array(5, dtype=np.int64),
+        ]
+        local = [
+            np.array([2.0, 4.0], dtype=np.float32),
+            np.array(9, dtype=np.int64),
+        ]
         scaled = client.on_after_fit(local, {})
         np.testing.assert_allclose(scaled[0], np.array([4.0, 8.0], dtype=np.float32))
+        assert scaled[1].dtype == np.int64
+        assert scaled[1].shape == ()
+        assert scaled[1].item() == 9
+
+    def test_gaussian_noise_preserves_scalar_int_buffers(self):
+        from attacks.attack_client import GaussianNoiseClient
+
+        client = GaussianNoiseClient.__new__(GaussianNoiseClient)
+        client.client_id = 0
+        params = [
+            np.zeros((2, 2), dtype=np.float32),
+            np.array(3, dtype=np.int64),
+            np.array(1.0, dtype=np.float32),
+        ]
+
+        noisy = client.on_after_fit(params, {})
+
+        assert noisy[0].dtype == np.float32
+        assert noisy[0].shape == (2, 2)
+        assert noisy[1].dtype == np.int64
+        assert noisy[1].shape == ()
+        assert noisy[1].item() == 3
+        assert noisy[2].dtype == np.float32
+        assert noisy[2].shape == ()
+
+    def test_byzantine_preserves_scalar_int_buffers(self):
+        from attacks.attack_client import ByzantineClient
+
+        client = ByzantineClient.__new__(ByzantineClient)
+        client.client_id = 0
+        params = [
+            np.zeros((2, 2), dtype=np.float32),
+            np.array(3, dtype=np.int64),
+            np.array(1.0, dtype=np.float32),
+        ]
+
+        random_params = client.on_after_fit(params, {})
+
+        assert random_params[0].dtype == np.float32
+        assert random_params[0].shape == (2, 2)
+        assert random_params[1].dtype == np.int64
+        assert random_params[1].shape == ()
+        assert random_params[1].item() == 3
+        assert random_params[2].dtype == np.float32
+        assert random_params[2].shape == ()
+
+    def test_model_replacement_preserves_scalar_int_buffers(self):
+        from attacks.attack_client import ModelReplacementClient
+
+        client = ModelReplacementClient.__new__(ModelReplacementClient)
+        client.client_id = 0
+        client.boost_factor = 4.0
+        client._global_params_cache = [
+            np.array([1.0, 2.0], dtype=np.float32),
+            np.array(5, dtype=np.int64),
+        ]
+        local = [
+            np.array([2.0, 4.0], dtype=np.float32),
+            np.array(9, dtype=np.int64),
+        ]
+
+        scaled = client.on_after_fit(local, {})
+
+        np.testing.assert_allclose(scaled[0], np.array([5.0, 10.0], dtype=np.float32))
+        assert scaled[1].dtype == np.int64
+        assert scaled[1].shape == ()
+        assert scaled[1].item() == 9
 
     def test_dba_registered(self):
         from attacks.attack_client import DBAClient, get_attack_client_class

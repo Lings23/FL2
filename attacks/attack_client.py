@@ -36,6 +36,48 @@ from models.model_factory import get_parameters, set_parameters
 logger = logging.getLogger(__name__)
 
 
+# ── Helper: dtype-safe parameter transforms ──────────────────────────────────
+
+def _is_floating_array(param: np.ndarray) -> bool:
+    return np.issubdtype(param.dtype, np.floating)
+
+
+def _apply_to_floating_params(
+    parameters: List[np.ndarray],
+    fn,
+) -> List[np.ndarray]:
+    """Apply fn only to floating tensors and preserve non-floating buffers.
+
+    PyTorch state dicts include integer scalar buffers such as BatchNorm
+    ``num_batches_tracked``. Attacks should not randomize or scale those
+    buffers; doing so can either crash on 0-D arrays or corrupt aggregation.
+    """
+    transformed: List[np.ndarray] = []
+    for param in parameters:
+        if _is_floating_array(param):
+            arr = np.asarray(fn(param), dtype=param.dtype)
+            transformed.append(arr.reshape(param.shape).astype(param.dtype, copy=False))
+        else:
+            transformed.append(param.copy())
+    return transformed
+
+
+def _scale_floating_update(
+    global_params: List[np.ndarray],
+    local_params: List[np.ndarray],
+    boost_factor: float,
+) -> List[np.ndarray]:
+    """Scale floating model updates while preserving non-floating buffers."""
+    scaled: List[np.ndarray] = []
+    for global_param, local_param in zip(global_params, local_params):
+        if _is_floating_array(global_param):
+            arr = global_param + boost_factor * (local_param - global_param)
+            scaled.append(arr.astype(global_param.dtype, copy=False))
+        else:
+            scaled.append(local_param.copy())
+    return scaled
+
+
 # ── Helper: poisoned data loaders ────────────────────────────────────────────
 
 class LabelFlipDataset(Dataset):
@@ -270,12 +312,11 @@ class DBAClient(FedSecClient):
             return parameters
 
         global_params = getattr(self, "_global_params_cache", parameters)
-        scaled = [
-            global_params[i] + self.attack_cfg.dba_boost_factor * (
-                parameters[i] - global_params[i]
-            )
-            for i in range(len(parameters))
-        ]
+        scaled = _scale_floating_update(
+            global_params,
+            parameters,
+            self.attack_cfg.dba_boost_factor,
+        )
         logger.debug(
             "Client %d: DBA update scaled (boost=%.1f)",
             self.client_id,
@@ -290,8 +331,10 @@ class GaussianNoiseClient(FedSecClient):
     def on_after_fit(
         self, parameters: List[np.ndarray], metrics: Dict
     ) -> List[np.ndarray]:
-        noisy = [p + np.random.normal(0, 0.1, p.shape).astype(p.dtype)
-                 for p in parameters]
+        noisy = _apply_to_floating_params(
+            parameters,
+            lambda p: p + np.random.normal(0, 0.1, size=p.shape).astype(p.dtype),
+        )
         logger.debug("Client %d: Gaussian noise injected", self.client_id)
         return noisy
 
@@ -302,8 +345,10 @@ class ByzantineClient(FedSecClient):
     def on_after_fit(
         self, parameters: List[np.ndarray], metrics: Dict
     ) -> List[np.ndarray]:
-        random_params = [np.random.randn(*p.shape).astype(p.dtype)
-                         for p in parameters]
+        random_params = _apply_to_floating_params(
+            parameters,
+            lambda p: np.random.standard_normal(size=p.shape),
+        )
         logger.debug("Client %d: Byzantine (random weights) attack", self.client_id)
         return random_params
 
@@ -325,10 +370,7 @@ class ModelReplacementClient(FedSecClient):
         # Retrieve the global params that were set at fit start
         global_params = getattr(self, "_global_params_cache", parameters)
         # Compute update and amplify
-        scaled = [
-            global_params[i] + self.boost_factor * (parameters[i] - global_params[i])
-            for i in range(len(parameters))
-        ]
+        scaled = _scale_floating_update(global_params, parameters, self.boost_factor)
         logger.debug("Client %d: model replacement (boost=%.1f)",
                      self.client_id, self.boost_factor)
         return scaled

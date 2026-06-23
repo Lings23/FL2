@@ -123,6 +123,20 @@ class TestDatasetLoading:
         assert label == 7
 
 
+class TestConfigLoading:
+    def test_ray_config_defaults_and_override(self):
+        from config.config_loader import Config, override_config
+
+        cfg = Config()
+        assert cfg.ray.client_num_cpus == 1.0
+        assert cfg.ray.client_num_gpus == 0.0
+        assert cfg.ray.log_to_driver is False
+
+        override_config(cfg, {"ray.client_num_gpus": 0.5, "ray.log_to_driver": True})
+        assert cfg.ray.client_num_gpus == 0.5
+        assert cfg.ray.log_to_driver is True
+
+
 # ── Model factory tests ───────────────────────────────────────────────────────
 
 class TestModelFactory:

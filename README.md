@@ -146,6 +146,11 @@ differential_privacy:
   noise_multiplier: 1.0  # DP noise
   max_grad_norm: 1.0     # Gradient clipping threshold
 
+ray:
+  client_num_cpus: 1.0   # Ray CPU quota per client actor
+  client_num_gpus: 0.0   # use 0.5 or 1.0 on multi-GPU hosts
+  log_to_driver: false
+
 security:
   attack:
     enabled: true
@@ -163,6 +168,10 @@ split and writes a tensor cache under `data/huggingface_cifar10/cache/`; later
 runs load `train.pt`/`test.pt` directly. Install the updated requirements so
 `pyarrow` is available for the first cache build, or switch back with
 `--override dataset.download_source=torchvision`.
+
+On dual-GPU Kaggle notebooks, assign Ray GPU quotas explicitly, for example
+`--override ray.client_num_gpus=0.5` to allow two client actors per T4, or
+`--override ray.client_num_gpus=1.0` for one actor per T4.
 
 ---
 

@@ -210,24 +210,21 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
     # ------------------------------------------------------------------
     # Ray / Flower client resource configuration
     #
-    # num_cpus=1  (restored from 2)
-    #   num_cpus=2 was set to limit concurrent actors and reduce peak
-    #   memory, but on a 2-vCPU Colab node it meant floor(2/2) = 1 actor
-    #   at a time -- forcing all clients to run serially and multiplying
-    #   round time by clients_per_round.  Memory is now controlled via
-    #   the model_factory pattern (no parent-process model pool) and the
-    #   per-actor loader fix in make_client_fn, so num_cpus=1 is safe.
-    #
-    # num_gpus=0.0
-    #   Ray resource quota only -- does not affect PyTorch CUDA access.
-    #   See RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO below.
+    # client_num_cpus/client_num_gpus are Ray resource quotas for each
+    # Flower client actor.  Multi-GPU hosts should set client_num_gpus to
+    # 0.5 or 1.0 so Ray assigns CUDA_VISIBLE_DEVICES per actor instead of
+    # allowing all actors to contend for cuda:0.
     #
     # RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
     #   Prevents Ray from injecting CUDA_VISIBLE_DEVICES="" into actors
-    #   when num_gpus=0, which would hide the GPU from PyTorch.
+    #   when client_num_gpus=0, which would hide the GPU from PyTorch.
     # ------------------------------------------------------------------
     os.environ["RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO"] = "0"
-    client_resources = {"num_cpus": 1, "num_gpus": 0.0}
+    client_resources = {
+        "num_cpus": cfg.ray.client_num_cpus,
+        "num_gpus": cfg.ray.client_num_gpus,
+    }
+    logger.info("Ray client resources: %s", client_resources)
 
     fl.simulation.start_simulation(
         client_fn=client_fn,
@@ -235,7 +232,10 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
         config=server_config,
         strategy=server.strategy,
         client_resources=client_resources,
-        ray_init_args={"ignore_reinit_error": True, "log_to_driver": False},
+        ray_init_args={
+            "ignore_reinit_error": True,
+            "log_to_driver": cfg.ray.log_to_driver,
+        },
     )
 
     tracker.save()

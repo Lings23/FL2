@@ -133,3 +133,9 @@ differential_privacy:
   noise_multiplier: 1.0
   max_grad_norm: 1.0
   delta: 1e-5
+
+# ── Ray Simulation Resources ─────────────────────────────────
+ray:
+  client_num_cpus: 1.0          # CPU quota per Flower client actor
+  client_num_gpus: 0.0          # set 0.5/1.0 on multi-GPU hosts
+  log_to_driver: false

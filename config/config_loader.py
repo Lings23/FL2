@@ -134,6 +134,13 @@ class DPConfig:
     delta: float = 1e-5
 
 
+@dataclass
+class RayConfig:
+    client_num_cpus: float = 1.0
+    client_num_gpus: float = 0.0
+    log_to_driver: bool = False
+
+
 # ── Master Config ─────────────────────────────────────────────────────────────
 
 @dataclass
@@ -147,6 +154,7 @@ class Config:
     security: SecurityConfig = field(default_factory=SecurityConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     differential_privacy: DPConfig = field(default_factory=DPConfig)
+    ray: RayConfig = field(default_factory=RayConfig)
 
 
 # ── Loader ────────────────────────────────────────────────────────────────────

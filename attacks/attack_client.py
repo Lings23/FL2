@@ -118,7 +118,10 @@ class BackdoorDataset(Dataset):
         self.trigger_value = trigger_value
         rng = np.random.default_rng(seed)
         n = len(base)  # type: ignore
-        n_poison = max(1, int(n * poison_fraction))
+        poison_fraction = min(max(float(poison_fraction), 0.0), 1.0)
+        n_poison = int(n * poison_fraction)
+        if poison_fraction > 0.0 and n > 0:
+            n_poison = max(1, n_poison)
         self.poison_indices = set(rng.choice(n, n_poison, replace=False).tolist())
 
     def __len__(self): return len(self.base)  # type: ignore
@@ -238,6 +241,8 @@ class LabelFlipClient(FedSecClient):
     """Flips labels during local training."""
 
     def on_before_fit(self, parameters: List[np.ndarray], config: Dict) -> None:
+        if not getattr(self, "_attack_active", True):
+            return
         poisoned_ds = LabelFlipDataset(
             self.train_loader.dataset,
             source=self.attack_cfg.source_label,
@@ -259,9 +264,15 @@ class BackdoorClient(FedSecClient):
     """Injects backdoor trigger and trains with poisoned data."""
 
     def on_before_fit(self, parameters: List[np.ndarray], config: Dict) -> None:
+        if not getattr(self, "_attack_active", True):
+            return
         poisoned_ds = BackdoorDataset(
             self.train_loader.dataset,
             target_label=self.attack_cfg.backdoor_target_label,
+            poison_fraction=self.attack_cfg.poison_fraction,
+            trigger_size=self.attack_cfg.trigger_size,
+            trigger_value=self.attack_cfg.trigger_value,
+            seed=self.client_id,
         )
         self.train_loader = DataLoader(
             poisoned_ds,
@@ -277,6 +288,8 @@ class DBAClient(FedSecClient):
     """Distributed backdoor attack with per-client local trigger fragments."""
 
     def on_before_fit(self, parameters: List[np.ndarray], config: Dict) -> None:
+        if not getattr(self, "_attack_active", True):
+            return
         self._global_params_cache = [p.copy() for p in parameters]
         fragment_index = self.client_id % max(1, self.attack_cfg.dba_trigger_num)
         poisoned_ds = DBADataset(
@@ -308,7 +321,7 @@ class DBAClient(FedSecClient):
     def on_after_fit(
         self, parameters: List[np.ndarray], metrics: Dict
     ) -> List[np.ndarray]:
-        if not self.attack_cfg.dba_scale_update:
+        if not getattr(self, "_attack_active", True) or not self.attack_cfg.dba_scale_update:
             return parameters
 
         global_params = getattr(self, "_global_params_cache", parameters)
@@ -331,11 +344,15 @@ class GaussianNoiseClient(FedSecClient):
     def on_after_fit(
         self, parameters: List[np.ndarray], metrics: Dict
     ) -> List[np.ndarray]:
+        if not getattr(self, "_attack_active", True):
+            return parameters
+        attack_cfg = getattr(self, "attack_cfg", None)
+        std = float(getattr(attack_cfg, "gaussian_noise_std", 0.1))
         noisy = _apply_to_floating_params(
             parameters,
-            lambda p: p + np.random.normal(0, 0.1, size=p.shape).astype(p.dtype),
+            lambda p: p + np.random.normal(0, std, size=p.shape).astype(p.dtype),
         )
-        logger.debug("Client %d: Gaussian noise injected", self.client_id)
+        logger.debug("Client %d: Gaussian noise injected (std=%.4f)", self.client_id, std)
         return noisy
 
 
@@ -345,6 +362,8 @@ class ByzantineClient(FedSecClient):
     def on_after_fit(
         self, parameters: List[np.ndarray], metrics: Dict
     ) -> List[np.ndarray]:
+        if not getattr(self, "_attack_active", True):
+            return parameters
         random_params = _apply_to_floating_params(
             parameters,
             lambda p: np.random.standard_normal(size=p.shape),
@@ -360,13 +379,16 @@ class ModelReplacementClient(FedSecClient):
     Requires knowledge of the aggregation fraction (num_clients / clients_per_round).
     """
 
-    def __init__(self, *args, boost_factor: float = 10.0, **kwargs):
+    def __init__(self, *args, boost_factor: Optional[float] = None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.boost_factor = boost_factor
+        configured = getattr(self.attack_cfg, "model_replacement_boost_factor", 10.0)
+        self.boost_factor = float(configured if boost_factor is None else boost_factor)
 
     def on_after_fit(
         self, parameters: List[np.ndarray], metrics: Dict
     ) -> List[np.ndarray]:
+        if not getattr(self, "_attack_active", True):
+            return parameters
         # Retrieve the global params that were set at fit start
         global_params = getattr(self, "_global_params_cache", parameters)
         # Compute update and amplify
@@ -376,6 +398,8 @@ class ModelReplacementClient(FedSecClient):
         return scaled
 
     def on_before_fit(self, parameters: List[np.ndarray], config: Dict) -> None:
+        if not getattr(self, "_attack_active", True):
+            return
         # Cache the received global params
         self._global_params_cache = [p.copy() for p in parameters]
         # Also do backdoor data poisoning
@@ -383,6 +407,9 @@ class ModelReplacementClient(FedSecClient):
             self.train_loader.dataset,
             target_label=self.attack_cfg.backdoor_target_label,
             poison_fraction=1.0,   # all samples poisoned
+            trigger_size=self.attack_cfg.trigger_size,
+            trigger_value=self.attack_cfg.trigger_value,
+            seed=self.client_id,
         )
         self.train_loader = DataLoader(
             poisoned_ds,

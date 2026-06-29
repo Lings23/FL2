@@ -95,13 +95,25 @@ python main.py \
 ```
 
 Launch the S1-S7 time-consistency defense, which maintains per-client temporal
-trust histories and performs soft trust-weighted aggregation:
+trust histories and combines soft trust weighting with hard impact constraints:
 
 ```bash
 python main.py \
   --override security.defense.enabled=true \
   --override security.defense.type=time_consistency \
+  --override security.defense.custom_params.enable_delta_clipping=true \
   --experiment time_consistency_baseline
+```
+
+Delayed and intermittent attacks can be configured without changing attack code:
+
+```bash
+python main.py \
+  --override security.attack.enabled=true \
+  --override security.attack.type=model_replacement \
+  --override security.attack.attack_start_round=20 \
+  --override security.attack.attack_on_rounds=3 \
+  --override security.attack.attack_off_rounds=3
 ```
 
 ### 4. Automated Grid Sweeps
@@ -111,9 +123,16 @@ Easily iterate over multiple configurations to compare defenses against differen
 # Quick smoke test (5 rounds, limited grid)
 python experiments/sweep.py --quick
 
-# Full scale sweep (default rounds, exhaustive attack x defense match-ups)
-python experiments/sweep.py --rounds 50
+# Multi-seed sweep with direct TimeConsistency ablation overrides
+python experiments/sweep.py --rounds 50 --seeds 1 7 21 42 87 \
+  --attacks model_replacement dba \
+  --defenses none trimmed_mean time_consistency \
+  --override security.defense.custom_params.enable_trust_caps=true
 ```
+
+Each run saves its effective `*_config.json`, round metrics, and a dedicated
+`*_clients.csv` containing stable client IDs, attack labels, trust, raw/clipped
+delta norms, aggregation weights, and post-clipping impact estimates.
 
 ### 5. Running Tests
 ```bash

@@ -91,6 +91,12 @@ class AttackConfig:
     dba_base_col: int = 0
     dba_scale_update: bool = True
     dba_boost_factor: float = 10.0
+    model_replacement_boost_factor: float = 10.0
+    gaussian_noise_std: float = 0.1
+    attack_start_round: int = 1
+    attack_end_round: int = -1
+    attack_on_rounds: int = 1
+    attack_off_rounds: int = 0
     source_label: int = 0
     target_label: int = 1
 
@@ -100,6 +106,7 @@ class DefenseConfig:
     enabled: bool = False
     type: str = "none"
     krum_num_to_select: int = 1
+    krum_num_malicious: int = 1
     trim_fraction: float = 0.1
     root_dataset_size: int = 100
     custom_params: Dict[str, Any] = field(default_factory=dict)
@@ -221,7 +228,7 @@ def load_config(config_path: str | Path = "config/config.yaml") -> Config:
     if not config_path.exists():
         raise FileNotFoundError(f"Config not found: {config_path}")
 
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
     return _dict_to_dataclass(Config, raw)
@@ -239,7 +246,12 @@ def override_config(cfg: Config, overrides: Dict[str, Any]) -> Config:
         parts = key.split(".")
         obj = cfg
         for part in parts[:-1]:
-            obj = getattr(obj, part)
+            if isinstance(obj, dict):
+                obj = obj.setdefault(part, {})
+            else:
+                obj = getattr(obj, part)
+        if isinstance(obj, dict):
+            obj[parts[-1]] = val
         if dataclasses.is_dataclass(obj):
             setattr(obj, parts[-1], val)
     return cfg

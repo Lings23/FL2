@@ -7,16 +7,18 @@ Main entry point for federated security experiments.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import random
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -53,7 +55,8 @@ def set_seed(seed: int) -> None:
 
 def build_data_pipeline(cfg: Config):
     """
-    Returns per-client DataLoader pairs and a test DataLoader.
+    Returns per-client DataLoader pairs, a test DataLoader, and a disjoint
+    trusted root subset reserved consistently for all defenses.
 
     Performance note: DataLoaders are built here (in the parent process) so
     that dataset partitioning happens once.  However, the loaders_map is
@@ -68,8 +71,35 @@ def build_data_pipeline(cfg: Config):
     )
     train_ds = dataset.load_train()
 
+    root_size = min(
+        max(1, int(cfg.security.defense.root_dataset_size)),
+        max(1, len(train_ds) - cfg.federation.num_clients),
+    )
+    root_rng = np.random.default_rng(cfg.project.seed)
+    root_indices = np.sort(
+        root_rng.choice(len(train_ds), size=root_size, replace=False)
+    )
+    root_index_set = set(root_indices.tolist())
+    federated_indices = [
+        idx for idx in range(len(train_ds)) if idx not in root_index_set
+    ]
+    root_dataset = Subset(train_ds, root_indices.tolist())
+    federated_dataset = Subset(train_ds, federated_indices)
+    if hasattr(train_ds, "targets"):
+        targets = train_ds.targets
+        targets_array = np.asarray(
+            targets.cpu().numpy() if isinstance(targets, torch.Tensor) else targets
+        )
+        federated_dataset.targets = targets_array[federated_indices]  # type: ignore[attr-defined]
+
+    logger.info(
+        "Reserved trusted root dataset | root=%d federated=%d",
+        len(root_dataset),
+        len(federated_dataset),
+    )
+
     partitioner = FederatedPartitioner(
-        dataset=train_ds,
+        dataset=federated_dataset,
         num_clients=cfg.federation.num_clients,
         strategy=cfg.dataset.partition,
         dirichlet_alpha=cfg.dataset.dirichlet_alpha,
@@ -90,7 +120,7 @@ def build_data_pipeline(cfg: Config):
         )
 
     test_loader = dataset.get_test_loader(batch_size=128)
-    return loaders_map, test_loader, dataset
+    return loaders_map, test_loader, root_dataset
 
 
 # ---------------------------------------------------------------------------
@@ -137,11 +167,16 @@ def determine_malicious_ids(cfg: Config) -> set:
 def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTracker:
     set_seed(cfg.project.seed)
     setup_logging(cfg.project.log_dir, cfg.project.log_level, name=experiment_name)
+    config_path = Path(cfg.project.log_dir) / f"{experiment_name}_config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(config_path, "w", encoding="utf-8") as handle:
+        json.dump(asdict(cfg), handle, indent=2, ensure_ascii=False)
+    logger.info("Effective config saved -> %s", config_path)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
 
-    loaders_map, test_loader, dataset_obj = build_data_pipeline(cfg)
+    loaders_map, test_loader, root_dataset = build_data_pipeline(cfg)
     model_factory = build_model_factory(cfg)
 
     global_model = get_model(
@@ -163,11 +198,18 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
         device=device,
     )
 
-    server, server_config = build_server(cfg, global_model, test_loader, device)
+    server, server_config = build_server(
+        cfg,
+        global_model,
+        test_loader,
+        device,
+        root_dataset=root_dataset,
+    )
 
     tracker = MetricTracker(log_dir=cfg.project.log_dir, experiment_name=experiment_name)
 
     orig_evaluate = server.strategy.evaluate  # type: ignore
+    orig_aggregate_fit = server.strategy.aggregate_fit  # type: ignore
     orig_aggregate_evaluate = server.strategy.aggregate_evaluate  # type: ignore
 
     def _patched_evaluate(server_round, parameters):
@@ -195,7 +237,17 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
                         **safe_metrics)
         return loss, metrics
 
+    def _patched_aggregate_fit(server_round, results, failures):
+        aggregated, metrics = orig_aggregate_fit(server_round, results, failures)
+        if metrics:
+            tracker.log(round=server_round, split="fit", **metrics)
+        for record in getattr(server.strategy, "last_client_records", []):
+            safe_record = {key: value for key, value in record.items() if key != "round"}
+            tracker.log(round=server_round, split="client", **safe_record)
+        return aggregated, metrics
+
     server.strategy.evaluate = _patched_evaluate  # type: ignore
+    server.strategy.aggregate_fit = _patched_aggregate_fit  # type: ignore
     server.strategy.aggregate_evaluate = _patched_aggregate_evaluate  # type: ignore
 
     logger.info("=" * 60)

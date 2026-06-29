@@ -79,6 +79,9 @@ class TimeConsistencyDefense(BaseDefense):
         self.sigmoid_scale = float(params.get("sigmoid_scale", 8.0))
         self.sigmoid_center = float(params.get("sigmoid_center", 0.5))
         self.min_effective_weight = float(params.get("min_effective_weight", 1e-4))
+        self.enable_soft_trust_weighting = bool(
+            params.get("enable_soft_trust_weighting", True)
+        )
 
         self.enable_delta_clipping = bool(params.get("enable_delta_clipping", True))
         self.norm_clip_mad_k = float(params.get("norm_clip_mad_k", 2.5))
@@ -202,8 +205,13 @@ class TimeConsistencyDefense(BaseDefense):
             final_trust = self._update_trust(state, feature)
             trust_scores.append(final_trust)
 
-            trust_weight = self._sigmoid(self.sigmoid_scale * (final_trust - self.sigmoid_center))
-            trust_weight = max(self.min_effective_weight, trust_weight)
+            if self.enable_soft_trust_weighting:
+                trust_weight = self._sigmoid(
+                    self.sigmoid_scale * (final_trust - self.sigmoid_center)
+                )
+                trust_weight = max(self.min_effective_weight, trust_weight)
+            else:
+                trust_weight = 1.0
             effective_weight = trust_weight * max(1, int(updates[idx][1]))
             effective_weights.append(effective_weight)
 

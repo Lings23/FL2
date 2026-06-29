@@ -60,7 +60,7 @@ class MetricTracker:
 
         # JSON
         json_path = base.with_suffix(".json")
-        with open(json_path, "w") as f:
+        with open(json_path, "w", encoding="utf-8") as f:
             json.dump(self._records, f, indent=2, default=str)
 
         # CSV
@@ -68,10 +68,24 @@ class MetricTracker:
         all_keys: List[str] = list(
             dict.fromkeys(k for r in self._records for k in r)
         )
-        with open(csv_path, "w", newline="") as f:
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=all_keys, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(self._records)
+
+        client_records = [
+            record for record in self._records if record.get("split") == "client"
+        ]
+        if client_records:
+            clients_path = self.log_dir / f"{self.experiment_name}_clients.csv"
+            client_keys: List[str] = list(
+                dict.fromkeys(key for record in client_records for key in record)
+            )
+            with open(clients_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=client_keys, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(client_records)
+            logger.info("Client metrics saved -> %s", clients_path)
 
         logger.info("Metrics saved → %s, %s", json_path, csv_path)
 

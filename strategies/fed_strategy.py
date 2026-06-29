@@ -17,8 +17,9 @@ or override configure_fit() to inject per-round config (e.g. proximal μ).
 from __future__ import annotations
 
 import logging
+import time
 from functools import reduce
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import flwr as fl
@@ -40,6 +41,8 @@ from defenses.defense_base import BaseDefense, get_defense, UpdateList
 
 logger = logging.getLogger(__name__)
 
+CLIENT_METADATA_KEYS = {"client_id", "is_malicious", "attack_active"}
+
 
 # ── Metrics aggregation helpers ───────────────────────────────────────────────
 
@@ -51,6 +54,8 @@ def _weighted_avg_metrics(results: List[Tuple[int, Dict]]) -> Dict:
     agg: Dict[str, float] = {}
     for n, m in results:
         for k, v in m.items():
+            if k in CLIENT_METADATA_KEYS:
+                continue
             agg[k] = agg.get(k, 0.0) + (n / total) * float(v)
     return agg
 
@@ -88,6 +93,7 @@ class FedSecStrategy(Strategy):
         on_evaluate_config_fn: Optional[Callable[[int], Dict]] = None,
         fit_metrics_aggregation_fn: Optional[MetricsAggregationFn] = None,
         evaluate_metrics_aggregation_fn: Optional[MetricsAggregationFn] = None,
+        server_update_fn: Optional[Callable[[NDArrays], NDArrays]] = None,
     ):
         self.scfg = strategy_cfg
         self.defense: BaseDefense = get_defense(defense_cfg, num_clients=num_clients)
@@ -101,6 +107,8 @@ class FedSecStrategy(Strategy):
         self.on_evaluate_config_fn = on_evaluate_config_fn
         self.fit_metrics_aggregation_fn = fit_metrics_aggregation_fn
         self.evaluate_metrics_aggregation_fn = evaluate_metrics_aggregation_fn
+        self.server_update_fn = server_update_fn
+        self.last_client_records: List[Dict[str, Any]] = []
 
         # FedYogi / FedAdam server-side state
         self._m: Optional[NDArrays] = None   # first moment
@@ -155,11 +163,36 @@ class FedSecStrategy(Strategy):
             (parameters_to_ndarrays(fit_res.parameters), fit_res.num_examples)
             for _, fit_res in results
         ]
-        client_ids = [str(client.cid) for client, _ in results]
+        client_ids = [
+            self._stable_client_id(client, fit_res)
+            for client, fit_res in results
+        ]
+        malicious_labels = [
+            bool(fit_res.metrics.get("is_malicious", False))
+            for _, fit_res in results
+        ]
+        attack_active_labels = [
+            bool(fit_res.metrics.get("attack_active", False))
+            for _, fit_res in results
+        ]
 
         # ── Defense aggregation ───────────────────────────────────────────────
+        aggregation_started = time.perf_counter()
         self.defense.set_context(server_round, client_ids, self.global_params)
+        if hasattr(self.defense, "set_server_update"):
+            if self.server_update_fn is None:
+                raise RuntimeError("FLTrust requires a configured server root update function")
+            server_update = self.server_update_fn(self.global_params)
+            self.defense.set_server_update(server_update)  # type: ignore[attr-defined]
         aggregated = self.defense.aggregate(updates)
+        aggregation_time = time.perf_counter() - aggregation_started
+        self.last_client_records = self._build_client_records(
+            server_round,
+            updates,
+            client_ids,
+            malicious_labels,
+            attack_active_labels,
+        )
 
         # ── Optional server-side optimizer (FedYogi) ──────────────────────────
         name = self.scfg.name.lower()
@@ -181,11 +214,180 @@ class FedSecStrategy(Strategy):
         for key, value in defense_metrics.items():
             if isinstance(value, (int, float, np.floating)):
                 fit_metrics[key] = float(value)
+        fit_metrics.update(self._security_round_metrics(self.last_client_records))
+        fit_metrics["aggregation_time_seconds"] = float(aggregation_time)
 
         logger.info("Round %d aggregation done (defense=%s)",
                     server_round, self.defense.__class__.__name__)
 
         return ndarrays_to_parameters(aggregated), fit_metrics
+
+    @staticmethod
+    def _stable_client_id(client: ClientProxy, fit_res: FitRes) -> str:
+        raw = fit_res.metrics.get("client_id", client.cid)
+        if isinstance(raw, float) and raw.is_integer():
+            raw = int(raw)
+        return str(raw)
+
+    def _build_client_records(
+        self,
+        server_round: int,
+        updates: UpdateList,
+        client_ids: List[str],
+        malicious_labels: List[bool],
+        attack_active_labels: List[bool],
+    ) -> List[Dict[str, Any]]:
+        trust_map = getattr(self.defense, "last_client_trusts", {})
+        effective_map = getattr(self.defense, "last_client_weights", {})
+        aggregation_map = getattr(self.defense, "last_client_aggregation_weights", {})
+        clipped_mask = list(getattr(self.defense, "_last_clipped_mask", []))
+        constraint_tags = list(getattr(self.defense, "_last_constraint_tags", []))
+        clip_norm = float(getattr(self.defense, "_last_clip_norm", float("inf")))
+
+        records: List[Dict[str, Any]] = []
+        for idx, ((params, num_examples), cid, is_malicious, attack_active) in enumerate(
+            zip(updates, client_ids, malicious_labels, attack_active_labels)
+        ):
+            raw_norm = self._delta_norm(params, self.global_params)
+            is_clipped = idx < len(clipped_mask) and bool(clipped_mask[idx])
+            clipped_norm = min(raw_norm, clip_norm) if is_clipped else raw_norm
+            aggregation_weight = aggregation_map.get(cid)
+            impact_norm = (
+                float(aggregation_weight) * clipped_norm
+                if aggregation_weight is not None
+                else None
+            )
+            flags = []
+            if idx < len(constraint_tags) and constraint_tags[idx]:
+                flags.append(str(constraint_tags[idx]))
+            if is_clipped:
+                flags.append("clipped")
+
+            records.append({
+                "round": int(server_round),
+                "cid": cid,
+                "is_malicious": bool(is_malicious),
+                "attack_active": bool(attack_active),
+                "num_examples": int(num_examples),
+                "trust": trust_map.get(cid),
+                "raw_delta_norm": raw_norm,
+                "clipped_delta_norm": clipped_norm,
+                "effective_weight": effective_map.get(cid),
+                "aggregation_weight": aggregation_weight,
+                "impact_norm": impact_norm,
+                "clipped": is_clipped,
+                "capped": "capped" in flags,
+                "quarantined": "quarantined" in flags,
+                "flags": ",".join(flags),
+            })
+        return records
+
+    @staticmethod
+    def _delta_norm(params: NDArrays, global_params: NDArrays) -> float:
+        total_sq = 0.0
+        for param, reference in zip(params, global_params):
+            if not np.issubdtype(reference.dtype, np.floating):
+                continue
+            delta = param.astype(np.float32) - reference.astype(np.float32)
+            total_sq += float(np.sum(delta * delta))
+        return float(np.sqrt(max(0.0, total_sq)))
+
+    @staticmethod
+    def _security_round_metrics(records: List[Dict[str, Any]]) -> Dict[str, Scalar]:
+        metrics: Dict[str, Scalar] = {}
+        if not records:
+            return metrics
+
+        malicious = [record for record in records if record["is_malicious"]]
+        active_malicious = [record for record in records if record["attack_active"]]
+        benign = [record for record in records if not record["is_malicious"]]
+        metrics["selected_malicious_clients"] = len(malicious)
+        metrics["selected_active_attackers"] = len(active_malicious)
+        metrics["selected_benign_clients"] = len(benign)
+
+        if all(record["aggregation_weight"] is not None for record in records):
+            metrics["malicious_aggregation_weight_share"] = float(sum(
+                float(record["aggregation_weight"])
+                for record in malicious
+            ))
+            metrics["active_attacker_weight_share"] = float(sum(
+                float(record["aggregation_weight"])
+                for record in active_malicious
+            ))
+
+        if all(record["impact_norm"] is not None for record in records):
+            total_impact = sum(float(record["impact_norm"]) for record in records)
+            malicious_impact = sum(float(record["impact_norm"]) for record in malicious)
+            metrics["malicious_impact_share"] = (
+                malicious_impact / total_impact if total_impact > 1e-12 else 0.0
+            )
+            active_impact = sum(
+                float(record["impact_norm"]) for record in active_malicious
+            )
+            metrics["active_attacker_impact_share"] = (
+                active_impact / total_impact if total_impact > 1e-12 else 0.0
+            )
+
+        malicious_trust = [
+            float(record["trust"])
+            for record in malicious
+            if record["trust"] is not None
+        ]
+        benign_trust = [
+            float(record["trust"])
+            for record in benign
+            if record["trust"] is not None
+        ]
+        active_trust = [
+            float(record["trust"])
+            for record in active_malicious
+            if record["trust"] is not None
+        ]
+        if malicious_trust:
+            metrics["malicious_trust_mean"] = float(np.mean(malicious_trust))
+        if benign_trust:
+            metrics["benign_trust_mean"] = float(np.mean(benign_trust))
+        if active_trust and benign_trust:
+            comparisons = [
+                (
+                    1.0
+                    if attack_score < benign_score
+                    else 0.5
+                    if attack_score == benign_score
+                    else 0.0
+                )
+                for attack_score in active_trust
+                for benign_score in benign_trust
+            ]
+            metrics["trust_detection_auc"] = float(np.mean(comparisons))
+
+        malicious_clipped = sum(
+            1 for record in malicious if record["clipped"]
+        )
+        benign_clipped = sum(
+            1 for record in benign if record["clipped"]
+        )
+        active_clipped = sum(
+            1 for record in active_malicious if record["clipped"]
+        )
+        metrics["malicious_clipped_clients"] = malicious_clipped
+        metrics["benign_clipped_clients"] = benign_clipped
+        total_clipped = sum(1 for record in records if record["clipped"])
+        metrics["clip_precision"] = (
+            active_clipped / total_clipped if total_clipped else 0.0
+        )
+        metrics["clip_recall_active_attackers"] = (
+            active_clipped / len(active_malicious) if active_malicious else 0.0
+        )
+
+        benign_quarantined = sum(
+            1 for record in benign if record["quarantined"]
+        )
+        metrics["benign_quarantined_clients"] = benign_quarantined
+        metrics["benign_quarantine_rate"] = (
+            benign_quarantined / len(benign) if benign else 0.0
+        )
+        return metrics
 
     def aggregate_evaluate(
         self,

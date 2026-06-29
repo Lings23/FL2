@@ -241,6 +241,8 @@ class TestDefenses:
         from defenses.defense_base import FLTrustDefense
         from config.config_loader import DefenseConfig
         d = FLTrustDefense(DefenseConfig())
+        global_params = [np.zeros(10, dtype=np.float32)]
+        d.set_context(1, ["good-1", "bad", "good-2"], global_params)
         server_vec = np.ones(10, dtype=np.float32)
         d.set_server_update([server_vec])
         good = np.ones(10, dtype=np.float32)
@@ -248,6 +250,36 @@ class TestDefenses:
         updates = [([good], 10), ([bad], 10), ([good], 10)]
         agg = d.aggregate(updates)
         assert agg[0].mean() > 0, "FLTrust should upweight aligned updates"
+        assert d.last_client_aggregation_weights["bad"] == pytest.approx(0.0)
+
+    def test_krum_rejects_invalid_byzantine_bound(self):
+        from defenses.defense_base import KrumDefense
+        from config.config_loader import DefenseConfig
+        d = KrumDefense(DefenseConfig(krum_num_malicious=2))
+        updates = [([np.ones(4, dtype=np.float32) * idx], 10) for idx in range(5)]
+        with pytest.raises(ValueError, match="n >= 2f"):
+            d.aggregate(updates)
+
+    def test_foolsgold_history_uses_stable_client_ids(self):
+        from defenses.defense_base import FoolsGoldDefense
+        from config.config_loader import DefenseConfig
+
+        d = FoolsGoldDefense(DefenseConfig(), num_clients=3)
+        global_params = [np.zeros(2, dtype=np.float32)]
+        d.set_context(1, ["a", "b", "c"], global_params)
+        d.aggregate(_make_updates([
+            np.array([1.0, 0.0], dtype=np.float32),
+            np.array([1.0, 0.0], dtype=np.float32),
+            np.array([0.0, 1.0], dtype=np.float32),
+        ]))
+        d.set_context(2, ["c", "a"], global_params)
+        d.aggregate(_make_updates([
+            np.array([0.0, 1.0], dtype=np.float32),
+            np.array([1.0, 0.0], dtype=np.float32),
+        ]))
+
+        np.testing.assert_allclose(d._history["a"], np.array([2.0, 0.0]))
+        np.testing.assert_allclose(d._history["c"], np.array([0.0, 2.0]))
 
 
 class TestTimeConsistencyDefense:
@@ -442,6 +474,22 @@ class TestTimeConsistencyDefense:
         assert any("cid=suspect" in m and "effective_weight=" in m for m in messages)
         assert sum(d.last_client_aggregation_weights.values()) == pytest.approx(1.0)
 
+    def test_soft_weighting_can_be_disabled_for_clip_only_ablation(self):
+        d = self._defense(
+            enable_soft_trust_weighting=False,
+            enable_delta_clipping=False,
+            enable_trust_caps=False,
+        )
+        global_params = [np.zeros(4, dtype=np.float32), np.array([0], dtype=np.int64)]
+        d.set_context(1, ["a", "b"], global_params)
+        d.aggregate(self._updates([
+            np.ones(4, dtype=np.float32) * 0.1,
+            np.ones(4, dtype=np.float32) * 10.0,
+        ]))
+
+        assert d.last_client_aggregation_weights["a"] == pytest.approx(0.5)
+        assert d.last_client_aggregation_weights["b"] == pytest.approx(0.5)
+
 
 
 # ── Config loader tests ───────────────────────────────────────────────────────
@@ -454,14 +502,21 @@ class TestConfigLoader:
         cfg = load_config(tmp_path / "config.yaml")
         assert cfg.federation.num_rounds == 50
         assert cfg.dataset.name == "cifar10"
+        assert cfg.security.attack.model_replacement_boost_factor == pytest.approx(10.0)
+        assert cfg.security.attack.gaussian_noise_std == pytest.approx(0.1)
+        assert cfg.security.defense.krum_num_malicious == 1
 
     def test_override_config(self, tmp_path):
         import shutil
         from config.config_loader import load_config, override_config
         shutil.copy("config/config.yaml", tmp_path / "config.yaml")
         cfg = load_config(tmp_path / "config.yaml")
-        cfg = override_config(cfg, {"federation.num_rounds": 99})
+        cfg = override_config(cfg, {
+            "federation.num_rounds": 99,
+            "security.defense.custom_params.enable_delta_clipping": False,
+        })
         assert cfg.federation.num_rounds == 99
+        assert cfg.security.defense.custom_params["enable_delta_clipping"] is False
 
     def test_missing_config_raises(self):
         from config.config_loader import load_config
@@ -481,6 +536,33 @@ class TargetModel(torch.nn.Module):
         logits = torch.zeros(x.size(0), self.num_classes, device=x.device)
         logits[:, self.target] = 1.0
         return logits
+
+
+class TestMetricTracker:
+    def test_saves_dedicated_client_metrics_csv(self, tmp_path):
+        import csv
+        from utils.metrics import MetricTracker
+
+        tracker = MetricTracker(str(tmp_path), "instrumented")
+        tracker.log(round=1, split="server", accuracy=0.8)
+        tracker.log(
+            round=1,
+            split="client",
+            cid="7",
+            is_malicious=True,
+            raw_delta_norm=10.0,
+            clipped_delta_norm=2.0,
+            aggregation_weight=0.1,
+            impact_norm=0.2,
+        )
+        tracker.save()
+
+        output = tmp_path / "instrumented_clients.csv"
+        assert output.exists()
+        with open(output, newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        assert rows[0]["cid"] == "7"
+        assert float(rows[0]["impact_norm"]) == pytest.approx(0.2)
 
 
 class TestServerASR:
@@ -538,6 +620,26 @@ class TestServerASR:
         assert metrics["asr_total"] == 3
         assert metrics["asr"] == pytest.approx(1.0)
         assert metrics["attack_type"] == "backdoor"
+
+    def test_model_replacement_reports_backdoor_asr(self):
+        from config.config_loader import AttackConfig
+        from server.fl_server import evaluate_targeted_asr
+
+        x = torch.zeros(3, 1, 8, 8)
+        y = torch.tensor([0, 1, 3], dtype=torch.long)
+        loader = DataLoader(TensorDataset(x, y), batch_size=3)
+        cfg = AttackConfig(
+            enabled=True,
+            type="model_replacement",
+            backdoor_target_label=2,
+        )
+        metrics = evaluate_targeted_asr(
+            TargetModel(target=2), loader, torch.device("cpu"), cfg
+        )
+
+        assert metrics is not None
+        assert metrics["asr"] == pytest.approx(1.0)
+        assert metrics["attack_type"] == "model_replacement"
 
 
 # ── Attack dataset tests ──────────────────────────────────────────────────────

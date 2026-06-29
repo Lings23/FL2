@@ -52,6 +52,13 @@ class BaseDefense(ABC):
 
     def __init__(self, cfg: DefenseConfig):
         self.cfg = cfg
+        self._server_round = 0
+        self._client_ids: List[str] = []
+        self._global_params: Optional[List[np.ndarray]] = None
+        self.last_client_trusts: Dict[str, float] = {}
+        self.last_client_weights: Dict[str, float] = {}
+        self.last_client_aggregation_weights: Dict[str, float] = {}
+        self.last_round_metrics: Dict[str, float] = {}
 
     def set_context(
         self,
@@ -65,7 +72,9 @@ class BaseDefense(ABC):
         key histories by real client ids and to compute model deltas from the
         previous global parameters.
         """
-        return None
+        self._server_round = int(server_round)
+        self._client_ids = [str(cid) for cid in client_ids]
+        self._global_params = [p.copy() for p in global_params]
 
     @abstractmethod
     def aggregate(self, updates: UpdateList) -> List[np.ndarray]:
@@ -141,6 +150,70 @@ class BaseDefense(ABC):
                 result.append(arr.astype(dt, copy=False))
         return result
 
+    @staticmethod
+    def _weighted_average_with_weights(
+        updates: UpdateList,
+        weights: Sequence[float],
+    ) -> List[np.ndarray]:
+        """Average model parameters with explicit non-negative weights."""
+        arr = np.asarray(weights, dtype=np.float64)
+        arr = np.maximum(np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0), 0.0)
+        total = float(arr.sum())
+        if total <= 1e-12:
+            return BaseDefense._weighted_average(updates)
+
+        orig_dtypes = [p.dtype for p in updates[0][0]]
+        agg = [np.zeros_like(p, dtype=np.float32) for p in updates[0][0]]
+        for weight, (params, _) in zip(arr, updates):
+            for idx, param in enumerate(params):
+                agg[idx] += float(weight / total) * param.astype(np.float32)
+
+        result = []
+        for value, dtype in zip(agg, orig_dtypes):
+            if np.issubdtype(dtype, np.integer):
+                result.append(np.round(value).astype(dtype))
+            else:
+                result.append(value.astype(dtype, copy=False))
+        return result
+
+    def _client_ids_for(self, count: int) -> List[str]:
+        if len(self._client_ids) == count:
+            return list(self._client_ids)
+        return [str(idx) for idx in range(count)]
+
+    def _flatten_delta(self, params: Sequence[np.ndarray]) -> np.ndarray:
+        if self._global_params is None:
+            return self._flatten(list(params))
+        chunks = [
+            (param.astype(np.float32) - reference.astype(np.float32)).ravel()
+            for param, reference in zip(params, self._global_params)
+            if np.issubdtype(reference.dtype, np.floating)
+        ]
+        return np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
+
+    def _record_scalar_weights(
+        self,
+        client_ids: Sequence[str],
+        raw_weights: Sequence[float],
+    ) -> None:
+        weights = np.maximum(
+            np.nan_to_num(
+                np.asarray(raw_weights, dtype=np.float64),
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            ),
+            0.0,
+        )
+        total = float(weights.sum())
+        normalized = weights / total if total > 1e-12 else np.zeros_like(weights)
+        self.last_client_weights = {
+            cid: float(weight) for cid, weight in zip(client_ids, weights)
+        }
+        self.last_client_aggregation_weights = {
+            cid: float(weight) for cid, weight in zip(client_ids, normalized)
+        }
+
 
 # ── Standard FedAvg (no defense) ─────────────────────────────────────────────
 
@@ -148,6 +221,10 @@ class FedAvgDefense(BaseDefense):
     """Plain weighted average — reference baseline."""
 
     def aggregate(self, updates: UpdateList) -> List[np.ndarray]:
+        self._record_scalar_weights(
+            self._client_ids_for(len(updates)),
+            [num_samples for _, num_samples in updates],
+        )
         return self._weighted_average(updates)
 
 
@@ -162,8 +239,18 @@ class KrumDefense(BaseDefense):
 
     def aggregate(self, updates: UpdateList) -> List[np.ndarray]:
         n = len(updates)
-        m = min(self.cfg.krum_num_to_select, n)
-        f = max(0, n - m - 2)                 # assumed Byzantine fraction
+        f = max(0, int(self.cfg.krum_num_malicious))
+        if n < 2 * f + 3:
+            raise ValueError(
+                f"Krum requires n >= 2f + 3, received n={n}, f={f}"
+            )
+        max_selected = n - f - 2
+        m = max(1, int(self.cfg.krum_num_to_select))
+        if m > max_selected:
+            raise ValueError(
+                f"Multi-Krum requires m <= n - f - 2, received m={m}, "
+                f"n={n}, f={f}"
+            )
 
         vectors = np.array([self._flatten(params) for params, _ in updates])
 
@@ -185,8 +272,12 @@ class KrumDefense(BaseDefense):
         selected_idx = np.argsort(scores)[:m].tolist()
         logger.debug("Krum selected clients: %s", selected_idx)
 
-        selected = [updates[i] for i in selected_idx]
-        return self._weighted_average(selected)
+        selected_weights = [
+            1.0 if idx in selected_idx else 0.0
+            for idx in range(n)
+        ]
+        self._record_scalar_weights(self._client_ids_for(n), selected_weights)
+        return self._weighted_average_with_weights(updates, selected_weights)
 
 
 # ── Trimmed Mean ──────────────────────────────────────────────────────────────
@@ -201,7 +292,12 @@ class TrimmedMeanDefense(BaseDefense):
         beta = self.cfg.trim_fraction
         vectors = np.array([self._flatten(params) for params, _ in updates])
         n = len(vectors)
-        k = max(1, int(n * beta))
+        k = max(0, int(n * beta))
+        if 2 * k >= n:
+            raise ValueError(
+                f"Trimmed mean requires 2 * floor(n * trim_fraction) < n; "
+                f"received n={n}, trim_fraction={beta}"
+            )
 
         # Sort along client axis, trim, then mean
         sorted_v = np.sort(vectors, axis=0)
@@ -247,35 +343,61 @@ class FLTrustDefense(BaseDefense):
         self._server_update = server_update
 
     def aggregate(self, updates: UpdateList) -> List[np.ndarray]:
-        if self._server_update is None:
-            logger.warning("FLTrust: no server update set; falling back to FedAvg.")
-            return self._weighted_average(updates)
+        if self._server_update is None or self._global_params is None:
+            raise RuntimeError(
+                "FLTrust requires global context and a server root update every round"
+            )
 
-        sv = self._flatten(self._server_update)
-        sv_norm = np.linalg.norm(sv)
-        if sv_norm < 1e-9:
-            return self._weighted_average(updates)
+        server_delta = self._flatten(self._server_update)
+        server_norm = float(np.linalg.norm(server_delta))
+        if server_norm < 1e-9:
+            logger.warning("FLTrust server root update has near-zero norm; keeping global model.")
+            client_ids = self._client_ids_for(len(updates))
+            self.last_client_trusts = {cid: 0.0 for cid in client_ids}
+            self._record_scalar_weights(client_ids, [0.0 for _ in updates])
+            return [param.copy() for param in self._global_params]
 
-        weights = []
+        trust_scores = []
+        scaled_deltas = []
         for params, _ in updates:
-            cv = self._flatten(params)
-            cos_sim = np.dot(sv, cv) / (sv_norm * np.linalg.norm(cv) + 1e-9)
-            trust_score = max(0.0, cos_sim)    # ReLU
-            weights.append(trust_score)
+            client_delta = self._flatten_delta(params)
+            client_norm = float(np.linalg.norm(client_delta))
+            cosine = np.dot(server_delta, client_delta) / (
+                server_norm * client_norm + 1e-9
+            )
+            trust_scores.append(max(0.0, float(cosine)))
+            if client_norm <= 1e-9:
+                scaled_deltas.append(np.zeros_like(client_delta))
+            else:
+                scaled_deltas.append(client_delta * (server_norm / client_norm))
 
-        total_w = sum(weights)
-        if total_w < 1e-9:
-            logger.warning("FLTrust: all trust scores ≈ 0; equal weighting.")
-            return self._weighted_average(updates)
+        weights = np.asarray(trust_scores, dtype=np.float64)
+        total_weight = float(weights.sum())
+        aggregate_delta = np.zeros_like(server_delta, dtype=np.float32)
+        if total_weight > 1e-9:
+            for weight, client_delta in zip(weights, scaled_deltas):
+                aggregate_delta += float(weight / total_weight) * client_delta
+        else:
+            logger.warning("FLTrust: all client trust scores are zero; keeping global model.")
 
-        agg_flat = np.zeros_like(sv)
-        for i, (params, _) in enumerate(updates):
-            cv = self._flatten(params)
-            # Project onto server direction and scale by trust weight
-            cv_proj = (np.dot(sv, cv) / (sv_norm ** 2)) * sv
-            agg_flat += (weights[i] / total_w) * cv_proj
+        client_ids = self._client_ids_for(len(updates))
+        self.last_client_trusts = {
+            cid: float(score) for cid, score in zip(client_ids, trust_scores)
+        }
+        self._record_scalar_weights(client_ids, weights)
 
-        return self._unflatten(agg_flat, updates[0][0])
+        result: List[np.ndarray] = []
+        offset = 0
+        for global_param in self._global_params:
+            if np.issubdtype(global_param.dtype, np.floating):
+                size = global_param.size
+                delta = aggregate_delta[offset:offset + size].reshape(global_param.shape)
+                value = global_param.astype(np.float32) + delta
+                result.append(value.astype(global_param.dtype, copy=False))
+                offset += size
+            else:
+                result.append(global_param.copy())
+        return result
 
 
 # ── FoolsGold ─────────────────────────────────────────────────────────────────
@@ -292,55 +414,60 @@ class FoolsGoldDefense(BaseDefense):
 
     def __init__(self, cfg: DefenseConfig, num_clients: int = 100):
         super().__init__(cfg)
-        self._history: Optional[np.ndarray] = None
+        self._history: Dict[str, np.ndarray] = {}
         self._num_clients = num_clients
-        self._client_idx_map: Dict[int, int] = {}   # cid → position
-        self._counter = 0
 
     def aggregate(self, updates: UpdateList) -> List[np.ndarray]:
         n = len(updates)
-        dim = self._flatten(updates[0][0]).shape[0]
+        client_ids = self._client_ids_for(n)
+        vectors = np.asarray(
+            [self._flatten_delta(params) for params, _ in updates],
+            dtype=np.float32,
+        )
 
-        # Lazily init history matrix
-        if self._history is None:
-            self._history = np.zeros((self._num_clients, dim), dtype=np.float32)
+        for cid, vector in zip(client_ids, vectors):
+            previous = self._history.get(cid)
+            self._history[cid] = vector.copy() if previous is None else previous + vector
 
-        # Map update positions to client slots
-        vectors = np.array([self._flatten(p) for p, _ in updates], dtype=np.float32)
+        histories = np.asarray(
+            [self._history[cid] for cid in client_ids], dtype=np.float32
+        )
+        norms = np.linalg.norm(histories, axis=1, keepdims=True) + 1e-9
+        normalized = histories / norms
+        similarities = np.einsum("ik,jk->ij", normalized, normalized)
+        np.fill_diagonal(similarities, 0.0)
 
-        # Update history
-        for i, v in enumerate(vectors):
-            slot = i % self._num_clients
-            self._history[slot] += v
-
-        # Cosine similarity between histories
-        norms = np.linalg.norm(self._history[:n], axis=1, keepdims=True) + 1e-9
-        normed = self._history[:n] / norms
-        cs_matrix = normed @ normed.T           # n × n cosine similarities
-
-        # Learning rate (contribution weight) penalisation
-        alphas = np.ones(n)
+        max_similarity = (
+            np.max(similarities, axis=1) if n > 1 else np.zeros(1, dtype=np.float32)
+        )
         for i in range(n):
-            for j in range(i):
-                sim = cs_matrix[i, j]
-                if sim > 0.5:
-                    # Penalise the one with higher norm (larger contributor)
-                    if np.linalg.norm(vectors[i]) > np.linalg.norm(vectors[j]):
-                        alphas[i] = min(alphas[i], 1 - sim)
-                    else:
-                        alphas[j] = min(alphas[j], 1 - sim)
+            for j in range(n):
+                if i == j or max_similarity[j] <= 1e-9:
+                    continue
+                if max_similarity[i] < max_similarity[j]:
+                    similarities[i, j] *= max_similarity[i] / max_similarity[j]
 
-        # Normalise and aggregate
-        alphas = np.clip(alphas, 0, 1)
-        total_w = alphas.sum()
-        if total_w < 1e-9:
-            return self._weighted_average(updates)
+        alphas = (
+            1.0 - np.max(similarities, axis=1)
+            if n > 1
+            else np.ones(1, dtype=np.float32)
+        )
+        alphas = np.clip(alphas, 0.0, 1.0)
+        if float(alphas.max()) > 1e-9:
+            alphas /= float(alphas.max())
+        logit_input = np.clip(alphas, 1e-6, 1.0 - 1e-6)
+        alphas = np.clip(
+            np.log(logit_input / (1.0 - logit_input)) + 0.5,
+            0.0,
+            1.0,
+        )
 
-        agg_flat = np.zeros(dim, dtype=np.float32)
-        for i, (v, _) in enumerate(zip(vectors, updates)):
-            agg_flat += (alphas[i] / total_w) * v
+        weights = alphas.astype(np.float64)
+        if float(weights.sum()) <= 1e-9:
+            weights = np.ones(n, dtype=np.float64)
 
-        return self._unflatten(agg_flat, updates[0][0])
+        self._record_scalar_weights(client_ids, weights)
+        return self._weighted_average_with_weights(updates, weights)
 
 
 # ── Registry & factory ────────────────────────────────────────────────────────

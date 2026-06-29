@@ -76,6 +76,12 @@ security:
     dba_base_col: 0
     dba_scale_update: true
     dba_boost_factor: 10.0
+    model_replacement_boost_factor: 10.0
+    gaussian_noise_std: 0.1
+    attack_start_round: 1
+    attack_end_round: -1          # -1 means no end round
+    attack_on_rounds: 1
+    attack_off_rounds: 0          # e.g. on=3/off=3 for intermittent attacks
     # Label flip specific
     source_label: 0
     target_label: 1
@@ -86,6 +92,7 @@ security:
     type: "none"                # none | krum | trimmed_mean | median | fltrust | foolsgold | time_consistency | your_defense
     # Krum
     krum_num_to_select: 1
+    krum_num_malicious: 1
     # Trimmed Mean
     trim_fraction: 0.1
     # FLTrust
@@ -103,6 +110,7 @@ security:
     #   sigmoid_scale: 8.0
     #   sigmoid_center: 0.5
     #   min_effective_weight: 1e-4
+    #   enable_soft_trust_weighting: true
     #   enable_delta_clipping: true
     #   norm_clip_mad_k: 2.5
     #   norm_clip_factor: 2.0

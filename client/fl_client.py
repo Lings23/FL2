@@ -167,6 +167,7 @@ class FedSecClient(fl.client.Client):
         self.client_id = client_id
         self.model = model
         self.train_loader = train_loader
+        self._clean_train_loader = train_loader
         self.val_loader = val_loader
         self.client_cfg = client_cfg
         self.attack_cfg = attack_cfg or AttackConfig()
@@ -175,6 +176,19 @@ class FedSecClient(fl.client.Client):
             "cuda" if torch.cuda.is_available() else "cpu"
         )
         self.trainer = LocalTrainer(model, client_cfg, self.device, dp_cfg)
+        self._attack_active = False
+
+    def _is_attack_active(self, server_round: int) -> bool:
+        if not self.is_malicious or not self.attack_cfg.enabled:
+            return False
+        start = max(1, int(self.attack_cfg.attack_start_round))
+        end = int(self.attack_cfg.attack_end_round)
+        if server_round < start or (end >= 0 and server_round > end):
+            return False
+        on_rounds = max(1, int(self.attack_cfg.attack_on_rounds))
+        off_rounds = max(0, int(self.attack_cfg.attack_off_rounds))
+        cycle = on_rounds + off_rounds
+        return ((server_round - start) % cycle) < on_rounds
 
     def on_before_fit(self, parameters: List[np.ndarray], config: Dict) -> None:
         pass
@@ -192,6 +206,9 @@ class FedSecClient(fl.client.Client):
     def fit(self, ins: FitIns) -> FitRes:
         server_params = parameters_to_ndarrays(ins.parameters)
         config = ins.config
+        server_round = int(config.get("server_round", 1))
+        self.train_loader = self._clean_train_loader
+        self._attack_active = self._is_attack_active(server_round)
 
         set_parameters(self.model, server_params)
         self.on_before_fit(server_params, config)
@@ -207,11 +224,18 @@ class FedSecClient(fl.client.Client):
         logger.debug("Client %d | loss=%.4f acc=%.4f",
                      self.client_id, metrics["train_loss"], metrics["train_accuracy"])
 
+        fit_metrics = {k: float(v) for k, v in metrics.items()}
+        # These fields support stable state and offline evaluation. The server
+        # must never use is_malicious as an input to a defense decision.
+        fit_metrics["client_id"] = int(self.client_id)
+        fit_metrics["is_malicious"] = bool(self.is_malicious)
+        fit_metrics["attack_active"] = bool(self._attack_active)
+
         return FitRes(
             status=Status(code=Code.OK, message=""),
             parameters=ndarrays_to_parameters(updated_params),
             num_examples=len(self.train_loader.dataset),
-            metrics={k: float(v) for k, v in metrics.items()},
+            metrics=fit_metrics,
         )
 
     def evaluate(self, ins: EvaluateIns) -> EvaluateRes:

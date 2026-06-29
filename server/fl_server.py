@@ -7,16 +7,17 @@ Handles checkpointing, early stopping, and metric logging.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset, Subset
 
 import flwr as fl
 from flwr.common import NDArrays
@@ -66,7 +67,7 @@ def evaluate_targeted_asr(
 ) -> Optional[Dict[str, Any]]:
     """Evaluate targeted ASR on non-target-label test samples."""
     attack_type = attack_cfg.type.lower()
-    if not attack_cfg.enabled or attack_type not in {"backdoor", "dba"}:
+    if not attack_cfg.enabled or attack_type not in {"backdoor", "dba", "model_replacement"}:
         return None
 
     target_label = int(attack_cfg.backdoor_target_label)
@@ -110,12 +111,14 @@ class ServerEvaluator:
         device: torch.device,
         checkpoint_dir: Path,
         attack_cfg: Optional[AttackConfig] = None,
+        save_best_model: bool = True,
     ):
         self.model = model
         self.test_loader = test_loader
         self.device = device
         self.checkpoint_dir = checkpoint_dir
         self.attack_cfg = attack_cfg or AttackConfig()
+        self.save_best_model = bool(save_best_model)
         self.best_accuracy = 0.0
         self.best_round = 0
 
@@ -168,7 +171,8 @@ class ServerEvaluator:
         if acc > self.best_accuracy:
             self.best_accuracy = acc
             self.best_round = server_round
-            self._save_checkpoint(parameters, server_round, acc)
+            if self.save_best_model:
+                self._save_checkpoint(parameters, server_round, acc)
 
         return loss, metrics
 
@@ -182,11 +186,75 @@ class ServerEvaluator:
 
 # ── Main server builder ───────────────────────────────────────────────────────
 
+def build_fltrust_server_update_fn(
+    cfg: Config,
+    model: nn.Module,
+    root_dataset: Dataset,
+    device: torch.device,
+) -> Callable[[NDArrays], NDArrays]:
+    """Build a deterministic trusted-root training callback for FLTrust."""
+    root_size = min(max(1, int(cfg.security.defense.root_dataset_size)), len(root_dataset))
+    rng = np.random.default_rng(cfg.project.seed)
+    indices = rng.choice(len(root_dataset), size=root_size, replace=False).tolist()
+    generator = torch.Generator().manual_seed(cfg.project.seed)
+    root_loader = DataLoader(
+        Subset(root_dataset, indices),
+        batch_size=cfg.client.batch_size,
+        shuffle=True,
+        num_workers=0,
+        generator=generator,
+    )
+    root_model = copy.deepcopy(model).to(device)
+    criterion = nn.CrossEntropyLoss()
+
+    def compute_server_update(global_params: NDArrays) -> NDArrays:
+        set_parameters(root_model, global_params)
+        root_model.train()
+        if cfg.client.optimizer.lower() == "adam":
+            optimizer = torch.optim.Adam(
+                root_model.parameters(),
+                lr=cfg.client.learning_rate,
+                weight_decay=cfg.client.weight_decay,
+            )
+        else:
+            optimizer = torch.optim.SGD(
+                root_model.parameters(),
+                lr=cfg.client.learning_rate,
+                momentum=cfg.client.momentum,
+                weight_decay=cfg.client.weight_decay,
+            )
+
+        for batch_x, batch_y in root_loader:
+            batch_x = batch_x.to(device)
+            batch_y = batch_y.to(device)
+            optimizer.zero_grad()
+            loss = criterion(root_model(batch_x), batch_y)
+            loss.backward()
+            optimizer.step()
+
+        trained_params = get_parameters(root_model)
+        server_delta: NDArrays = []
+        for trained, reference in zip(trained_params, global_params):
+            if np.issubdtype(reference.dtype, np.floating):
+                server_delta.append(
+                    (trained.astype(np.float32) - reference.astype(np.float32)).astype(
+                        reference.dtype, copy=False
+                    )
+                )
+            else:
+                server_delta.append(np.zeros_like(reference))
+        return server_delta
+
+    logger.info("FLTrust root dataset prepared | samples=%d", root_size)
+    return compute_server_update
+
+
 def build_server(
     cfg: Config,
     global_model: nn.Module,
     test_loader: DataLoader,
     device: torch.device,
+    root_dataset: Optional[Dataset] = None,
 ) -> Tuple[fl.server.Server, fl.server.ServerConfig]:
     """
     Construct and return a Flower Server + ServerConfig.
@@ -206,22 +274,35 @@ def build_server(
         device=device,
         checkpoint_dir=checkpoint_dir,
         attack_cfg=cfg.security.attack,
+        save_best_model=cfg.evaluation.save_best_model,
     )
 
     # Initial parameters
     initial_params = get_parameters(global_model)
+
+    server_update_fn = None
+    if cfg.security.defense.enabled and cfg.security.defense.type.lower() == "fltrust":
+        if root_dataset is None:
+            raise ValueError("FLTrust requires a trusted root dataset")
+        server_update_fn = build_fltrust_server_update_fn(
+            cfg,
+            global_model,
+            root_dataset,
+            device,
+        )
 
     # Strategy
     strategy = FedSecStrategy(
         strategy_cfg=cfg.strategy,
         defense_cfg=cfg.security.defense,
         initial_params=initial_params,
-        evaluate_fn=evaluator if cfg.evaluation.save_best_model else None,
+        evaluate_fn=evaluator,
         num_clients=cfg.federation.num_clients,
         min_fit_clients=cfg.federation.min_fit_clients,
         min_evaluate_clients=cfg.federation.min_evaluate_clients,
         min_available_clients=cfg.federation.min_available_clients,
         clients_per_round=cfg.federation.clients_per_round,
+        server_update_fn=server_update_fn,
     )
 
     server = fl.server.Server(

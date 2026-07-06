@@ -33,6 +33,7 @@ class FederationConfig:
     min_fit_clients: int = 3
     min_evaluate_clients: int = 3
     min_available_clients: int = 5
+    max_client_samples: int = 0  # 0 keeps the complete client partition
 
 
 @dataclass
@@ -109,6 +110,7 @@ class DefenseConfig:
     krum_num_malicious: int = 1
     trim_fraction: float = 0.1
     root_dataset_size: int = 100
+    reserve_root_for_all: bool = False
     custom_params: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -130,6 +132,7 @@ class EvaluationConfig:
     metrics: List[str] = field(default_factory=lambda: ["accuracy", "loss"])
     eval_every_n_rounds: int = 1
     save_best_model: bool = True
+    max_test_samples: int = 0  # 0 evaluates the complete test set
     early_stopping: EarlyStoppingConfig = field(default_factory=EarlyStoppingConfig)
 
 

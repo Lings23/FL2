@@ -56,15 +56,14 @@ class MetricTracker:
     def save(self) -> None:
         if not self._records:
             return
-        base = self.log_dir / self.experiment_name
-
-        # JSON
-        json_path = base.with_suffix(".json")
+        # Do not use Path.with_suffix here: experiment names legitimately
+        # contain decimal points (for example malicious fraction ``m0.2``).
+        json_path = self.log_dir / f"{self.experiment_name}.json"
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(self._records, f, indent=2, default=str)
 
         # CSV
-        csv_path = base.with_suffix(".csv")
+        csv_path = self.log_dir / f"{self.experiment_name}.csv"
         all_keys: List[str] = list(
             dict.fromkeys(k for r in self._records for k in r)
         )

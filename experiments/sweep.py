@@ -48,6 +48,7 @@ DEFAULT_DEFENSES = [
     "median",
     "fltrust",
     "foolsgold",
+    "freqfed",
     "time_consistency",
 ]
 

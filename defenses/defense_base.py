@@ -472,6 +472,13 @@ class FoolsGoldDefense(BaseDefense):
 
 # ── Registry & factory ────────────────────────────────────────────────────────
 
+# Enhanced implementations live in separate modules. Re-export them here to
+# preserve the public ``defenses.defense_base`` import path.
+from defenses.fltrust_defense import FLTrustDefense as FLTrustDefense
+from defenses.foolsgold_defense import FoolsGoldDefense as FoolsGoldDefense
+from defenses.freqfed_defense import FreqFedDefense as FreqFedDefense
+
+
 DEFENSE_REGISTRY: Dict[str, Any] = {
     "none":          FedAvgDefense,
     "fedavg":        FedAvgDefense,
@@ -480,6 +487,7 @@ DEFENSE_REGISTRY: Dict[str, Any] = {
     "median":        MedianDefense,
     "fltrust":       FLTrustDefense,
     "foolsgold":     FoolsGoldDefense,
+    "freqfed":       FreqFedDefense,
     "time_consistency": "TimeConsistencyDefense",
     # ── Extension point ────────────────────────────────────────────────────
     # "your_defense": YourDefenseClass,

@@ -9,7 +9,7 @@ A highly modular and extensible federated learning research framework built on [
 ## ✨ Key Features
 
 - **Extensive Attack Models:** Simulates malicious clients with Data Poisoning (Label Flip, Backdoor, DBA) and Model Poisoning (Byzantine, Gaussian Noise, Model Replacement).
-- **Robust Defenses:** Built-in aggregation mechanisms to defend against attacks, including Krum, Trimmed Mean, Median, FLTrust, FoolsGold, and Time Consistency.
+- **Robust Defenses:** Built-in aggregation mechanisms to defend against attacks, including Krum, Trimmed Mean, Median, FLTrust, FoolsGold, FreqFed, and Time Consistency.
 - **Advanced FL Strategies:** Out-of-the-box support for `FedAvg`, `FedProx` (with proximal regularization), `FedYogi`, and `FedAdam` (server-side adaptive optimizers).
 - **Data Partitioning:** Supports various distribution setups like IID, non-IID (sharded), and Dirichlet (LDA) heterogeneous data splitting.
 - **Differential Privacy (DP):** Integrated DP-SGD wrapper for local client training, allowing custom noise multipliers and gradient clipping.
@@ -133,6 +133,20 @@ python experiments/sweep.py --rounds 50 --seeds 1 7 21 42 87 \
 Each run saves its effective `*_config.json`, round metrics, and a dedicated
 `*_clients.csv` containing stable client IDs, attack labels, trust, raw/clipped
 delta norms, aggregation weights, and post-clipping impact estimates.
+
+Run the dedicated periodic-attack benchmark and its FFT/direction ablations:
+
+```bash
+# 12-round pipeline check
+python experiments/periodic_attack.py --smoke
+
+# Full preregistered matrix; completed round files are resumed automatically
+python experiments/periodic_attack.py --mode all --output logs/periodic_attack_v2
+```
+
+The runner writes per-round CSVs, bootstrap summaries, Holm-corrected paired
+permutation tests, and security/utility plots. Use `--rerun` to replace cached
+runs.
 
 ### 5. Running Tests
 ```bash

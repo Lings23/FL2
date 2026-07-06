@@ -7,10 +7,11 @@ __pycache__/
 venv/
 .venv/
 
-# Data and generated artifacts
-data/cifar-10-batches-py/
-data/cifar-10-python.tar.gz
-data/MNIST/
+# Downloaded datasets (keep the data package source files tracked)
+data/**
+!data/*.py
+
+# Generated artifacts
 logs/
 checkpoints/
 

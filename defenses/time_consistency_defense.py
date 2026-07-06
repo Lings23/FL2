@@ -102,6 +102,8 @@ class TimeConsistencyDefense(BaseDefense):
         self.periodic_entropy_threshold = float(params.get("periodic_entropy_threshold", 0.65))
         self.periodic_freq_var_threshold = float(params.get("periodic_freq_var_threshold", 1e-3))
         self.periodic_penalty = float(params.get("periodic_penalty", 0.60))
+        self.enable_fft_features = bool(params.get("enable_fft_features", True))
+        self.enable_direction_features = bool(params.get("enable_direction_features", True))
 
         self.derivative_beta = float(params.get("derivative_beta", 4.0))
         self.derivative_max = float(params.get("derivative_max", 3.0))
@@ -140,6 +142,8 @@ class TimeConsistencyDefense(BaseDefense):
         self._last_quarantined_clients: int = 0
         self._last_capped_clients: int = 0
         self._last_constraint_tags: List[str] = []
+        self._fft_periodic_penalty_clients = 0
+        self._direction_penalty_clients = 0
 
         logger.info(
             "TimeConsistencyDefense init | projection_dim=%d windows=%s",
@@ -166,6 +170,8 @@ class TimeConsistencyDefense(BaseDefense):
             return self._weighted_average(updates)
 
         client_ids = self._resolve_client_ids(len(updates))
+        self._fft_periodic_penalty_clients = 0
+        self._direction_penalty_clients = 0
         signatures = []
         norms = []
 
@@ -349,13 +355,16 @@ class TimeConsistencyDefense(BaseDefense):
         else:
             rank_change = 0.0
 
-        spectral_entropy_low, dominant_energy, low_freq_power, dominant_freq = self._frequency_features(
-            state.norm_history + [norm]
-        )
+        if self.enable_fft_features:
+            spectral_entropy_low, dominant_energy, low_freq_power, dominant_freq = self._frequency_features(
+                state.norm_history + [norm]
+            )
+        else:
+            spectral_entropy_low, dominant_energy, low_freq_power, dominant_freq = (0.0, 0.0, 0.0, 0.0)
 
         feature = np.array(
             [
-                direction_anomaly,
+                direction_anomaly if self.enable_direction_features else 0.0,
                 magnitude_change,
                 offset_score,
                 rank_change,
@@ -473,11 +482,16 @@ class TimeConsistencyDefense(BaseDefense):
         return np.mean(np.vstack(recent), axis=0).astype(np.float32)
 
     def _apply_deep_penalties(self, state: ClientTrustState, trusts: Dict[str, float]) -> None:
-        if len(state.feature_history) >= self.direction_window:
+        direction_penalized = False
+        if self.enable_direction_features and len(state.feature_history) >= self.direction_window:
             recent_dir = [float(f[0]) for f in state.feature_history[-self.direction_window:]]
             if all(v >= self.direction_threshold for v in recent_dir):
                 trusts["short"] *= self.direction_penalty
                 trusts["mid"] *= self.direction_penalty
+                direction_penalized = True
+
+        if direction_penalized:
+            self._direction_penalty_clients += 1
 
         if len(state.feature_history) > self.offset_window:
             current_offset = float(state.feature_history[-1][2])
@@ -485,7 +499,7 @@ class TimeConsistencyDefense(BaseDefense):
             if current_offset - past_offset >= self.offset_growth_threshold:
                 trusts["mid"] *= self.offset_penalty
 
-        if len(state.feature_history) >= self.windows["short"]:
+        if self.enable_fft_features and len(state.feature_history) >= self.windows["short"]:
             low_entropy = float(state.feature_history[-1][4])
             freqs = np.asarray(state.dominant_freq_history[-self.windows["short"]:], dtype=np.float32)
             nonzero_freqs = freqs[freqs > 0.0]
@@ -495,6 +509,7 @@ class TimeConsistencyDefense(BaseDefense):
                 and float(np.var(nonzero_freqs)) <= self.periodic_freq_var_threshold
             ):
                 trusts["long"] *= self.periodic_penalty
+                self._fft_periodic_penalty_clients += 1
 
         for scale in SCALE_ORDER:
             trusts[scale] = float(np.clip(trusts[scale], 0.0, 1.0))
@@ -778,7 +793,26 @@ class TimeConsistencyDefense(BaseDefense):
             "time_consistency_clip_norm": float(self._last_clip_norm),
             "time_consistency_quarantined_clients": float(self._last_quarantined_clients),
             "time_consistency_capped_clients": float(self._last_capped_clients),
+            "fft_periodic_penalty_clients": float(self._fft_periodic_penalty_clients),
+            "direction_penalty_clients": float(self._direction_penalty_clients),
         }
+        current_states = [self._states[cid] for cid in client_ids if cid in self._states]
+        if current_states:
+            latest_features = np.vstack([state.feature_history[-1] for state in current_states])
+            self.last_round_metrics["mean_dominant_frequency_energy"] = float(
+                np.mean(latest_features[:, 5])
+            )
+            self.last_round_metrics["mean_direction_anomaly"] = float(
+                np.mean(latest_features[:, 0])
+            )
+            self.last_round_metrics["mean_low_frequency_power"] = float(
+                np.mean(latest_features[:, 6])
+            )
+            for scale in SCALE_ORDER:
+                self.last_round_metrics[f"{scale}_trust_mean"] = float(np.mean([
+                    state.scale_trust.get(scale, state.final_trust)
+                    for state in current_states
+                ]))
 
     def _log_client_weights(
         self,

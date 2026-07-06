@@ -308,27 +308,41 @@ class FEMNISTDataset(BaseDataset):
     """
     Federated EMNIST (FEMNIST).
 
-    Falls back to torchvision EMNIST 'byclass' split
-    if the LEAF processed files are not present.
+    True FEMNIST is EMNIST grouped by the original writer/client. When
+    processed LEAF JSON files are unavailable, this loader falls back to the
+    centralized torchvision EMNIST ``byclass`` split. The caller may still
+    partition that fallback synthetically, but it is not a natural
+    writer-level FEMNIST partition.
 
     For full LEAF partitioning (per-user splits), place
-    the LEAF output under data/femnist/{train,test}/ and
-    set LEAF_AVAILABLE=True.
+    the LEAF output under data/femnist/{train,test}/. Both splits are
+    detected automatically; no source-code flag needs to be changed.
     """
     num_classes = 62  # 10 digits + 26 lower + 26 upper
     input_shape = (1, 28, 28)
-    LEAF_AVAILABLE: bool = False
+
+    def _leaf_available(self) -> bool:
+        """Return whether both LEAF splits contain processed JSON files."""
+        leaf_root = self.data_dir / "femnist"
+        return all(
+            split_dir.is_dir() and any(split_dir.glob("*.json"))
+            for split_dir in (leaf_root / "train", leaf_root / "test")
+        )
 
     def load_train(self) -> Dataset:
-        if self.LEAF_AVAILABLE:
+        if self._leaf_available():
             return self._load_leaf("train")
-        logger.warning("LEAF data not found — using torchvision EMNIST 'byclass'.")
+        logger.warning(
+            "LEAF FEMNIST data not found; using centralized torchvision "
+            "EMNIST 'byclass'. Client partitions will be synthetic, not "
+            "writer-based FEMNIST partitions."
+        )
         return datasets.EMNIST(
             root=self.data_dir, split="byclass", train=True, download=True,
             transform=femnist_transforms(train=True))
 
     def load_test(self) -> Dataset:
-        if self.LEAF_AVAILABLE:
+        if self._leaf_available():
             return self._load_leaf("test")
         return datasets.EMNIST(
             root=self.data_dir, split="byclass", train=False, download=True,
@@ -357,10 +371,13 @@ class FEMNISTDataset(BaseDataset):
 
             def __getitem__(self, idx):
                 img, label = self.samples[idx]
-                img_tensor = torch.tensor(img).unsqueeze(0)
+                # LEAF stores flattened float pixels. Convert to a grayscale
+                # PIL image so both sources use the same transform pipeline.
+                img = np.clip(img, 0.0, 1.0)
+                image = Image.fromarray((img * 255).astype(np.uint8), mode="L")
                 if self.transform:
-                    img_tensor = self.transform(img_tensor)
-                return img_tensor, label
+                    image = self.transform(image)
+                return image, label
 
         return LEAFDataset(self.data_dir, split, femnist_transforms(split == "train"))
 

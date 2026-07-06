@@ -53,10 +53,10 @@ def set_seed(seed: int) -> None:
 # Data pipeline
 # ---------------------------------------------------------------------------
 
-def build_data_pipeline(cfg: Config):
+def build_data_pipeline(cfg: Config, manifest_path: Optional[Path] = None):
     """
-    Returns per-client DataLoader pairs, a test DataLoader, and a disjoint
-    trusted root subset reserved consistently for all defenses.
+    Returns per-client DataLoader pairs, a test DataLoader, and an optional
+    disjoint trusted root subset. Root data is reserved only for FLTrust.
 
     Performance note: DataLoaders are built here (in the parent process) so
     that dataset partitioning happens once.  However, the loaders_map is
@@ -71,32 +71,40 @@ def build_data_pipeline(cfg: Config):
     )
     train_ds = dataset.load_train()
 
-    root_size = min(
-        max(1, int(cfg.security.defense.root_dataset_size)),
-        max(1, len(train_ds) - cfg.federation.num_clients),
-    )
-    root_rng = np.random.default_rng(cfg.project.seed)
-    root_indices = np.sort(
-        root_rng.choice(len(train_ds), size=root_size, replace=False)
-    )
-    root_index_set = set(root_indices.tolist())
-    federated_indices = [
-        idx for idx in range(len(train_ds)) if idx not in root_index_set
-    ]
-    root_dataset = Subset(train_ds, root_indices.tolist())
-    federated_dataset = Subset(train_ds, federated_indices)
-    if hasattr(train_ds, "targets"):
-        targets = train_ds.targets
-        targets_array = np.asarray(
-            targets.cpu().numpy() if isinstance(targets, torch.Tensor) else targets
+    use_root = (
+        cfg.security.defense.reserve_root_for_all
+        or (
+            cfg.security.defense.enabled
+            and cfg.security.defense.type.lower() == "fltrust"
         )
-        federated_dataset.targets = targets_array[federated_indices]  # type: ignore[attr-defined]
-
-    logger.info(
-        "Reserved trusted root dataset | root=%d federated=%d",
-        len(root_dataset),
-        len(federated_dataset),
     )
+    root_dataset = None
+    root_indices = np.asarray([], dtype=np.int64)
+    federated_dataset = train_ds
+    if use_root:
+        root_size = min(
+            max(1, int(cfg.security.defense.root_dataset_size)),
+            max(1, len(train_ds) - cfg.federation.num_clients),
+        )
+        targets = getattr(train_ds, "targets", None)
+        targets_array = None
+        if targets is not None:
+            targets_array = np.asarray(
+                targets.cpu().numpy() if isinstance(targets, torch.Tensor) else targets
+            )
+        root_indices = _select_root_indices(
+            len(train_ds), root_size, cfg.project.seed, targets_array
+        )
+        root_index_set = set(root_indices.tolist())
+        federated_indices = [idx for idx in range(len(train_ds)) if idx not in root_index_set]
+        root_dataset = Subset(train_ds, root_indices.tolist())
+        federated_dataset = Subset(train_ds, federated_indices)
+        if targets_array is not None:
+            federated_dataset.targets = targets_array[federated_indices]  # type: ignore[attr-defined]
+        logger.info(
+            "Reserved trusted FLTrust root dataset | root=%d federated=%d stratified=%s",
+            len(root_dataset), len(federated_dataset), targets_array is not None,
+        )
 
     partitioner = FederatedPartitioner(
         dataset=federated_dataset,
@@ -107,11 +115,32 @@ def build_data_pipeline(cfg: Config):
         val_split=cfg.dataset.val_split,
     )
 
+    if manifest_path is not None:
+        manifest = {
+            "dataset": cfg.dataset.name,
+            "seed": int(cfg.project.seed),
+            "max_client_samples": int(cfg.federation.max_client_samples),
+            "root_indices": root_indices.tolist(),
+            "client_indices": {
+                str(cid): [int(idx) for idx in indices]
+                for cid, indices in partitioner.get_all_client_indices().items()
+            },
+        }
+        canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
+        import hashlib
+        manifest["sha256"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(manifest_path, "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, indent=2)
+
     logger.info("\n%s", partitioner.summary())
 
     loaders_map: Dict[int, Tuple[DataLoader, DataLoader]] = {}
     for cid in range(cfg.federation.num_clients):
         train_sub, val_sub = partitioner.get_client_data(cid)
+        max_client_samples = int(cfg.federation.max_client_samples)
+        if max_client_samples > 0 and len(train_sub) > max_client_samples:
+            train_sub = Subset(train_sub, range(max_client_samples))
         loaders_map[cid] = (
             DataLoader(train_sub, batch_size=cfg.client.batch_size,
                        shuffle=True, num_workers=0, pin_memory=False),
@@ -120,7 +149,38 @@ def build_data_pipeline(cfg: Config):
         )
 
     test_loader = dataset.get_test_loader(batch_size=128)
+    max_test_samples = int(cfg.evaluation.max_test_samples)
+    if max_test_samples > 0 and len(test_loader.dataset) > max_test_samples:
+        test_loader = DataLoader(
+            Subset(test_loader.dataset, range(max_test_samples)),
+            batch_size=128,
+            shuffle=False,
+            num_workers=0,
+        )
     return loaders_map, test_loader, root_dataset
+
+
+def _select_root_indices(
+    dataset_size: int,
+    root_size: int,
+    seed: int,
+    targets: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Select a deterministic, approximately class-balanced trusted subset."""
+    rng = np.random.default_rng(seed)
+    if targets is None or len(targets) != dataset_size:
+        return np.sort(rng.choice(dataset_size, size=root_size, replace=False))
+    pools = []
+    for label in np.unique(targets):
+        indices = np.flatnonzero(targets == label)
+        rng.shuffle(indices)
+        pools.append(indices.tolist())
+    selected = []
+    while len(selected) < root_size and any(pools):
+        for pool in pools:
+            if pool and len(selected) < root_size:
+                selected.append(pool.pop())
+    return np.sort(np.asarray(selected, dtype=np.int64))
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +236,10 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
 
-    loaders_map, test_loader, root_dataset = build_data_pipeline(cfg)
+    data_manifest_path = Path(cfg.project.log_dir) / f"{experiment_name}_data_manifest.json"
+    loaders_map, test_loader, root_dataset = build_data_pipeline(
+        cfg, manifest_path=data_manifest_path
+    )
     model_factory = build_model_factory(cfg)
 
     global_model = get_model(

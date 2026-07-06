@@ -18,6 +18,7 @@ federation:
   min_fit_clients: 3
   min_evaluate_clients: 3
   min_available_clients: 5
+  max_client_samples: 0          # smoke tests may cap local train samples
 
 # ── Dataset ──────────────────────────────────────────────────
 dataset:
@@ -89,7 +90,7 @@ security:
   # Defense settings
   defense:
     enabled: false
-    type: "none"                # none | krum | trimmed_mean | median | fltrust | foolsgold | time_consistency | your_defense
+    type: "none"                # none | krum | trimmed_mean | median | fltrust | foolsgold | freqfed | time_consistency | your_defense
     # Krum
     krum_num_to_select: 1
     krum_num_malicious: 1
@@ -97,6 +98,16 @@ security:
     trim_fraction: 0.1
     # FLTrust
     root_dataset_size: 100
+    reserve_root_for_all: false   # periodic comparison sets true for a common holdout
+    # Method-specific examples:
+    # FLTrust: {root_epochs: 1, root_batch_size: 32, root_optimizer: sgd,
+    #           root_learning_rate: 0.01, server_lr: 1.0,
+    #           use_num_examples: false, zero_trust_fallback: server_update}
+    # FoolsGold: {history_decay: 1.0, history_max_idle_rounds: 50,
+    #             use_num_examples: true, logit_offset: 0.5}
+    # FreqFed: {low_frequency_ratio: 0.2, min_cluster_size: 3, min_samples: 2,
+    #           min_selected_clients: 2, projection_dim: 4096,
+    #           fallback: median, seed: 42}
     # Extension point: add your defense parameters here.
     # Example for time_consistency:
     # custom_params:
@@ -120,6 +131,8 @@ security:
     #   low_trust_weight_cap: 0.01
     #   quarantine_weight: 0.0
     #   log_client_weights: true
+    #   enable_fft_features: true
+    #   enable_direction_features: true
     custom_params: {}
 
 # ── Evaluation ───────────────────────────────────────────────
@@ -130,6 +143,7 @@ evaluation:
     - "backdoor_asr"            # Attack Success Rate (optional)
   eval_every_n_rounds: 1
   save_best_model: true
+  max_test_samples: 0           # smoke tests may cap server evaluation samples
   early_stopping:
     enabled: false
     patience: 10

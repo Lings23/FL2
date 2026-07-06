@@ -9,7 +9,7 @@ Dataset          Resolution    Architecture     Params      Serialized
 --------         ----------    ------------     ------      ----------
 mnist            28x28x1       mnist_cnn        ~94K        0.39 MB
 fashion_mnist    28x28x1       mnist_cnn        ~94K        0.39 MB
-emnist           28x28x1       mnist_cnn        ~107K       0.43 MB
+femnist          28x28x1       mnist_cnn        ~107K       0.43 MB
 cifar10          32x32x3       resnet18         ~11M        44.7 MB
 cifar100         32x32x3       resnet18         ~11M        44.8 MB
 svhn             32x32x3       resnet18         ~11M        44.7 MB
@@ -45,12 +45,17 @@ from models.char_lstm import CharLSTM
 logger = logging.getLogger(__name__)
 
 # Datasets whose resolution is too small for the standard ResNet stem
-_SMALL_INPUT_DATASETS = {"mnist", "fashion_mnist", "emnist",
+_SMALL_INPUT_DATASETS = {"mnist", "fashion_mnist", "emnist", "femnist",
                           "cifar10", "cifar100", "svhn", "tiny_imagenet",
                           "celeba"}
 
 # Datasets that are grayscale (single channel)
-_GRAYSCALE_DATASETS = {"mnist", "fashion_mnist", "emnist"}
+_GRAYSCALE_DATASETS = {"mnist", "fashion_mnist", "emnist", "femnist"}
+
+# Canonical class counts for datasets currently supported by data/dataset.py.
+# Keeping this guard here prevents a generic config default (usually 10) from
+# constructing an invalid classifier head for 62-class FEMNIST.
+_DATASET_NUM_CLASSES = {"cifar10": 10, "mnist": 10, "femnist": 62, "emnist": 62}
 
 
 def _patch_resnet_for_small_input(model: nn.Module, in_channels: int) -> nn.Module:
@@ -102,12 +107,21 @@ def get_model(
     ds = dataset_name.lower()
     is_small = ds in _SMALL_INPUT_DATASETS
     in_channels = 1 if ds in _GRAYSCALE_DATASETS else 3
+    expected_classes = _DATASET_NUM_CLASSES.get(ds)
+    if expected_classes is not None and num_classes != expected_classes:
+        logger.warning(
+            "Ignoring num_classes=%d for dataset=%r; using canonical value %d.",
+            num_classes,
+            ds,
+            expected_classes,
+        )
+        num_classes = expected_classes
 
     # ------------------------------------------------------------------
     # mnist_cnn: lightweight CNN for 28x28 grayscale tasks
     # ------------------------------------------------------------------
     if arch in ("mnist_cnn", "cnn"):
-        if ds and ds not in {"mnist", "fashion_mnist", "emnist", ""}:
+        if ds and ds not in {"mnist", "fashion_mnist", "emnist", "femnist", ""}:
             logger.warning(
                 "mnist_cnn is designed for 28x28 grayscale inputs; "
                 "dataset=%r may give poor results. "
@@ -119,7 +133,7 @@ def get_model(
     # MLP: simple fully-connected baseline for 28x28 image datasets
     # ------------------------------------------------------------------
     elif arch == "mlp":
-        if ds and ds not in {"mnist", "fashion_mnist", "emnist", ""}:
+        if ds and ds not in {"mnist", "fashion_mnist", "emnist", "femnist", ""}:
             logger.warning(
                 "mlp assumes flattened 28x28 inputs; dataset=%r may not fit.",
                 ds,

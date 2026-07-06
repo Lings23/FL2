@@ -94,6 +94,7 @@ class FedSecStrategy(Strategy):
         fit_metrics_aggregation_fn: Optional[MetricsAggregationFn] = None,
         evaluate_metrics_aggregation_fn: Optional[MetricsAggregationFn] = None,
         server_update_fn: Optional[Callable[[NDArrays], NDArrays]] = None,
+        sampling_seed: int = 42,
     ):
         self.scfg = strategy_cfg
         self.defense: BaseDefense = get_defense(defense_cfg, num_clients=num_clients)
@@ -108,7 +109,9 @@ class FedSecStrategy(Strategy):
         self.fit_metrics_aggregation_fn = fit_metrics_aggregation_fn
         self.evaluate_metrics_aggregation_fn = evaluate_metrics_aggregation_fn
         self.server_update_fn = server_update_fn
+        self.sampling_seed = int(sampling_seed)
         self.last_client_records: List[Dict[str, Any]] = []
+        self._planned_partition_ids: Dict[int, List[str]] = {}
 
         # FedYogi / FedAdam server-side state
         self._m: Optional[NDArrays] = None   # first moment
@@ -129,10 +132,13 @@ class FedSecStrategy(Strategy):
     ) -> List[Tuple[ClientProxy, fl.common.FitIns]]:
         config = self.on_fit_config_fn(server_round)
         fit_ins = fl.common.FitIns(parameters, config)
-        clients = client_manager.sample(
-            num_clients=self.clients_per_round,
-            min_num_clients=self.min_fit_clients,
+        clients = self._deterministic_sample(
+            client_manager, self.clients_per_round, self.min_fit_clients,
+            self.sampling_seed + int(server_round),
         )
+        self._planned_partition_ids[int(server_round)] = [
+            str(getattr(client, "partition_id", client.cid)) for client in clients
+        ]
         return [(c, fit_ins) for c in clients]
 
     def configure_evaluate(
@@ -140,11 +146,31 @@ class FedSecStrategy(Strategy):
     ) -> List[Tuple[ClientProxy, fl.common.EvaluateIns]]:
         config = self.on_evaluate_config_fn(server_round) if self.on_evaluate_config_fn else {}
         eval_ins = fl.common.EvaluateIns(parameters, config)
-        clients = client_manager.sample(
-            num_clients=self.min_evaluate_clients,
-            min_num_clients=self.min_evaluate_clients,
+        clients = self._deterministic_sample(
+            client_manager, self.min_evaluate_clients, self.min_evaluate_clients,
+            self.sampling_seed + 100_000 + int(server_round),
         )
         return [(c, eval_ins) for c in clients]
+
+    @staticmethod
+    def _deterministic_sample(client_manager, count: int, minimum: int, seed: int):
+        """Select the same clients for a round across defense configurations."""
+        available = getattr(client_manager, "all", lambda: {})()
+        def logical_id(client) -> tuple[int, Union[int, str]]:
+            raw = getattr(client, "partition_id", None)
+            if raw is not None:
+                try:
+                    return (0, int(raw))
+                except (TypeError, ValueError):
+                    return (1, str(raw))
+            return (1, str(client.cid))
+
+        clients = sorted(available.values(), key=logical_id)
+        if len(clients) < minimum:
+            return client_manager.sample(num_clients=count, min_num_clients=minimum)
+        count = min(count, len(clients))
+        indices = np.random.default_rng(seed).choice(len(clients), size=count, replace=False)
+        return [clients[int(index)] for index in sorted(indices)]
 
     def aggregate_fit(
         self,
@@ -179,7 +205,7 @@ class FedSecStrategy(Strategy):
         # ── Defense aggregation ───────────────────────────────────────────────
         aggregation_started = time.perf_counter()
         self.defense.set_context(server_round, client_ids, self.global_params)
-        if hasattr(self.defense, "set_server_update"):
+        if getattr(self.defense, "requires_server_update", False):
             if self.server_update_fn is None:
                 raise RuntimeError("FLTrust requires a configured server root update function")
             server_update = self.server_update_fn(self.global_params)
@@ -214,7 +240,13 @@ class FedSecStrategy(Strategy):
         for key, value in defense_metrics.items():
             if isinstance(value, (int, float, np.floating)):
                 fit_metrics[key] = float(value)
+            elif isinstance(value, (str, bool)):
+                fit_metrics[key] = value
         fit_metrics.update(self._security_round_metrics(self.last_client_records))
+        fit_metrics["selected_partition_ids"] = ",".join(sorted(client_ids, key=str))
+        fit_metrics["planned_partition_ids"] = ",".join(sorted(
+            self._planned_partition_ids.get(int(server_round), []), key=str
+        ))
         fit_metrics["aggregation_time_seconds"] = float(aggregation_time)
 
         logger.info("Round %d aggregation done (defense=%s)",
@@ -304,6 +336,7 @@ class FedSecStrategy(Strategy):
         metrics["selected_malicious_clients"] = len(malicious)
         metrics["selected_active_attackers"] = len(active_malicious)
         metrics["selected_benign_clients"] = len(benign)
+        metrics["attack_active"] = float(bool(active_malicious))
 
         if all(record["aggregation_weight"] is not None for record in records):
             metrics["malicious_aggregation_weight_share"] = float(sum(

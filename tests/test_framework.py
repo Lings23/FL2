@@ -11,6 +11,7 @@ from io import BytesIO
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 from PIL import Image
@@ -281,6 +282,113 @@ class TestDefenses:
         np.testing.assert_allclose(d._history["a"], np.array([2.0, 0.0]))
         np.testing.assert_allclose(d._history["c"], np.array([0.0, 2.0]))
 
+    def test_foolsgold_similar_clients_are_downweighted(self):
+        from defenses.defense_base import FoolsGoldDefense
+        from config.config_loader import DefenseConfig
+
+        d = FoolsGoldDefense(DefenseConfig(custom_params={"use_num_examples": False}))
+        d.set_context(1, ["sybil-a", "sybil-b", "honest"], [np.zeros(3, dtype=np.float32)])
+        d.aggregate(_make_updates([
+            np.array([1.0, 0.0, 0.0], dtype=np.float32),
+            np.array([1.0, 0.0, 0.0], dtype=np.float32),
+            np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        ]))
+
+        assert d.last_client_trusts["honest"] > d.last_client_trusts["sybil-a"]
+        assert d.last_round_metrics["foolsgold_fallback"] == 0.0
+
+    def test_fltrust_all_zero_trust_uses_server_update(self):
+        from defenses.defense_base import FLTrustDefense
+        from config.config_loader import DefenseConfig
+
+        d = FLTrustDefense(DefenseConfig(custom_params={"zero_trust_fallback": "server_update"}))
+        d.set_context(1, ["a", "b"], [np.zeros(2, dtype=np.float32)])
+        d.set_server_update([np.ones(2, dtype=np.float32) * 0.25])
+        result = d.aggregate(_make_updates([
+            -np.ones(2, dtype=np.float32),
+            -np.ones(2, dtype=np.float32) * 2,
+        ]))
+
+        np.testing.assert_allclose(result[0], np.full(2, 0.25, dtype=np.float32))
+        assert d.last_round_metrics["fltrust_fallback"] == 1.0
+
+    def test_freqfed_selects_largest_cluster(self, monkeypatch):
+        from defenses.defense_base import FreqFedDefense
+        from config.config_loader import DefenseConfig
+
+        cfg = DefenseConfig(custom_params={
+            "min_cluster_size": 2,
+            "min_samples": 1,
+            "min_selected_clients": 2,
+            "projection_dim": 0,
+        })
+        d = FreqFedDefense(cfg)
+        d.set_context(1, ["a", "b", "c", "outlier"], [np.zeros((2, 2), dtype=np.float32)])
+        monkeypatch.setattr(
+            d,
+            "_cluster",
+            lambda _: (np.array([0, 0, 0, -1]), np.array([0.9, 0.8, 0.7, 0.0])),
+        )
+        updates = [
+            ([np.full((2, 2), value, dtype=np.float32)], 10)
+            for value in (1.0, 1.1, 0.9, 100.0)
+        ]
+        result = d.aggregate(updates)
+
+        assert float(result[0].mean()) == pytest.approx(1.0, abs=1e-6)
+        assert d.last_client_aggregation_weights["outlier"] == 0.0
+        assert d.last_round_metrics["freqfed_selected_clients"] == 3.0
+
+    def test_freqfed_small_round_uses_median_fallback(self):
+        from defenses.defense_base import FreqFedDefense
+        from config.config_loader import DefenseConfig
+
+        d = FreqFedDefense(DefenseConfig(custom_params={
+            "min_cluster_size": 3,
+            "fallback": "median",
+        }))
+        updates = _make_updates([
+            np.zeros(2, dtype=np.float32),
+            np.ones(2, dtype=np.float32) * 10,
+        ])
+        result = d.aggregate(updates)
+
+        np.testing.assert_allclose(result[0], np.full(2, 5.0, dtype=np.float32))
+        assert d.last_round_metrics["freqfed_fallback"] == 1.0
+
+    def test_freqfed_real_hdbscan_path(self):
+        pytest.importorskip("hdbscan")
+        from defenses.defense_base import FreqFedDefense
+        from config.config_loader import DefenseConfig
+
+        d = FreqFedDefense(DefenseConfig(custom_params={
+            "min_cluster_size": 3,
+            "min_samples": 2,
+        }))
+        rng = np.random.default_rng(4)
+        first = np.tile([1.0, 0.0, 0.0, 0.0, 0.0], (12, 1))
+        second = np.tile([0.0, 1.0, 0.0, 0.0, 0.0], (6, 1))
+        vectors = np.vstack([
+            first + rng.normal(0, 0.08, first.shape),
+            second + rng.normal(0, 0.08, second.shape),
+        ])
+        vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+
+        labels, _ = d._cluster(vectors)
+
+        assert len(set(labels[:12])) == 1
+        assert len(set(labels[12:])) == 1
+        assert labels[0] >= 0 and labels[12] >= 0 and labels[0] != labels[12]
+
+    def test_fltrust_root_selection_is_balanced(self):
+        from main import _select_root_indices
+
+        targets = np.repeat(np.arange(3), 10)
+        selected = _select_root_indices(30, 6, seed=7, targets=targets)
+        counts = np.bincount(targets[selected], minlength=3)
+
+        np.testing.assert_array_equal(counts, np.array([2, 2, 2]))
+
 
 class TestTimeConsistencyDefense:
     def _defense(self, **custom_params):
@@ -522,6 +630,237 @@ class TestConfigLoader:
         from config.config_loader import load_config
         with pytest.raises(FileNotFoundError):
             load_config("nonexistent.yaml")
+
+
+class TestPeriodicDefenseAblations:
+    @staticmethod
+    def _defense(**custom_params):
+        from config.config_loader import DefenseConfig
+        from defenses.defense_base import get_defense
+        defaults = {"projection_dim": 8, "windows": {
+            "instant": 1, "short": 3, "mid": 4, "long": 6,
+        }}
+        defaults.update(custom_params)
+        return get_defense(DefenseConfig(type="time_consistency", custom_params=defaults))
+
+    def test_fft_ablation_zeroes_frequency_features(self):
+        d = self._defense(enable_fft_features=False)
+        state = d._get_state("client")
+        state.norm_history.extend([1.0, 2.0, 1.0, 2.0])
+        feature, dominant_frequency = d._build_feature(
+            state, np.ones(4, dtype=np.float32), 1.0, 0.0, 0, 2
+        )
+        np.testing.assert_allclose(feature[4:7], np.zeros(3), atol=1e-7)
+        assert dominant_frequency == 0.0
+
+    def test_direction_ablation_zeroes_direction_feature(self):
+        d = self._defense(enable_direction_features=False)
+        state = d._get_state("client")
+        state.signature_history.append(np.ones(4, dtype=np.float32))
+        feature, _ = d._build_feature(
+            state, -np.ones(4, dtype=np.float32), 2.0, 0.0, 0, 2
+        )
+        assert feature[0] == 0.0
+
+    def test_direction_penalty_targets_short_and_mid_only(self):
+        d = self._defense(direction_window=3, direction_threshold=0.6,
+                          direction_penalty=0.5, enable_direction_features=True,
+                          enable_fft_features=False)
+        state = d._get_state("client")
+        feature = np.zeros(7, dtype=np.float32)
+        feature[0] = 0.9
+        state.feature_history.extend([feature.copy() for _ in range(3)])
+        trusts = {scale: 1.0 for scale in ("instant", "short", "mid", "long")}
+        d._apply_deep_penalties(state, trusts)
+        assert trusts == {"instant": 1.0, "short": 0.5, "mid": 0.5, "long": 1.0}
+        assert d._direction_penalty_clients == 1
+
+    def test_periodic_penalty_disabled_with_fft_ablation(self):
+        d = self._defense(enable_fft_features=False)
+        state = d._get_state("client")
+        feature = np.zeros(7, dtype=np.float32)
+        feature[4] = 1.0
+        state.feature_history.extend([feature.copy() for _ in range(4)])
+        state.dominant_freq_history.extend([0.5, 0.5, 0.5, 0.5])
+        trusts = {scale: 1.0 for scale in ("instant", "short", "mid", "long")}
+        d._apply_deep_penalties(state, trusts)
+        assert trusts["long"] == 1.0
+        assert d._fft_periodic_penalty_clients == 0
+
+    @pytest.mark.parametrize("values, expected", [
+        ([1.0, 2.0] * 3, 0.5),
+        ([2.0, 2.0, 2.0, 1.0, 1.0, 1.0], 1.0 / 6.0),
+    ])
+    def test_fft_identifies_configured_periods(self, values, expected):
+        d = self._defense(enable_fft_features=True)
+        _, _, _, dominant_frequency = d._frequency_features(values)
+        assert dominant_frequency == pytest.approx(expected)
+
+    def test_periodic_penalty_counter_records_client(self):
+        d = self._defense(enable_fft_features=True, periodic_entropy_threshold=0.5,
+                          periodic_freq_var_threshold=1e-6, periodic_penalty=0.6)
+        state = d._get_state("client")
+        feature = np.zeros(7, dtype=np.float32)
+        feature[4] = 0.9
+        state.feature_history.extend([feature.copy() for _ in range(4)])
+        state.dominant_freq_history.extend([0.5, 0.5, 0.5, 0.5])
+        trusts = {scale: 1.0 for scale in ("instant", "short", "mid", "long")}
+        d._apply_deep_penalties(state, trusts)
+        assert trusts["long"] == pytest.approx(0.6)
+        assert d._fft_periodic_penalty_clients == 1
+
+
+class TestPeriodicAttackExperiment:
+    def test_attack_schedule_starts_after_warmup(self):
+        from experiments.periodic_attack import attack_active
+        assert [attack_active(rnd, 11, 1, 1) for rnd in range(9, 15)] == [
+            False, False, True, False, True, False,
+        ]
+        assert [attack_active(rnd, 11, 3, 3) for rnd in range(11, 18)] == [
+            True, True, True, False, False, False, True,
+        ]
+
+    def test_preregistered_matrix_sizes_and_deduplication(self):
+        from experiments.periodic_attack import build_matrix
+        assert len(build_matrix("main")) == 180
+        assert len(build_matrix("ablation")) == 144
+        assert len(build_matrix("untargeted")) == 180
+        assert len(build_matrix("all")) == 468
+
+    def test_smoke_matrix_contains_all_ablations(self):
+        from experiments.periodic_attack import build_matrix, clean_baselines
+        matrix = build_matrix(smoke=True)
+        defenses = {row["defense"] for row in matrix}
+        assert {"tc_full", "tc_no_fft", "tc_no_direction", "tc_neither"} <= defenses
+        assert len(clean_baselines(matrix, smoke=True)) == 2
+
+    def test_round_summary_splits_active_and_residual_asr(self):
+        from experiments.periodic_attack import summarize_run, tracker_to_rounds
+        spec = {"attack": "backdoor", "period": "short_1_1", "on_rounds": 1,
+                "off_rounds": 1, "malicious_fraction": 0.2, "seed": 42,
+                "defense": "tc_full", "defense_type": "time_consistency",
+                "custom_params": {}, "attack_start_round": 3}
+        records = []
+        for rnd, asr in enumerate([0.0, 0.0, 0.8, 0.2, 0.6, 0.1], 1):
+            records.append({"round": rnd, "split": "server", "accuracy": 0.8, "asr": asr})
+            records.append({"round": rnd, "split": "fit", "active_attacker_weight_share": 0.1})
+        result = summarize_run(tracker_to_rounds(records, spec), spec)
+        assert result["active_asr"] == pytest.approx(0.7)
+        assert result["residual_asr"] == pytest.approx(0.15)
+
+    def test_deterministic_sampling_is_seeded_by_round(self):
+        from strategies.fed_strategy import FedSecStrategy
+        class Client:
+            def __init__(self, cid): self.cid = cid
+        class Manager:
+            def __init__(self): self.clients = {str(i): Client(str(i)) for i in range(10)}
+            def all(self): return self.clients
+        manager = Manager()
+        first = FedSecStrategy._deterministic_sample(manager, 5, 5, 43)
+        repeated = FedSecStrategy._deterministic_sample(manager, 5, 5, 43)
+        other_round = FedSecStrategy._deterministic_sample(manager, 5, 5, 44)
+        assert [client.cid for client in first] == [client.cid for client in repeated]
+        assert [client.cid for client in first] != [client.cid for client in other_round]
+
+
+class TestPeriodicExperimentV2:
+    def test_sampling_uses_partition_id_not_random_proxy_cid(self):
+        from strategies.fed_strategy import FedSecStrategy
+
+        class Client:
+            def __init__(self, cid, partition_id):
+                self.cid = cid
+                self.partition_id = partition_id
+
+        class Manager:
+            def __init__(self, prefix):
+                self.clients = {
+                    f"{prefix}-{i}": Client(f"{prefix}-{i}", i) for i in reversed(range(10))
+                }
+            def all(self):
+                return self.clients
+
+        first = FedSecStrategy._deterministic_sample(Manager("node-a"), 5, 5, 99)
+        second = FedSecStrategy._deterministic_sample(Manager("node-b"), 5, 5, 99)
+        assert [client.partition_id for client in first] == [client.partition_id for client in second]
+
+    def test_metric_tracker_preserves_decimal_experiment_name(self, tmp_path):
+        from utils.metrics import MetricTracker
+
+        tracker = MetricTracker(str(tmp_path), "attack__m0.2__defense")
+        tracker.log(round=1, accuracy=0.5)
+        tracker.save()
+
+        assert (tmp_path / "attack__m0.2__defense.csv").exists()
+        assert (tmp_path / "attack__m0.2__defense.json").exists()
+        assert not (tmp_path / "attack__m0.csv").exists()
+
+    def test_freqfed_median_fallback_has_no_fake_client_weights(self):
+        from config.config_loader import DefenseConfig
+        from defenses.defense_base import FreqFedDefense
+
+        defense = FreqFedDefense(DefenseConfig(custom_params={
+            "min_cluster_size": 3, "fallback": "median",
+        }))
+        defense.set_context(1, ["a", "b"], [np.zeros(2, dtype=np.float32)])
+        defense.aggregate(_make_updates([
+            np.zeros(2, dtype=np.float32), np.ones(2, dtype=np.float32),
+        ]))
+
+        assert defense.last_client_weights == {}
+        assert defense.last_client_aggregation_weights == {}
+        assert defense.last_round_metrics["aggregation_mode"] == "median_fallback"
+        assert defense.last_round_metrics["freqfed_fallback_reason"] == "insufficient_valid_fingerprints"
+
+    def test_freqfed_allow_single_cluster_is_forwarded(self, monkeypatch):
+        import hdbscan
+        from config.config_loader import DefenseConfig
+        from defenses.defense_base import FreqFedDefense
+
+        captured = {}
+        class FakeClusterer:
+            probabilities_ = np.ones(2)
+            def __init__(self, **kwargs): captured.update(kwargs)
+            def fit_predict(self, values): return np.zeros(len(values), dtype=np.int64)
+        monkeypatch.setattr(hdbscan, "HDBSCAN", FakeClusterer)
+        defense = FreqFedDefense(DefenseConfig(custom_params={
+            "min_cluster_size": 2, "min_samples": 1, "allow_single_cluster": True,
+        }))
+        defense._cluster(np.eye(2, dtype=np.float32))
+        assert captured["allow_single_cluster"] is True
+
+    def test_sampling_manifest_mismatch_fails_gate(self, tmp_path):
+        import json
+        from experiments.periodic_attack import validate_sampling_manifests
+
+        rounds = tmp_path / "rounds"
+        raw = tmp_path / "raw"
+        rounds.mkdir(); raw.mkdir()
+        common = {"attack": "backdoor", "period": "short_1_1",
+                  "malicious_fraction": 0.2, "seed": 42}
+        for name, selected in (("a", "0,1"), ("b", "0,2")):
+            pd.DataFrame([{**common, "round": 1, "defense": name,
+                           "fit_selected_partition_ids": selected,
+                           "fit_planned_partition_ids": selected}]).to_csv(
+                rounds / f"{name}.csv", index=False
+            )
+        manifest = {"seed": 42, "sha256": "same"}
+        (raw / "a_data_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        gates = validate_sampling_manifests(rounds, raw)
+        assert next(g for g in gates if g["gate"] == "selected_partition_ids_match")["passed"] is False
+
+    def test_small_sample_statistics_are_descriptive_only(self):
+        from experiments.periodic_attack import statistical_tests
+
+        rows = []
+        for defense, value in (("tc_full", 0.1), ("freqfed", 0.2)):
+            rows.append({"attack": "backdoor", "period": "short_1_1",
+                         "malicious_fraction": 0.2, "seed": 42,
+                         "defense": defense, "active_asr_auc": value})
+        result = statistical_tests(pd.DataFrame(rows))
+        assert bool(result.iloc[0]["descriptive_only"])
+        assert pd.isna(result.iloc[0]["p_value"])
+        assert pd.isna(result.iloc[0]["p_holm"])
 
 
 # ── Server ASR tests ──────────────────────────────────────────────────────────

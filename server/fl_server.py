@@ -17,7 +17,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset, Subset
+from torch.utils.data import DataLoader, Dataset
 
 import flwr as fl
 from flwr.common import NDArrays
@@ -193,13 +193,12 @@ def build_fltrust_server_update_fn(
     device: torch.device,
 ) -> Callable[[NDArrays], NDArrays]:
     """Build a deterministic trusted-root training callback for FLTrust."""
-    root_size = min(max(1, int(cfg.security.defense.root_dataset_size)), len(root_dataset))
-    rng = np.random.default_rng(cfg.project.seed)
-    indices = rng.choice(len(root_dataset), size=root_size, replace=False).tolist()
+    params = cfg.security.defense.custom_params or {}
+    root_size = len(root_dataset)
     generator = torch.Generator().manual_seed(cfg.project.seed)
     root_loader = DataLoader(
-        Subset(root_dataset, indices),
-        batch_size=cfg.client.batch_size,
+        root_dataset,
+        batch_size=int(params.get("root_batch_size", 32)),
         shuffle=True,
         num_workers=0,
         generator=generator,
@@ -210,27 +209,34 @@ def build_fltrust_server_update_fn(
     def compute_server_update(global_params: NDArrays) -> NDArrays:
         set_parameters(root_model, global_params)
         root_model.train()
-        if cfg.client.optimizer.lower() == "adam":
+        root_optimizer = str(params.get("root_optimizer", "sgd")).lower()
+        root_lr = float(params.get("root_learning_rate", 0.01))
+        root_momentum = float(params.get("root_momentum", 0.0))
+        root_weight_decay = float(params.get("root_weight_decay", 0.0))
+        if root_optimizer == "adam":
             optimizer = torch.optim.Adam(
                 root_model.parameters(),
-                lr=cfg.client.learning_rate,
-                weight_decay=cfg.client.weight_decay,
+                lr=root_lr,
+                weight_decay=root_weight_decay,
             )
-        else:
+        elif root_optimizer == "sgd":
             optimizer = torch.optim.SGD(
                 root_model.parameters(),
-                lr=cfg.client.learning_rate,
-                momentum=cfg.client.momentum,
-                weight_decay=cfg.client.weight_decay,
+                lr=root_lr,
+                momentum=root_momentum,
+                weight_decay=root_weight_decay,
             )
+        else:
+            raise ValueError("FLTrust root_optimizer must be 'sgd' or 'adam'")
 
-        for batch_x, batch_y in root_loader:
-            batch_x = batch_x.to(device)
-            batch_y = batch_y.to(device)
-            optimizer.zero_grad()
-            loss = criterion(root_model(batch_x), batch_y)
-            loss.backward()
-            optimizer.step()
+        for _ in range(max(1, int(params.get("root_epochs", 1)))):
+            for batch_x, batch_y in root_loader:
+                batch_x = batch_x.to(device)
+                batch_y = batch_y.to(device)
+                optimizer.zero_grad()
+                loss = criterion(root_model(batch_x), batch_y)
+                loss.backward()
+                optimizer.step()
 
         trained_params = get_parameters(root_model)
         server_delta: NDArrays = []
@@ -303,6 +309,7 @@ def build_server(
         min_available_clients=cfg.federation.min_available_clients,
         clients_per_round=cfg.federation.clients_per_round,
         server_update_fn=server_update_fn,
+        sampling_seed=cfg.project.seed,
     )
 
     server = fl.server.Server(

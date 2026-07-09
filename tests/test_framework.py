@@ -545,22 +545,20 @@ class TestTimeConsistencyDefense:
             trust_scores=[0.10, 0.20, 0.30],
             effective_weights=[1.0, 2.0, 3.0],
         )
-        normalized = np.asarray(constrained) / np.sum(constrained)
 
-        assert np.isfinite(normalized).all()
-        assert normalized.sum() == pytest.approx(1.0)
-        np.testing.assert_allclose(normalized, np.array([1.0, 2.0, 3.0]) / 6.0)
+        assert np.asarray(constrained).sum() == pytest.approx(0.0)
+        assert d._last_quarantined_clients == 3
 
     def test_periodic_magnitude_pattern_produces_frequency_signal(self):
-        d = self._defense(windows={"instant": 1, "short": 3, "mid": 4, "long": 6})
-        global_params = [np.zeros(4, dtype=np.float32), np.array([0], dtype=np.int64)]
-        for rnd, scale in enumerate([1.0, 2.0, 1.0, 2.0, 1.0, 2.0], start=1):
-            d.set_context(rnd, ["periodic"], global_params)
-            d.aggregate(self._updates([np.ones(4, dtype=np.float32) * scale]))
+        d = self._defense(min_temporal_points=4, min_periodic_events=4)
+        state = d._get_state("periodic")
+        state.rounds.extend([1, 3, 5])
+        state.risk_history.extend([0.9, 0.9, 0.9])
 
-        state = d._states["periodic"]
-        assert state.feature_history[-1][4] > 0.0
-        assert state.feature_history[-1][5] > 0.0
+        risk, dominant = d.scorer._periodic_gap_risk(state, 0.9, 7)
+
+        assert risk > 0.0
+        assert dominant == pytest.approx(0.5)
 
     def test_logs_client_weights_each_round(self, caplog):
         import logging
@@ -643,49 +641,49 @@ class TestPeriodicDefenseAblations:
         defaults.update(custom_params)
         return get_defense(DefenseConfig(type="time_consistency", custom_params=defaults))
 
-    def test_fft_ablation_zeroes_frequency_features(self):
+    def test_temporal_ablation_zeroes_temporal_risk(self):
         d = self._defense(enable_fft_features=False)
         state = d._get_state("client")
-        state.norm_history.extend([1.0, 2.0, 1.0, 2.0])
-        feature, dominant_frequency = d._build_feature(
-            state, np.ones(4, dtype=np.float32), 1.0, 0.0, 0, 2
+        state.rounds.extend([1, 3, 5])
+        state.risk_history.extend([0.9, 0.9, 0.9])
+
+        risk, dominant_frequency = d.scorer._temporal_risk(
+            type("Record", (), {"norm": 2.0, "impact_proxy": 1.0, "total_risk": 0.9})(),
+            state,
+            7,
         )
-        np.testing.assert_allclose(feature[4:7], np.zeros(3), atol=1e-7)
+
+        assert risk == 0.0
         assert dominant_frequency == 0.0
 
     def test_direction_ablation_zeroes_direction_feature(self):
         d = self._defense(enable_direction_features=False)
         state = d._get_state("client")
         state.signature_history.append(np.ones(4, dtype=np.float32))
-        feature, _ = d._build_feature(
-            state, -np.ones(4, dtype=np.float32), 2.0, 0.0, 0, 2
+        risk = d.scorer._direction_risk(
+            type("Record", (), {"signature": -np.ones(4, dtype=np.float32)})(),
+            state,
+            np.ones(4, dtype=np.float32),
         )
-        assert feature[0] == 0.0
+        assert risk == 0.0
 
-    def test_direction_penalty_targets_short_and_mid_only(self):
-        d = self._defense(direction_window=3, direction_threshold=0.6,
-                          direction_penalty=0.5, enable_direction_features=True,
-                          enable_fft_features=False)
+    def test_repeated_high_risk_moves_client_to_restricted(self):
+        d = self._defense(high_risk_window=3)
         state = d._get_state("client")
-        feature = np.zeros(7, dtype=np.float32)
-        feature[0] = 0.9
-        state.feature_history.extend([feature.copy() for _ in range(3)])
-        trusts = {scale: 1.0 for scale in ("instant", "short", "mid", "long")}
-        d._apply_deep_penalties(state, trusts)
-        assert trusts == {"instant": 1.0, "short": 0.5, "mid": 0.5, "long": 1.0}
-        assert d._direction_penalty_clients == 1
+        state.risk_history.extend([0.8])
+        record = type("Record", (), {
+            "total_risk": 0.8,
+            "temporal_risk": 0.0,
+            "influence_risk": 0.0,
+            "state": "normal",
+            "trust": 1.0,
+            "quarantined": False,
+        })()
 
-    def test_periodic_penalty_disabled_with_fft_ablation(self):
-        d = self._defense(enable_fft_features=False)
-        state = d._get_state("client")
-        feature = np.zeros(7, dtype=np.float32)
-        feature[4] = 1.0
-        state.feature_history.extend([feature.copy() for _ in range(4)])
-        state.dominant_freq_history.extend([0.5, 0.5, 0.5, 0.5])
-        trusts = {scale: 1.0 for scale in ("instant", "short", "mid", "long")}
-        d._apply_deep_penalties(state, trusts)
-        assert trusts["long"] == 1.0
-        assert d._fft_periodic_penalty_clients == 0
+        d.scorer.update_state_and_trust(record, state, d.params)
+
+        assert record.state == "restricted"
+        assert 0.0 < record.trust < 1.0
 
     @pytest.mark.parametrize("values, expected", [
         ([1.0, 2.0] * 3, 0.5),
@@ -696,18 +694,88 @@ class TestPeriodicDefenseAblations:
         _, _, _, dominant_frequency = d._frequency_features(values)
         assert dominant_frequency == pytest.approx(expected)
 
-    def test_periodic_penalty_counter_records_client(self):
-        d = self._defense(enable_fft_features=True, periodic_entropy_threshold=0.5,
-                          periodic_freq_var_threshold=1e-6, periodic_penalty=0.6)
+    def test_periodic_gap_risk_uses_true_round_intervals(self):
+        d = self._defense(enable_fft_features=True, min_periodic_events=4)
         state = d._get_state("client")
-        feature = np.zeros(7, dtype=np.float32)
-        feature[4] = 0.9
-        state.feature_history.extend([feature.copy() for _ in range(4)])
-        state.dominant_freq_history.extend([0.5, 0.5, 0.5, 0.5])
-        trusts = {scale: 1.0 for scale in ("instant", "short", "mid", "long")}
-        d._apply_deep_penalties(state, trusts)
-        assert trusts["long"] == pytest.approx(0.6)
-        assert d._fft_periodic_penalty_clients == 1
+        state.rounds.extend([2, 6, 10])
+        state.risk_history.extend([0.9, 0.9, 0.9])
+
+        risk, dominant_frequency = d.scorer._periodic_gap_risk(state, 0.9, 14)
+
+        assert risk == pytest.approx(1.0)
+        assert dominant_frequency == pytest.approx(0.25)
+
+    def test_current_event_completes_periodic_sequence_during_scoring(self):
+        d = self._defense(min_periodic_events=4, high_risk_threshold=0.7)
+        state = d._get_state("client")
+        state.rounds.extend([2, 6, 10])
+        state.risk_history.extend([0.9, 0.9, 0.9])
+        record = type("Record", (), {
+            "norm": 1.0,
+            "impact_proxy": 1.0,
+            "total_risk": 0.0,
+        })()
+
+        risk, frequency = d.scorer._temporal_risk(
+            record, state, 14, current_event_risk=0.9
+        )
+
+        assert risk == pytest.approx(1.0)
+        assert frequency == pytest.approx(0.25)
+
+    def test_temporal_risk_does_not_duplicate_nonperiodic_bursts(self):
+        d = self._defense(min_periodic_events=4)
+        state = d._get_state("client")
+        state.rounds.extend([1, 2, 4])
+        state.event_risk_history.extend([0.9, 0.9, 0.9])
+        record = type("Record", (), {
+            "norm": 100.0, "impact_proxy": 100.0, "total_risk": 0.0,
+        })()
+
+        risk, frequency = d.scorer._temporal_risk(
+            record, state, 8, current_event_risk=0.9
+        )
+
+        assert risk == 0.0
+        assert frequency == 0.0
+
+    def test_old_periodic_events_do_not_latch_on_low_current_risk(self):
+        d = self._defense(min_periodic_events=4)
+        state = d._get_state("client")
+        state.rounds.extend([2, 4, 6, 8])
+        state.event_risk_history.extend([0.9, 0.9, 0.9, 0.9])
+
+        risk, frequency = d.scorer._periodic_gap_risk(state, 0.2, 9)
+
+        assert risk == 0.0
+        assert frequency == 0.0
+
+    def test_quarantine_cooldown_uses_server_round(self):
+        d = self._defense(quarantine_cooldown_rounds=2)
+        state = d._get_state("client")
+        triggering = type("Record", (), {
+            "total_risk": 0.95,
+            "temporal_risk": 0.9,
+            "influence_risk": 0.0,
+            "state": "normal",
+            "trust": 1.0,
+            "quarantined": False,
+        })()
+        d.scorer.update_state_and_trust(triggering, state, d.params, server_round=10)
+        assert state.cooldown_until == 12
+
+        recovering = type("Record", (), {
+            "total_risk": 0.0,
+            "temporal_risk": 0.0,
+            "influence_risk": 0.0,
+            "state": "normal",
+            "trust": 1.0,
+            "quarantined": False,
+        })()
+        d.scorer.update_state_and_trust(recovering, state, d.params, server_round=12)
+        assert recovering.state == "quarantined"
+        d.scorer.update_state_and_trust(recovering, state, d.params, server_round=13)
+        assert recovering.state == "normal"
 
 
 class TestPeriodicAttackExperiment:
@@ -719,26 +787,51 @@ class TestPeriodicAttackExperiment:
         assert [attack_active(rnd, 11, 3, 3) for rnd in range(11, 18)] == [
             True, True, True, False, False, False, True,
         ]
+        assert [attack_active(rnd, 3, 1, 1, end=6) for rnd in range(2, 9)] == [
+            False, True, False, True, False, False, False,
+        ]
+
+    def test_screening_filters_and_records_federation_condition(self):
+        from argparse import Namespace
+        from experiments.periodic_attack import build_matrix, select_matrix
+        args = Namespace(
+            attacks="model_replacement", defenses="rtc_full,clip_only",
+            periods="long_3_3", seeds="42", malicious_fractions="0.2", smoke=False,
+            attack_start_round=5, attack_end_round=14,
+            partition="dirichlet", dirichlet_alpha=0.3,
+            participation_rate=0.5, boost_factor=5.0,
+        )
+
+        selected = select_matrix(build_matrix("main"), args)
+
+        assert len(selected) == 2
+        assert {row["defense"] for row in selected} == {"rtc_full", "clip_only"}
+        assert all(row["partition"] == "dirichlet" for row in selected)
+        assert all(row["attack_end_round"] == 14 for row in selected)
+        assert all(row["boost_factor"] == 5.0 for row in selected)
 
     def test_preregistered_matrix_sizes_and_deduplication(self):
         from experiments.periodic_attack import build_matrix
-        assert len(build_matrix("main")) == 180
-        assert len(build_matrix("ablation")) == 144
-        assert len(build_matrix("untargeted")) == 180
-        assert len(build_matrix("all")) == 468
+        assert len(build_matrix("main")) == 216
+        assert len(build_matrix("ablation")) == 180
+        assert len(build_matrix("untargeted")) == 216
+        assert len(build_matrix("all")) == 576
 
     def test_smoke_matrix_contains_all_ablations(self):
         from experiments.periodic_attack import build_matrix, clean_baselines
         matrix = build_matrix(smoke=True)
         defenses = {row["defense"] for row in matrix}
-        assert {"tc_full", "tc_no_fft", "tc_no_direction", "tc_neither"} <= defenses
+        assert {
+            "rtc_full", "rtc_no_temporal", "rtc_no_direction", "clip_only",
+        } <= defenses
+        assert "rtc_no_influence" not in defenses
         assert len(clean_baselines(matrix, smoke=True)) == 2
 
     def test_round_summary_splits_active_and_residual_asr(self):
         from experiments.periodic_attack import summarize_run, tracker_to_rounds
         spec = {"attack": "backdoor", "period": "short_1_1", "on_rounds": 1,
                 "off_rounds": 1, "malicious_fraction": 0.2, "seed": 42,
-                "defense": "tc_full", "defense_type": "time_consistency",
+                "defense": "rtc_full", "defense_type": "time_consistency",
                 "custom_params": {}, "attack_start_round": 3}
         records = []
         for rnd, asr in enumerate([0.0, 0.0, 0.8, 0.2, 0.6, 0.1], 1):
@@ -747,6 +840,16 @@ class TestPeriodicAttackExperiment:
         result = summarize_run(tracker_to_rounds(records, spec), spec)
         assert result["active_asr"] == pytest.approx(0.7)
         assert result["residual_asr"] == pytest.approx(0.15)
+
+    def test_first_state_lag_uses_first_active_attack_round(self):
+        from experiments.periodic_attack import first_state_lag
+        rounds = pd.DataFrame({
+            "round": [1, 2, 3, 4, 5, 6],
+            "planned_attack_active": [0, 0, 1, 0, 1, 0],
+            "fit_malicious_restricted_rate": [0, 0, 0, 0, 0.5, 0],
+        })
+
+        assert first_state_lag(rounds, "fit_malicious_restricted_rate") == 2.0
 
     def test_deterministic_sampling_is_seeded_by_round(self):
         from strategies.fed_strategy import FedSecStrategy
@@ -764,6 +867,32 @@ class TestPeriodicAttackExperiment:
 
 
 class TestPeriodicExperimentV2:
+    def test_target_acceptance_uses_mean_ratio_and_seed_direction(self):
+        from experiments.periodic_attack import validate_target_acceptance
+        rows = []
+        for seed, rtc, fedavg, clip in [(42, 0.2, 1.0, 0.8), (43, 0.4, 1.0, 0.9)]:
+            for defense, value in (("rtc_full", rtc), ("fedavg", fedavg), ("clip_only", clip)):
+                rows.append({"attack": "model_replacement", "period": "short_1_1",
+                             "malicious_fraction": 0.2, "partition": "iid",
+                             "dirichlet_alpha": 0.5, "participation_rate": 0.5,
+                             "boost_factor": 10.0, "seed": seed, "defense": defense,
+                             "active_asr_auc": value, "benign_quarantine_rate": 0.0})
+        gates = validate_target_acceptance(pd.DataFrame(rows))
+        assert gates
+        assert all(gate["passed"] for gate in gates)
+
+    def test_target_acceptance_checks_clean_only_summary(self):
+        from experiments.periodic_attack import validate_target_acceptance
+        clean = pd.DataFrame([
+            {"attack": "none", "seed": 42, "defense": "fedavg", "final_accuracy": 0.80},
+            {"attack": "none", "seed": 42, "defense": "rtc_full", "final_accuracy": 0.78},
+        ])
+
+        gates = validate_target_acceptance(clean)
+
+        assert [gate["gate"] for gate in gates] == ["target_clean_accuracy_drop"]
+        assert gates[0]["passed"] is True
+
     def test_sampling_uses_partition_id_not_random_proxy_cid(self):
         from strategies.fed_strategy import FedSecStrategy
 
@@ -853,7 +982,7 @@ class TestPeriodicExperimentV2:
         from experiments.periodic_attack import statistical_tests
 
         rows = []
-        for defense, value in (("tc_full", 0.1), ("freqfed", 0.2)):
+        for defense, value in (("rtc_full", 0.1), ("freqfed", 0.2)):
             rows.append({"attack": "backdoor", "period": "short_1_1",
                          "malicious_fraction": 0.2, "seed": 42,
                          "defense": defense, "active_asr_auc": value})

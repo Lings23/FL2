@@ -109,30 +109,35 @@ security:
     #           min_selected_clients: 2, projection_dim: 4096,
     #           fallback: median, seed: 42}
     # Extension point: add your defense parameters here.
-    # Example for time_consistency:
+    # Example for time_consistency / RTC-v2:
     # custom_params:
+    #   version: rtc_v2
     #   projection_dim: 2048
-    #   windows: {instant: 1, short: 5, mid: 15, long: 30}
-    #   fixed_scale_weights: [0.45, 0.30, 0.20, 0.05]
-    #   cold_start_rounds: 10
+    #   max_history: 30
     #   offline_reset_rounds: 10
-    #   trust_update_rate_cold: 0.35
-    #   trust_update_rate_normal: 0.15
-    #   sigmoid_scale: 8.0
-    #   sigmoid_center: 0.5
-    #   min_effective_weight: 1e-4
+    #   min_history_for_self_score: 5
+    #   min_temporal_points: 8
+    #   high_risk_window: 6
+    #   risk_weights: {magnitude: 0.30, direction: 0.25, temporal: 0.30, influence: 0.15}
+    #   watch_threshold: 0.25
+    #   restricted_threshold: 0.45
+    #   quarantine_threshold: 0.80
+    #   high_risk_threshold: 0.70
+    #   medium_risk_threshold: 0.40
+    #   trust_beta: 0.75
+    #   min_trust: 0.05
+    #   state_multipliers: {normal: 1.0, watch: 0.5, restricted: 0.05, quarantined: 0.0}
     #   enable_soft_trust_weighting: true
     #   enable_delta_clipping: true
-    #   norm_clip_mad_k: 2.5
-    #   norm_clip_factor: 2.0
+    #   clip_multiplier: 1.0
     #   enable_trust_caps: true
-    #   low_trust_threshold: 0.35
-    #   quarantine_threshold: 0.25
-    #   low_trust_weight_cap: 0.01
-    #   quarantine_weight: 0.0
+    #   per_client_weight_multiplier: 0.6
+    #   min_effective_clients: 3
+    #   fallback_strategy: skip_update
     #   log_client_weights: true
-    #   enable_fft_features: true
+    #   enable_temporal_features: true
     #   enable_direction_features: true
+    #   enable_influence_features: true
     custom_params: {}
 
 # ── Evaluation ───────────────────────────────────────────────

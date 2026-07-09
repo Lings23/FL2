@@ -1,6 +1,6 @@
 """Periodic-attack benchmark, ablations, statistics, and plots.
 
-The full matrix is intentionally opt-in. Use ``--smoke`` for a 12-round
+The full matrix is intentionally opt-in. Use ``--smoke`` for a 6-round
 pipeline check and ``--mode all`` for the preregistered experiment.
 """
 
@@ -39,9 +39,36 @@ PERIODS = {"short_1_1": (1, 1), "long_3_3": (3, 3)}
 SEEDS = (42, 43, 44)
 MALICIOUS_FRACTIONS = (0.2, 0.4)
 BENCHMARK_VERSION = 2
+CONDITION_KEYS = ("partition", "dirichlet_alpha", "participation_rate", "boost_factor")
+
+RTC_V2_BASE: Dict[str, Any] = {
+    "enable_temporal_features": True,
+    "enable_direction_features": True,
+    "enable_influence_features": True,
+    "trust_beta": 0.75,
+    "watch_threshold": 0.25,
+    "restricted_threshold": 0.45,
+    "quarantine_threshold": 0.80,
+    "state_multipliers": {
+        "normal": 1.0,
+        "watch": 0.50,
+        "restricted": 0.05,
+        "quarantined": 0.0,
+    },
+    "per_client_weight_multiplier": 0.6,
+    "clip_multiplier": 1.0,
+}
 
 DEFENSES: Dict[str, Tuple[str, Dict[str, Any]]] = {
     "fedavg": ("none", {}),
+    "clip_only": ("time_consistency", {
+        "enable_soft_trust_weighting": False,
+        "enable_delta_clipping": True,
+        "enable_trust_caps": False,
+        "enable_temporal_features": False,
+        "enable_direction_features": False,
+        "enable_influence_features": False,
+    }),
     "freqfed": ("freqfed", {
         "min_cluster_size": 2,
         "min_samples": 1,
@@ -50,38 +77,38 @@ DEFENSES: Dict[str, Tuple[str, Dict[str, Any]]] = {
     }),
     "foolsgold": ("foolsgold", {}),
     "fltrust": ("fltrust", {}),
-    "tc_full": ("time_consistency", {
-        "enable_fft_features": True,
-        "enable_direction_features": True,
-        "periodic_entropy_threshold": 0.45,
-        "periodic_freq_var_threshold": 0.02,
-    }),
+    "rtc_full": ("time_consistency", dict(RTC_V2_BASE)),
 }
 ABLATIONS: Dict[str, Tuple[str, Dict[str, Any]]] = {
-    "tc_full": DEFENSES["tc_full"],
-    "tc_no_fft": ("time_consistency", {
-        "enable_fft_features": False,
-        "enable_direction_features": True,
-        "periodic_entropy_threshold": 0.45,
-        "periodic_freq_var_threshold": 0.02,
+    "rtc_full": DEFENSES["rtc_full"],
+    "rtc_no_temporal": ("time_consistency", {
+        **RTC_V2_BASE,
+        "enable_temporal_features": False,
     }),
-    "tc_no_direction": ("time_consistency", {
-        "enable_fft_features": True,
+    "rtc_no_direction": ("time_consistency", {
+        **RTC_V2_BASE,
         "enable_direction_features": False,
-        "periodic_entropy_threshold": 0.45,
-        "periodic_freq_var_threshold": 0.02,
     }),
-    "tc_neither": ("time_consistency", {
-        "enable_fft_features": False,
-        "enable_direction_features": False,
-        "periodic_entropy_threshold": 0.45,
-        "periodic_freq_var_threshold": 0.02,
+    "rtc_no_influence": ("time_consistency", {
+        **RTC_V2_BASE,
+        "enable_influence_features": False,
+    }),
+    "rtc_trust_only": ("time_consistency", {
+        **RTC_V2_BASE,
+        "enable_delta_clipping": False,
+        "enable_trust_caps": False,
     }),
 }
 
 
-def attack_active(round_number: int, start: int, on_rounds: int, off_rounds: int) -> bool:
-    if round_number < start:
+def attack_active(
+    round_number: int,
+    start: int,
+    on_rounds: int,
+    off_rounds: int,
+    end: int = -1,
+) -> bool:
+    if round_number < start or (end >= 0 and round_number > end):
         return False
     cycle = max(1, on_rounds) + max(0, off_rounds)
     return ((round_number - start) % cycle) < max(1, on_rounds)
@@ -93,7 +120,9 @@ def build_matrix(mode: str = "all", smoke: bool = False) -> List[Dict[str, Any]]
         periods = {"short_1_1": (1, 1)}
         fractions = (0.2,)
         seeds = (42,)
-        defenses = {**DEFENSES, **ABLATIONS}
+        smoke_names = {"fedavg", "clip_only", "rtc_full", "rtc_no_temporal", "rtc_no_direction"}
+        definitions = {**DEFENSES, **ABLATIONS}
+        defenses = {name: definitions[name] for name in smoke_names}
     elif mode == "main":
         attacks, periods, fractions, seeds, defenses = (
             TARGETED_ATTACKS, PERIODS, MALICIOUS_FRACTIONS, SEEDS, DEFENSES
@@ -142,7 +171,8 @@ def _deduplicate(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def run_id(spec: Dict[str, Any]) -> str:
     readable = (
         f"{spec['attack']}__{spec['period']}__m{spec['malicious_fraction']:.1f}__"
-        f"s{spec['seed']}__{spec['defense']}"
+        f"s{spec['seed']}__{spec['defense']}__{spec.get('partition', 'iid')}__"
+        f"p{spec.get('participation_rate', 0.5):.2f}__b{spec.get('boost_factor', 10.0):g}"
     )
     digest = hashlib.sha1(json.dumps(spec, sort_keys=True).encode()).hexdigest()[:8]
     return f"{readable}__{digest}"
@@ -162,6 +192,7 @@ def tracker_to_rounds(records: Sequence[Dict[str, Any]], spec: Dict[str, Any]) -
                 spec["attack"] != "none" and attack_active(
                     rnd, int(spec.get("attack_start_round", 11)),
                     int(spec["on_rounds"]), int(spec["off_rounds"]),
+                    int(spec.get("attack_end_round", -1)),
                 )
             ),
         }
@@ -205,10 +236,20 @@ def summarize_run(rounds: pd.DataFrame, spec: Dict[str, Any]) -> Dict[str, Any]:
             "active_accuracy": float(active_accuracy.mean()) if len(active_accuracy) else math.nan,
         })
     result["detection_lag"] = detection_lag(rounds)
+    for state in ("watch", "restricted", "quarantined"):
+        result[f"first_malicious_{state}_lag"] = first_state_lag(
+            rounds, f"fit_malicious_{state}_rate"
+        )
     for column in (
         "fit_malicious_aggregation_weight_share", "fit_malicious_impact_share",
-        "fit_benign_quarantine_rate", "fit_aggregation_time_seconds",
+        "fit_benign_quarantine_rate", "fit_benign_watch_rate",
+        "fit_benign_restricted_rate", "fit_malicious_watch_rate",
+        "fit_malicious_restricted_rate", "fit_malicious_quarantined_rate",
+        "fit_aggregation_time_seconds",
         "fit_fft_periodic_penalty_clients", "fit_direction_penalty_clients",
+        "fit_rtc_total_risk_mean", "fit_rtc_temporal_risk_mean",
+        "fit_rtc_influence_risk_mean", "fit_rtc_event_risk_mean",
+        "fit_time_consistency_fallback_used",
         "fit_freqfed_fallback",
     ):
         if column in rounds:
@@ -249,6 +290,19 @@ def detection_lag(rounds: pd.DataFrame, threshold: float = 0.05) -> float:
             segment_start = None
         previous_active = active
     return float(np.mean(lags)) if lags else math.nan
+
+
+def first_state_lag(rounds: pd.DataFrame, rate_column: str) -> float:
+    """Rounds from first active attack to the first malicious state transition."""
+    if rate_column not in rounds or "planned_attack_active" not in rounds:
+        return math.nan
+    active_rounds = rounds.loc[rounds["planned_attack_active"] == 1, "round"]
+    if active_rounds.empty:
+        return math.nan
+    start = int(active_rounds.min())
+    rates = pd.to_numeric(rounds[rate_column], errors="coerce").fillna(0.0)
+    reached = rounds.loc[(rounds["round"] >= start) & (rates > 0), "round"]
+    return float(int(reached.min()) - start) if not reached.empty else math.nan
 
 
 def add_accuracy_drop(summary: pd.DataFrame) -> pd.DataFrame:
@@ -316,12 +370,15 @@ def bootstrap_summary(summary: pd.DataFrame, seed: int = 2026) -> pd.DataFrame:
     metrics = [
         name for name in ("active_asr", "active_asr_auc", "peak_asr", "residual_asr",
                           "final_accuracy", "min_accuracy", "active_accuracy", "detection_lag",
+                          "first_malicious_watch_lag", "first_malicious_restricted_lag",
+                          "first_malicious_quarantined_lag",
                           "accuracy_drop", "active_accuracy_drop", "accuracy_drop_auc",
                           "malicious_aggregation_weight_share",
                           "benign_quarantine_rate", "aggregation_time_seconds")
         if name in summary
     ]
-    keys = ["attack", "period", "malicious_fraction", "defense"]
+    keys = ["attack", "period", "malicious_fraction", *CONDITION_KEYS, "defense"]
+    keys = [key for key in keys if key in summary]
     rng = np.random.default_rng(seed)
     rows = []
     for group_key, group in summary.groupby(keys, dropna=False):
@@ -341,17 +398,20 @@ def bootstrap_summary(summary: pd.DataFrame, seed: int = 2026) -> pd.DataFrame:
 
 
 def statistical_tests(summary: pd.DataFrame, seed: int = 2026) -> pd.DataFrame:
-    comparisons = ["freqfed", "foolsgold", "fltrust", "tc_no_fft", "tc_no_direction", "tc_neither"]
+    if "active_asr_auc" not in summary or "attack" not in summary:
+        return pd.DataFrame()
+    comparisons = ["clip_only", "freqfed", "foolsgold", "fltrust",
+                   "rtc_no_temporal", "rtc_no_direction", "rtc_no_influence", "rtc_trust_only"]
     rows = []
     for attack in TARGETED_ATTACKS:
         attack_rows = summary[summary["attack"] == attack]
         for comparator in comparisons:
-            paired = _paired_values(attack_rows, "tc_full", comparator, "active_asr_auc")
+            paired = _paired_values(attack_rows, "rtc_full", comparator, "active_asr_auc")
             if paired.empty:
                 continue
             differences = paired["left"] - paired["right"]
             descriptive_only = len(paired) < 8
-            rows.append({"attack": attack, "metric": "active_asr_auc", "left": "tc_full",
+            rows.append({"attack": attack, "metric": "active_asr_auc", "left": "rtc_full",
                          "right": comparator, "n": len(paired),
                          "descriptive_only": descriptive_only,
                          "median_difference": float(np.median(differences)),
@@ -372,7 +432,8 @@ def statistical_tests(summary: pd.DataFrame, seed: int = 2026) -> pd.DataFrame:
 
 
 def _paired_values(data: pd.DataFrame, left: str, right: str, metric: str) -> pd.DataFrame:
-    keys = ["period", "malicious_fraction", "seed"]
+    keys = ["period", "malicious_fraction", *CONDITION_KEYS, "seed"]
+    keys = [key for key in keys if key in data]
     pivot = data[data["defense"].isin([left, right])].pivot_table(
         index=keys, columns="defense", values=metric, aggfunc="first"
     )
@@ -414,12 +475,12 @@ def run_experiments(args: argparse.Namespace) -> pd.DataFrame:
     output = Path(args.output)
     rounds_dir = output / "rounds"
     rounds_dir.mkdir(parents=True, exist_ok=True)
-    matrix = build_matrix(args.mode, args.smoke)
-    clean = clean_baselines(matrix, args.smoke)
-    matrix = _deduplicate(matrix + clean)
+    matrix = select_matrix(build_matrix(args.mode, args.smoke), args)
+    clean = [] if args.skip_clean else clean_baselines(matrix, args.smoke)
+    matrix = _deduplicate(clean if args.clean_only else matrix + clean)
     write_experiment_manifest(matrix, output)
 
-    if args.smoke:
+    if args.smoke or args.clean_only:
         execution_order = matrix
     else:
         pilot_attacks = [
@@ -472,7 +533,7 @@ def run_experiments(args: argparse.Namespace) -> pd.DataFrame:
     if args.smoke:
         quality_gates = schedule_gates + validate_smoke(summary, rounds_dir, output / "raw")
     else:
-        quality_gates = schedule_gates
+        quality_gates = schedule_gates + validate_target_acceptance(summary)
     write_quality_gates(quality_gates, output / "quality_gates.csv")
     failed = [gate for gate in quality_gates if not gate["passed"]]
     if failed:
@@ -496,7 +557,7 @@ def _run_specs(
     summaries = []
     for index, base_spec in enumerate(specs, 1):
         spec = dict(base_spec)
-        spec = {**spec, "attack_start_round": 3 if args.smoke else 11}
+        spec = dict(base_spec)
         identifier = run_id(spec)
         round_path = rounds_dir / f"{identifier}.csv"
         logger.info("[%d/%d] %s", index, len(specs), identifier)
@@ -506,37 +567,46 @@ def _run_specs(
             cfg = load_config(args.config)
             custom = dict(cfg.security.defense.custom_params or {})
             custom.update(spec["custom_params"])
+            if args.smoke and spec["defense_type"] == "time_consistency":
+                custom.setdefault("log_client_weights", False)
+            num_clients = 10 if args.smoke else int(args.num_clients)
+            clients_per_round = max(1, min(
+                num_clients, int(math.ceil(num_clients * float(spec["participation_rate"])))
+            ))
             overrides = {
                 "project.seed": spec["seed"],
                 "project.log_dir": str(output / "raw"),
                 "dataset.name": "cifar10",
                 "model.architecture": "resnet18",
-                "federation.num_rounds": 12 if args.smoke else 60,
-                "federation.num_clients": 20,
-                "federation.clients_per_round": 20 if args.smoke else 10,
-                "federation.min_fit_clients": 20 if args.smoke else 10,
-                "federation.min_available_clients": 20,
-                "federation.max_client_samples": 100 if args.smoke else 0,
+                "federation.num_rounds": 6 if args.smoke else int(args.rounds),
+                "federation.num_clients": num_clients,
+                "federation.clients_per_round": num_clients if args.smoke else clients_per_round,
+                "federation.min_fit_clients": num_clients if args.smoke else clients_per_round,
+                "federation.min_available_clients": num_clients,
+                "federation.max_client_samples": 50 if args.smoke else int(args.max_client_samples),
+                "dataset.partition": spec["partition"],
+                "dataset.dirichlet_alpha": spec["dirichlet_alpha"],
                 "client.local_epochs": 1 if args.smoke else cfg.client.local_epochs,
                 "strategy.name": "fedavg",
                 "security.attack.enabled": spec["attack"] != "none",
                 "security.attack.type": spec["attack"],
                 "security.attack.malicious_fraction": spec["malicious_fraction"],
                 "security.attack.attack_start_round": spec["attack_start_round"],
+                "security.attack.attack_end_round": spec["attack_end_round"],
                 "security.attack.attack_on_rounds": spec["on_rounds"],
                 "security.attack.attack_off_rounds": spec["off_rounds"],
                 "security.attack.poison_fraction": (
                     0.5 if spec["attack"] in {"backdoor", "dba"} else 0.1
                 ),
-                "security.attack.dba_boost_factor": 10.0,
-                "security.attack.model_replacement_boost_factor": 10.0,
+                "security.attack.dba_boost_factor": spec["boost_factor"],
+                "security.attack.model_replacement_boost_factor": spec["boost_factor"],
                 "security.defense.enabled": spec["defense_type"] != "none",
                 "security.defense.type": spec["defense_type"],
                 "security.defense.reserve_root_for_all": True,
                 "security.defense.root_dataset_size": 100,
                 "security.defense.custom_params": custom,
                 "evaluation.save_best_model": False,
-                "evaluation.max_test_samples": 1000 if args.smoke else 0,
+                "evaluation.max_test_samples": 500 if args.smoke else int(args.max_test_samples),
             }
             cfg = override_config(cfg, overrides)
             tracker = run_simulation(cfg, experiment_name=identifier)
@@ -554,6 +624,45 @@ def write_experiment_manifest(specs: Sequence[Dict[str, Any]], output: Path) -> 
     output.mkdir(parents=True, exist_ok=True)
     with open(output / "experiment_manifest.json", "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
+
+
+def select_matrix(matrix: Sequence[Dict[str, Any]], args: argparse.Namespace) -> List[Dict[str, Any]]:
+    """Apply explicit low-cost screening filters without changing benchmark definitions."""
+    selected = list(matrix)
+    filters = {
+        "attack": _csv_values(getattr(args, "attacks", "")),
+        "defense": _csv_values(getattr(args, "defenses", "")),
+        "period": _csv_values(getattr(args, "periods", "")),
+    }
+    seed_values = _csv_values(getattr(args, "seeds", ""))
+    fraction_values = _csv_values(getattr(args, "malicious_fractions", ""))
+    for key, allowed in filters.items():
+        if allowed:
+            selected = [spec for spec in selected if str(spec[key]) in allowed]
+    if seed_values:
+        allowed_seeds = {int(value) for value in seed_values}
+        selected = [spec for spec in selected if int(spec["seed"]) in allowed_seeds]
+    if fraction_values:
+        allowed_fractions = {float(value) for value in fraction_values}
+        selected = [
+            spec for spec in selected
+            if float(spec["malicious_fraction"]) in allowed_fractions
+        ]
+    if not selected:
+        raise ValueError("Experiment filters selected no runs")
+    return [{
+        **spec,
+        "attack_start_round": 3 if args.smoke else int(args.attack_start_round),
+        "attack_end_round": int(args.attack_end_round),
+        "partition": args.partition,
+        "dirichlet_alpha": float(args.dirichlet_alpha),
+        "participation_rate": 1.0 if args.smoke else float(args.participation_rate),
+        "boost_factor": float(args.boost_factor),
+    } for spec in selected]
+
+
+def _csv_values(raw: str) -> set[str]:
+    return {part.strip() for part in str(raw).split(",") if part.strip()}
 
 
 def _gate(name: str, passed: bool, observed: Any, required: str) -> Dict[str, Any]:
@@ -632,7 +741,7 @@ def validate_smoke(summary: pd.DataFrame, rounds_dir: Path, raw_dir: Path) -> Li
         frame = pd.read_csv(path)
         if not frame.empty and frame.iloc[0].get("attack") == "model_replacement":
             frames[str(frame.iloc[0]["defense"])] = frame
-        expected_rounds = set(range(13))
+        expected_rounds = set(range(0, int(frame["round"].max()) + 1))
         critical_complete &= set(frame["round"].astype(int)) == expected_rounds
         critical_complete &= pd.to_numeric(
             frame["server_accuracy"], errors="coerce"
@@ -642,32 +751,44 @@ def validate_smoke(summary: pd.DataFrame, rounds_dir: Path, raw_dir: Path) -> Li
                 frame["server_asr"], errors="coerce"
             ).notna().all()
     gates.append(_gate("critical_metrics_complete", critical_complete,
-                       critical_complete, "rounds 0-12 with finite accuracy/ASR"))
-    full_fft = pd.to_numeric(frames["tc_full"]["fit_fft_periodic_penalty_clients"], errors="coerce").fillna(0).sum()
-    no_fft = frames["tc_no_fft"]
-    no_fft_sum = pd.to_numeric(no_fft["fit_fft_periodic_penalty_clients"], errors="coerce").fillna(0).sum()
-    no_fft_features = sum(
-        pd.to_numeric(no_fft[column], errors="coerce").fillna(0).abs().sum()
-        for column in ("fit_mean_low_frequency_power", "fit_mean_dominant_frequency_energy")
+                       critical_complete, "complete smoke rounds with finite accuracy/ASR"))
+    rtc = attacked[attacked["defense"] == "rtc_full"].iloc[0]
+    clip = attacked[attacked["defense"] == "clip_only"].iloc[0]
+    no_temporal = frames["rtc_no_temporal"]
+    no_temporal_values = (
+        pd.to_numeric(no_temporal["fit_rtc_temporal_risk_mean"], errors="coerce").fillna(0)
+        if "fit_rtc_temporal_risk_mean" in no_temporal
+        else pd.Series([0.0])
     )
-    no_direction_sum = pd.to_numeric(
-        frames["tc_no_direction"]["fit_direction_penalty_clients"], errors="coerce"
-    ).fillna(0).sum()
-    no_direction_features = pd.to_numeric(
-        frames["tc_no_direction"]["fit_mean_direction_anomaly"], errors="coerce"
-    ).fillna(0).abs().sum()
-    gates.append(_gate("tc_full_fft_triggered", full_fft > 0, full_fft, "> 0"))
-    gates.append(_gate("tc_no_fft_is_zero", no_fft_sum == 0 and no_fft_features == 0,
-                       {"triggers": no_fft_sum, "features": no_fft_features}, "both zero"))
-    gates.append(_gate("tc_no_direction_is_zero",
-                       no_direction_sum == 0 and no_direction_features == 0,
-                       {"triggers": no_direction_sum, "features": no_direction_features},
-                       "both zero"))
+    no_direction_frame = frames["rtc_no_direction"]
+    no_direction_values = (
+        pd.to_numeric(no_direction_frame["fit_mean_direction_anomaly"], errors="coerce").fillna(0)
+        if "fit_mean_direction_anomaly" in no_direction_frame
+        else pd.Series([0.0])
+    )
+    no_temporal_sum = no_temporal_values.abs().sum()
+    no_direction_sum = no_direction_values.abs().sum()
+    gates.append(_gate("rtc_beats_fedavg_active_asr_auc",
+                       rtc["active_asr_auc"] <= 0.5 * fedavg["active_asr_auc"],
+                       {"rtc": rtc["active_asr_auc"], "fedavg": fedavg["active_asr_auc"]},
+                       "<= 50% of fedavg"))
+    rtc_auc = float(rtc.get("active_asr_auc", math.nan))
+    clip_auc = float(clip.get("active_asr_auc", math.nan))
+    gates.append(_gate("rtc_beats_clip_only_active_asr_auc",
+                       np.isfinite(rtc_auc) and np.isfinite(clip_auc) and rtc_auc <= 0.8 * clip_auc,
+                       {"rtc": rtc.get("active_asr_auc"), "clip_only": clip.get("active_asr_auc")},
+                       "<= 80% of clip_only"))
+    gates.append(_gate("rtc_no_temporal_is_zero", no_temporal_sum == 0,
+                       no_temporal_sum, "temporal risk mean zero"))
+    gates.append(_gate("rtc_no_direction_is_zero", no_direction_sum == 0,
+                       no_direction_sum, "direction risk mean zero"))
 
-    freq = attacked[attacked["defense"] == "freqfed"].iloc[0]
-    fallback = float(freq.get("freqfed_fallback", math.nan))
-    gates.append(_gate("freqfed_fallback_rate", np.isfinite(fallback) and fallback <= 0.25,
-                       fallback, "<= 0.25"))
+    freq_rows = attacked[attacked["defense"] == "freqfed"]
+    if not freq_rows.empty:
+        freq = freq_rows.iloc[0]
+        fallback = float(freq.get("freqfed_fallback", math.nan))
+        gates.append(_gate("freqfed_fallback_rate", np.isfinite(fallback) and fallback <= 0.25,
+                           fallback, "<= 0.25"))
     expected_ids = [str(row["run_id"]) for _, row in summary.iterrows()]
     unique_logs = all(
         (raw_dir / f"{identifier}.csv").exists() and (raw_dir / f"{identifier}.json").exists()
@@ -678,6 +799,8 @@ def validate_smoke(summary: pd.DataFrame, rounds_dir: Path, raw_dir: Path) -> Li
 
 
 def validate_formal_preflight(summary: pd.DataFrame) -> List[Dict[str, Any]]:
+    if summary.empty or not {"defense", "attack"}.issubset(summary.columns):
+        return []
     gates: List[Dict[str, Any]] = []
     for _, row in summary[(summary["defense"] == "fedavg") & (summary["attack"].isin(TARGETED_ATTACKS))].iterrows():
         passed = row.get("active_asr", 0) >= 0.20 and row.get("peak_asr", 0) >= 0.30
@@ -701,17 +824,79 @@ def validate_formal_preflight(summary: pd.DataFrame) -> List[Dict[str, Any]]:
     return gates
 
 
+def validate_target_acceptance(summary: pd.DataFrame) -> List[Dict[str, Any]]:
+    """Evaluate target-mode gates wherever the required paired rows exist."""
+    gates: List[Dict[str, Any]] = []
+    if summary.empty:
+        return gates
+    if "active_asr_auc" in summary and "attack" in summary:
+        attacked = summary[
+            (summary["attack"] != "none")
+            & summary["active_asr_auc"].notna()
+        ]
+    else:
+        attacked = pd.DataFrame()
+    group_keys = [
+        key for key in ("attack", "period", "malicious_fraction", *CONDITION_KEYS)
+        if key in attacked
+    ]
+    for group_key, group in attacked.groupby(group_keys, dropna=False):
+        label = "|".join(map(str, group_key if isinstance(group_key, tuple) else (group_key,)))
+        pivot = group.pivot_table(index="seed", columns="defense", values="active_asr_auc", aggfunc="first")
+        if {"rtc_full", "fedavg"}.issubset(pivot.columns):
+            paired = pivot[["rtc_full", "fedavg"]].dropna()
+            ratio = float(paired["rtc_full"].mean() / max(paired["fedavg"].mean(), 1e-12))
+            gates.append(_gate(f"target_rtc_vs_fedavg:{label}", ratio <= 0.5,
+                               ratio, "mean RTC/FedAvg <= 0.50"))
+            gates.append(_gate(f"target_seed_direction_fedavg:{label}",
+                               bool((paired["rtc_full"] < paired["fedavg"]).all()),
+                               int((paired["rtc_full"] < paired["fedavg"]).sum()),
+                               f"all {len(paired)} paired seeds improve"))
+        if {"rtc_full", "clip_only"}.issubset(pivot.columns):
+            paired = pivot[["rtc_full", "clip_only"]].dropna()
+            ratio = float(paired["rtc_full"].mean() / max(paired["clip_only"].mean(), 1e-12))
+            gates.append(_gate(f"target_rtc_vs_clip:{label}", ratio <= 0.8,
+                               ratio, "mean RTC/clip-only <= 0.80"))
+        rtc = group[group["defense"] == "rtc_full"]
+        if not rtc.empty and "benign_quarantine_rate" in rtc:
+            rate = float(pd.to_numeric(rtc["benign_quarantine_rate"], errors="coerce").mean())
+            gates.append(_gate(f"target_benign_quarantine:{label}", rate <= 0.05,
+                               rate, "<= 0.05"))
+
+    clean = summary[summary["attack"] == "none"] if "attack" in summary else pd.DataFrame()
+    if not clean.empty:
+        clean_keys = [key for key in (*CONDITION_KEYS, "seed") if key in clean]
+        pivot = clean.pivot_table(index=clean_keys, columns="defense", values="final_accuracy", aggfunc="first")
+        if {"rtc_full", "fedavg"}.issubset(pivot.columns):
+            drops = pivot["fedavg"] - pivot["rtc_full"]
+            gates.append(_gate("target_clean_accuracy_drop", bool((drops <= 0.03).all()),
+                               float(drops.max()), "every paired seed <= 0.03"))
+    return gates
+
+
 def clean_baselines(matrix: Sequence[Dict[str, Any]], smoke: bool) -> List[Dict[str, Any]]:
     """Add same-seed clean trajectories for utility and accuracy-drop metrics."""
     seeds = sorted({int(spec["seed"]) for spec in matrix})
-    defense_names = sorted({str(spec["defense"]) for spec in matrix})
-    if smoke:
-        defense_names = [name for name in defense_names if name in {"fedavg", "tc_full"}]
+    selected_names = {str(spec["defense"]) for spec in matrix}
+    # One clean FedAvg trajectory supports utility deltas for every attacked
+    # defense. RTC gets its own clean trajectory; extra clean baselines are
+    # retained only for defenses whose preflight explicitly validates them.
+    defense_names = ["fedavg"]
+    if "rtc_full" in selected_names:
+        defense_names.append("rtc_full")
+    if not smoke:
+        defense_names.extend(
+            name for name in ("freqfed", "fltrust") if name in selected_names
+        )
     rows = []
     definitions = {**DEFENSES, **ABLATIONS}
-    for seed, defense_name in itertools.product(seeds, defense_names):
+    conditions = {
+        tuple((key, spec.get(key)) for key in (*CONDITION_KEYS, "attack_start_round", "attack_end_round"))
+        for spec in matrix
+    }
+    for seed, defense_name, condition_items in itertools.product(seeds, defense_names, conditions):
         defense_type, custom = definitions[defense_name]
-        rows.append({"attack": "none", "period": "clean", "on_rounds": 1,
+        rows.append({**dict(condition_items), "attack": "none", "period": "clean", "on_rounds": 1,
                      "off_rounds": 0, "malicious_fraction": 0.0, "seed": seed,
                      "benchmark_version": BENCHMARK_VERSION,
                      "defense": defense_name, "defense_type": defense_type,
@@ -727,7 +912,7 @@ def generate_plots(summary: pd.DataFrame, rounds_dir: Path, output: Path) -> Non
         sns.barplot(data=summary, x="defense", y="active_asr_auc", hue="attack", errorbar="sd")
         plt.xticks(rotation=25); plt.tight_layout()
         plt.savefig(output / "active_asr_auc.png", dpi=180); plt.close()
-    if "final_accuracy" in summary:
+    if "final_accuracy" in summary and "active_asr_auc" in summary:
         plt.figure(figsize=(8, 5))
         sns.scatterplot(data=summary, x="active_asr_auc", y="final_accuracy", hue="defense", style="attack")
         plt.tight_layout(); plt.savefig(output / "security_utility_tradeoff.png", dpi=180); plt.close()
@@ -744,13 +929,15 @@ def generate_plots(summary: pd.DataFrame, rounds_dir: Path, output: Path) -> Non
         if expected_ids is not None and path.stem not in expected_ids:
             continue
         frame = pd.read_csv(path)
-        if frame.get("defense", pd.Series(dtype=str)).eq("tc_full").any():
+        if frame.get("defense", pd.Series(dtype=str)).eq("rtc_full").any():
             timeline_frames.append(frame)
     if timeline_frames:
         timeline = pd.concat(timeline_frames, ignore_index=True)
         columns = [name for name in (
             "server_asr", "fit_active_attacker_weight_share",
-            "fit_fft_periodic_penalty_clients", "fit_direction_penalty_clients"
+            "fit_fft_periodic_penalty_clients", "fit_direction_penalty_clients",
+            "fit_rtc_total_risk_mean", "fit_rtc_temporal_risk_mean",
+            "fit_rtc_influence_risk_mean"
         ) if name in timeline]
         for metric in columns:
             plt.figure(figsize=(10, 5))
@@ -763,8 +950,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="config/config.yaml")
     parser.add_argument("--output", default="logs/periodic_attack_v2")
     parser.add_argument("--mode", choices=("main", "ablation", "untargeted", "all"), default="all")
-    parser.add_argument("--smoke", action="store_true", help="Run a 12-round single-condition matrix")
+    parser.add_argument("--smoke", action="store_true", help="Run a 6-round single-condition matrix")
     parser.add_argument("--rerun", action="store_true")
+    parser.add_argument("--skip-clean", action="store_true", help="Run attacked screening cells only")
+    parser.add_argument("--clean-only", action="store_true", help="Run only generated clean baselines")
+    parser.add_argument("--attacks", default="", help="Comma-separated attack filter")
+    parser.add_argument("--defenses", default="", help="Comma-separated defense filter")
+    parser.add_argument("--periods", default="", help="Comma-separated period filter")
+    parser.add_argument("--seeds", default="", help="Comma-separated seed filter")
+    parser.add_argument("--malicious-fractions", default="", help="Comma-separated malicious-fraction filter")
+    parser.add_argument("--rounds", type=int, default=60)
+    parser.add_argument("--num-clients", type=int, default=20)
+    parser.add_argument("--participation-rate", type=float, default=0.5)
+    parser.add_argument("--partition", choices=("iid", "non_iid", "dirichlet"), default="iid")
+    parser.add_argument("--dirichlet-alpha", type=float, default=0.5)
+    parser.add_argument("--boost-factor", type=float, default=10.0)
+    parser.add_argument("--attack-start-round", type=int, default=11)
+    parser.add_argument("--attack-end-round", type=int, default=-1)
+    parser.add_argument("--max-client-samples", type=int, default=0)
+    parser.add_argument("--max-test-samples", type=int, default=0)
     return parser.parse_args()
 
 

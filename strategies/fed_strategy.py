@@ -193,6 +193,10 @@ class FedSecStrategy(Strategy):
             self._stable_client_id(client, fit_res)
             for client, fit_res in results
         ]
+        selected_partition_ids = [
+            self._server_partition_id(client, fit_res)
+            for client, fit_res in results
+        ]
         malicious_labels = [
             bool(fit_res.metrics.get("is_malicious", False))
             for _, fit_res in results
@@ -243,7 +247,7 @@ class FedSecStrategy(Strategy):
             elif isinstance(value, (str, bool)):
                 fit_metrics[key] = value
         fit_metrics.update(self._security_round_metrics(self.last_client_records))
-        fit_metrics["selected_partition_ids"] = ",".join(sorted(client_ids, key=str))
+        fit_metrics["selected_partition_ids"] = ",".join(sorted(selected_partition_ids, key=str))
         fit_metrics["planned_partition_ids"] = ",".join(sorted(
             self._planned_partition_ids.get(int(server_round), []), key=str
         ))
@@ -256,7 +260,16 @@ class FedSecStrategy(Strategy):
 
     @staticmethod
     def _stable_client_id(client: ClientProxy, fit_res: FitRes) -> str:
-        raw = fit_res.metrics.get("client_id", client.cid)
+        # Trust state must be keyed by server-side identity.  A client-reported
+        # metrics["client_id"] is useful for logging, but using it here would
+        # let an adversarial client reset or spoof temporal history.
+        return str(client.cid)
+
+    @staticmethod
+    def _server_partition_id(client: ClientProxy, fit_res: FitRes) -> str:
+        raw = getattr(client, "partition_id", None)
+        if raw is None:
+            raw = fit_res.metrics.get("client_id", client.cid)
         if isinstance(raw, float) and raw.is_integer():
             raw = int(raw)
         return str(raw)
@@ -272,6 +285,10 @@ class FedSecStrategy(Strategy):
         trust_map = getattr(self.defense, "last_client_trusts", {})
         effective_map = getattr(self.defense, "last_client_weights", {})
         aggregation_map = getattr(self.defense, "last_client_aggregation_weights", {})
+        rtc_records = {
+            str(record.client_id): record
+            for record in getattr(self.defense, "_last_records", [])
+        }
         clipped_mask = list(getattr(self.defense, "_last_clipped_mask", []))
         constraint_tags = list(getattr(self.defense, "_last_constraint_tags", []))
         clip_norm = float(getattr(self.defense, "_last_clip_norm", float("inf")))
@@ -284,6 +301,7 @@ class FedSecStrategy(Strategy):
             is_clipped = idx < len(clipped_mask) and bool(clipped_mask[idx])
             clipped_norm = min(raw_norm, clip_norm) if is_clipped else raw_norm
             aggregation_weight = aggregation_map.get(cid)
+            rtc_record = rtc_records.get(str(cid))
             impact_norm = (
                 float(aggregation_weight) * clipped_norm
                 if aggregation_weight is not None
@@ -310,6 +328,13 @@ class FedSecStrategy(Strategy):
                 "clipped": is_clipped,
                 "capped": "capped" in flags,
                 "quarantined": "quarantined" in flags,
+                "state": getattr(rtc_record, "state", None),
+                "magnitude_risk": getattr(rtc_record, "magnitude_risk", None),
+                "direction_risk": getattr(rtc_record, "direction_risk", None),
+                "temporal_risk": getattr(rtc_record, "temporal_risk", None),
+                "influence_risk": getattr(rtc_record, "influence_risk", None),
+                "total_risk": getattr(rtc_record, "total_risk", None),
+                "event_risk": getattr(rtc_record, "event_risk", None),
                 "flags": ",".join(flags),
             })
         return records
@@ -420,6 +445,13 @@ class FedSecStrategy(Strategy):
         metrics["benign_quarantine_rate"] = (
             benign_quarantined / len(benign) if benign else 0.0
         )
+        for state in ("watch", "restricted", "quarantined"):
+            benign_count = sum(1 for record in benign if record.get("state") == state)
+            malicious_count = sum(1 for record in malicious if record.get("state") == state)
+            metrics[f"benign_{state}_rate"] = benign_count / len(benign) if benign else 0.0
+            metrics[f"malicious_{state}_rate"] = (
+                malicious_count / len(malicious) if malicious else 0.0
+            )
         return metrics
 
     def aggregate_evaluate(

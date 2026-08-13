@@ -15,6 +15,9 @@ data/**
 logs/
 checkpoints/
 
+# Local documentation and research notes
+docs/
+
 # Local/editor files
 .DS_Store
 .idea/

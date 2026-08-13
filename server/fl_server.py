@@ -23,7 +23,13 @@ import flwr as fl
 from flwr.common import NDArrays
 
 from config.config_loader import AttackConfig, Config
-from models.model_factory import get_model, get_parameters, set_parameters
+from models.model_factory import (
+    get_model,
+    get_parameter_names,
+    get_parameter_roles,
+    get_parameters,
+    set_parameters,
+)
 from strategies.fed_strategy import FedSecStrategy
 from utils.metrics import MetricTracker
 from utils.logger import setup_logging
@@ -96,6 +102,77 @@ def evaluate_targeted_asr(
     return {"asr": asr, "asr_total": total, "attack_type": attack_type}
 
 
+def label_flip_metrics_from_confusion(
+    confusion: np.ndarray,
+    attack_cfg: AttackConfig,
+) -> Dict[str, Any]:
+    """Derive objective-aware label-flip metrics from a clean confusion matrix."""
+    attack_type = str(attack_cfg.type).lower()
+    if (
+        not attack_cfg.enabled
+        or attack_type not in {"label_flip_targeted", "label_flip_all_reverse"}
+    ):
+        return {}
+
+    matrix = np.asarray(confusion, dtype=np.int64)
+    supports = matrix.sum(axis=1)
+    recalls = np.divide(
+        np.diag(matrix),
+        supports,
+        out=np.zeros(matrix.shape[0], dtype=np.float64),
+        where=supports > 0,
+    )
+    supported_recalls = recalls[supports > 0]
+    metrics: Dict[str, Any] = {
+        "macro_recall": float(supported_recalls.mean()) if supported_recalls.size else 0.0,
+        "confusion_matrix_json": json.dumps(matrix.tolist(), separators=(",", ":")),
+        "attack_type": attack_type,
+    }
+
+    if attack_type == "label_flip_targeted":
+        source = int(attack_cfg.source_label)
+        target = int(attack_cfg.target_label)
+        source_total = int(supports[source])
+        if source_total == 0:
+            raise RuntimeError(
+                f"Targeted label-flip ASR is undefined: test set has no source label {source}"
+            )
+        source_to_target = int(matrix[source, target])
+        target_predictions = int(matrix[:, target].sum())
+        metrics.update({
+            "asr": float(source_to_target / source_total),
+            "asr_total": source_total,
+            "source_recall": float(matrix[source, source] / source_total),
+            "target_precision": (
+                float(matrix[target, target] / target_predictions)
+                if target_predictions else 0.0
+            ),
+            "source_to_target_count": source_to_target,
+            "target_prediction_count": target_predictions,
+            "source_label": source,
+            "target_label": target,
+        })
+    elif attack_type == "label_flip_all_reverse":
+        # The attack objective is the deterministic mapping y -> C - 1 - y.
+        # Report its success rate in addition to clean accuracy/macro recall so
+        # promotion gates can compare candidate and baseline on the attack's
+        # actual objective.  For even-sized label spaces (for example CIFAR-10)
+        # no class maps to itself; the definition also remains well-defined for
+        # odd-sized label spaces.
+        reverse_targets = matrix.shape[0] - 1 - np.arange(matrix.shape[0])
+        reverse_success = int(matrix[np.arange(matrix.shape[0]), reverse_targets].sum())
+        reverse_total = int(supports.sum())
+        if reverse_total == 0:
+            raise RuntimeError("All-reverse label-flip ASR is undefined: empty test set")
+        metrics.update({
+            "asr": float(reverse_success / reverse_total),
+            "asr_total": reverse_total,
+            "reverse_mapping_rate": float(reverse_success / reverse_total),
+            "reverse_mapping_count": reverse_success,
+        })
+    return metrics
+
+
 # ── Server-side evaluator ─────────────────────────────────────────────────────
 
 class ServerEvaluator:
@@ -111,6 +188,7 @@ class ServerEvaluator:
         device: torch.device,
         checkpoint_dir: Path,
         attack_cfg: Optional[AttackConfig] = None,
+        num_classes: int = 10,
         save_best_model: bool = True,
     ):
         self.model = model
@@ -118,7 +196,9 @@ class ServerEvaluator:
         self.device = device
         self.checkpoint_dir = checkpoint_dir
         self.attack_cfg = attack_cfg or AttackConfig()
+        self.num_classes = int(num_classes)
         self.save_best_model = bool(save_best_model)
+        self.state_provider: Optional[Callable[[], Dict[str, Any]]] = None
         self.best_accuracy = 0.0
         self.best_round = 0
 
@@ -136,6 +216,7 @@ class ServerEvaluator:
         loss_sum = 0.0
         correct = 0
         total = 0
+        confusion = np.zeros((self.num_classes, self.num_classes), dtype=np.int64)
 
         with torch.no_grad():
             for x, y in self.test_loader:
@@ -143,6 +224,11 @@ class ServerEvaluator:
                 logits = self.model(x)
                 loss_sum += criterion(logits, y).item() * x.size(0)
                 correct += (logits.argmax(1) == y).sum().item()
+                preds = logits.argmax(1)
+                encoded = (y * self.num_classes + preds).detach().cpu().numpy()
+                confusion += np.bincount(
+                    encoded, minlength=self.num_classes * self.num_classes
+                ).reshape(self.num_classes, self.num_classes)
                 total += x.size(0)
 
         loss = loss_sum / total
@@ -166,6 +252,11 @@ class ServerEvaluator:
                 asr_metrics["attack_type"],
             )
         else:
+            label_flip_metrics = label_flip_metrics_from_confusion(
+                confusion, self.attack_cfg
+            )
+            if label_flip_metrics:
+                metrics.update(label_flip_metrics)
             logger.info("Server eval | round=%d loss=%.4f acc=%.4f", server_round, loss, acc)
 
         if acc > self.best_accuracy:
@@ -181,6 +272,10 @@ class ServerEvaluator:
         path = self.checkpoint_dir / f"best_model_round{rnd:04d}_acc{acc:.4f}.pt"
         set_parameters(self.model, params)
         torch.save(self.model.state_dict(), path)
+        if self.state_provider is not None:
+            rtc_path = path.with_name(f"{path.stem}_rtc_state.pt")
+            torch.save(self.state_provider(), rtc_path)
+            logger.info("Defense state checkpoint saved → %s", rtc_path)
         logger.info("Checkpoint saved → %s", path)
 
 
@@ -280,6 +375,7 @@ def build_server(
         device=device,
         checkpoint_dir=checkpoint_dir,
         attack_cfg=cfg.security.attack,
+        num_classes=cfg.dataset.num_classes,
         save_best_model=cfg.evaluation.save_best_model,
     )
 
@@ -297,6 +393,17 @@ def build_server(
             device,
         )
 
+    trial_plan = None
+    if cfg.federation.pairing_mode == "strict":
+        from experiments.trial_plan import TrialPlanV1
+
+        trial_plan = TrialPlanV1.load(cfg.federation.trial_plan_path)
+        if trial_plan.trial_plan_hash != cfg.federation.trial_plan_hash:
+            raise RuntimeError(
+                "Configured trial-plan hash does not match the loaded plan: "
+                f"{cfg.federation.trial_plan_hash} != {trial_plan.trial_plan_hash}"
+            )
+
     # Strategy
     strategy = FedSecStrategy(
         strategy_cfg=cfg.strategy,
@@ -310,7 +417,15 @@ def build_server(
         clients_per_round=cfg.federation.clients_per_round,
         server_update_fn=server_update_fn,
         sampling_seed=cfg.project.seed,
+        pairing_mode=cfg.federation.pairing_mode,
+        sampling_protocol=cfg.federation.sampling_protocol,
+        trial_plan=trial_plan,
+        parameter_roles=get_parameter_roles(global_model),
+        parameter_names=get_parameter_names(global_model),
     )
+    state_provider = getattr(strategy.defense, "state_dict", None)
+    if callable(state_provider):
+        evaluator.state_provider = state_provider
 
     server = fl.server.Server(
         client_manager=fl.server.SimpleClientManager(),

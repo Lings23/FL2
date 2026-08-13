@@ -5,11 +5,13 @@ Malicious client variants for security experiment simulation.
 
 Implemented attacks
 -------------------
-• label_flip        — flip source → target labels during local training
+• label_flip_targeted   — flip source → target labels during local training
+• label_flip_all_reverse — flip every selected label with y' = C - 1 - y
 • backdoor          — stamp a pixel trigger + relabel to target class
 • dba               — distributed backdoor with per-client trigger fragments
 • gaussian_noise    — add Gaussian noise to uploaded model weights
 • model_replacement — scale update to replace global model (Bagdasaryan et al.)
+• mpaf              — fake-client drift toward a fixed low-accuracy base model
 • byzantine         — send random weights (worst-case adversary)
 
 Extension interface
@@ -80,19 +82,106 @@ def _scale_floating_update(
 
 # ── Helper: poisoned data loaders ────────────────────────────────────────────
 
-class LabelFlipDataset(Dataset):
-    """Wraps a dataset and flips source_label → target_label."""
+LABEL_FLIP_ATTACKS = {"label_flip_targeted", "label_flip_all_reverse"}
 
-    def __init__(self, base: Dataset, source: int, target: int):
+
+def validate_label_flip_config(
+    attack_cfg: AttackConfig,
+    num_classes: int,
+) -> None:
+    """Fail fast on ambiguous or invalid label-flip configurations."""
+    attack_type = str(attack_cfg.type).lower()
+    if attack_type == "label_flip":
+        raise ValueError(
+            "Attack type 'label_flip' is no longer supported; use "
+            "'label_flip_targeted' or 'label_flip_all_reverse'."
+        )
+    if attack_type not in LABEL_FLIP_ATTACKS:
+        return
+
+    fraction = float(attack_cfg.label_flip_poison_fraction)
+    if not 0.0 <= fraction <= 1.0:
+        raise ValueError("label_flip_poison_fraction must be in [0, 1]")
+    if int(num_classes) < 2:
+        raise ValueError("Label flip requires dataset.num_classes >= 2")
+    if attack_type == "label_flip_targeted":
+        source = int(attack_cfg.source_label)
+        target = int(attack_cfg.target_label)
+        if not 0 <= source < int(num_classes):
+            raise ValueError(f"source_label must be in [0, {int(num_classes) - 1}]")
+        if not 0 <= target < int(num_classes):
+            raise ValueError(f"target_label must be in [0, {int(num_classes) - 1}]")
+        if source == target:
+            raise ValueError("source_label and target_label must be different")
+
+
+class LabelFlipDataset(Dataset):
+    """Deterministically poison a subset of labels in a local dataset."""
+
+    def __init__(
+        self,
+        base: Dataset,
+        *,
+        attack_type: str,
+        num_classes: int,
+        poison_fraction: float = 1.0,
+        source: int = 5,
+        target: int = 3,
+        seed: int = 0,
+    ):
         self.base = base
-        self.source = source
-        self.target = target
+        self.attack_type = str(attack_type).lower()
+        self.num_classes = int(num_classes)
+        self.source = int(source)
+        self.target = int(target)
+
+        validation_cfg = AttackConfig(
+            enabled=True,
+            type=self.attack_type,
+            source_label=self.source,
+            target_label=self.target,
+            label_flip_poison_fraction=float(poison_fraction),
+        )
+        validate_label_flip_config(validation_cfg, self.num_classes)
+
+        if self.attack_type == "label_flip_targeted":
+            eligible = [
+                idx for idx in range(len(base))
+                if int(base[idx][1]) == self.source  # type: ignore[index]
+            ]
+        else:
+            eligible = list(range(len(base)))  # type: ignore[arg-type]
+
+        fraction = float(poison_fraction)
+        n_poison = int(len(eligible) * fraction)
+        if fraction > 0.0 and eligible:
+            n_poison = max(1, n_poison)
+        rng = np.random.default_rng(int(seed))
+        selected = (
+            rng.choice(np.asarray(eligible, dtype=np.int64), n_poison, replace=False)
+            if n_poison > 0 else np.asarray([], dtype=np.int64)
+        )
+        self.poison_indices = {int(idx) for idx in selected.tolist()}
+        self.eligible_examples = len(eligible)
+        self.poisoned_examples = len(self.poison_indices)
+        self.total_examples = len(base)  # type: ignore[arg-type]
 
     def __len__(self): return len(self.base)  # type: ignore
 
     def __getitem__(self, idx):
         x, y = self.base[idx]
-        return x, self.target if y == self.source else y
+        y_int = int(y)
+        if idx not in self.poison_indices:
+            return x, y
+        if self.attack_type == "label_flip_targeted":
+            poisoned_label = self.target
+        else:
+            poisoned_label = self.num_classes - 1 - y_int
+        if torch.is_tensor(y):
+            return x, torch.as_tensor(poisoned_label, dtype=y.dtype, device=y.device)
+        if isinstance(y, np.generic):
+            return x, y.dtype.type(poisoned_label)
+        return x, poisoned_label
 
 
 class BackdoorDataset(Dataset):
@@ -240,24 +329,55 @@ class DBADataset(Dataset):
 class LabelFlipClient(FedSecClient):
     """Flips labels during local training."""
 
+    def _poisoned_dataset(self) -> LabelFlipDataset:
+        seed = int(getattr(self, "_current_attack_seed", self.experiment_seed))
+        cache = getattr(self, "_label_flip_datasets", {})
+        cached = cache.get(seed)
+        if cached is None:
+            cached = LabelFlipDataset(
+                self._clean_train_loader.dataset,
+                attack_type=self.attack_cfg.type,
+                num_classes=self.num_classes,
+                poison_fraction=self.attack_cfg.label_flip_poison_fraction,
+                source=self.attack_cfg.source_label,
+                target=self.attack_cfg.target_label,
+                seed=seed,
+            )
+            cache[seed] = cached
+            self._label_flip_datasets = cache
+        return cached
+
     def on_before_fit(self, parameters: List[np.ndarray], config: Dict) -> None:
         if not getattr(self, "_attack_active", True):
             return
-        poisoned_ds = LabelFlipDataset(
-            self.train_loader.dataset,
-            source=self.attack_cfg.source_label,
-            target=self.attack_cfg.target_label,
-        )
+        poisoned_ds = self._poisoned_dataset()
         self.train_loader = DataLoader(
             poisoned_ds,
             batch_size=self.train_loader.batch_size,
             shuffle=True,
             num_workers=0,
         )
-        logger.debug("Client %d: label flip %d→%d activated",
-                     self.client_id,
-                     self.attack_cfg.source_label,
-                     self.attack_cfg.target_label)
+        logger.debug(
+            "Client %d: %s activated (eligible=%d poisoned=%d)",
+            self.client_id,
+            self.attack_cfg.type,
+            poisoned_ds.eligible_examples,
+            poisoned_ds.poisoned_examples,
+        )
+
+    def on_after_fit(
+        self, parameters: List[np.ndarray], metrics: Dict
+    ) -> List[np.ndarray]:
+        total = len(self._clean_train_loader.dataset)
+        if getattr(self, "_attack_active", False):
+            poisoned_ds = self._poisoned_dataset()
+            metrics["label_flip_eligible_examples"] = poisoned_ds.eligible_examples
+            metrics["label_flip_poisoned_examples"] = poisoned_ds.poisoned_examples
+        else:
+            metrics["label_flip_eligible_examples"] = 0
+            metrics["label_flip_poisoned_examples"] = 0
+        metrics["label_flip_total_examples"] = total
+        return parameters
 
 
 class BackdoorClient(FedSecClient):
@@ -272,7 +392,7 @@ class BackdoorClient(FedSecClient):
             poison_fraction=self.attack_cfg.poison_fraction,
             trigger_size=self.attack_cfg.trigger_size,
             trigger_value=self.attack_cfg.trigger_value,
-            seed=self.client_id,
+            seed=int(getattr(self, "_current_attack_seed", self.client_id)),
         )
         self.train_loader = DataLoader(
             poisoned_ds,
@@ -303,7 +423,7 @@ class DBAClient(FedSecClient):
             gap=self.attack_cfg.dba_gap,
             base_row=self.attack_cfg.dba_base_row,
             base_col=self.attack_cfg.dba_base_col,
-            seed=self.client_id,
+            seed=int(getattr(self, "_current_attack_seed", self.client_id)),
         )
         self.train_loader = DataLoader(
             poisoned_ds,
@@ -409,7 +529,7 @@ class ModelReplacementClient(FedSecClient):
             poison_fraction=1.0,   # all samples poisoned
             trigger_size=self.attack_cfg.trigger_size,
             trigger_value=self.attack_cfg.trigger_value,
-            seed=self.client_id,
+            seed=int(getattr(self, "_current_attack_seed", self.client_id)),
         )
         self.train_loader = DataLoader(
             poisoned_ds,
@@ -419,15 +539,80 @@ class ModelReplacementClient(FedSecClient):
         )
 
 
+class MPAFClient(FedSecClient):
+    """MPAF-style fake client using only successive global models."""
+
+    def on_before_fit(self, parameters: List[np.ndarray], config: Dict) -> None:
+        if not getattr(self, "_attack_active", True):
+            return
+        self._global_params_cache = [parameter.copy() for parameter in parameters]
+        if not hasattr(self, "_mpaf_base_params"):
+            base_scale = float(getattr(self.attack_cfg, "mpaf_base_scale", 0.0))
+            self._mpaf_base_params = _apply_to_floating_params(
+                parameters,
+                lambda parameter: base_scale * parameter,
+            )
+
+    def on_after_fit(
+        self, parameters: List[np.ndarray], metrics: Dict
+    ) -> List[np.ndarray]:
+        if not getattr(self, "_attack_active", True):
+            return parameters
+        global_params = getattr(self, "_global_params_cache", parameters)
+        base_params = getattr(self, "_mpaf_base_params", global_params)
+        attack_scale = float(getattr(self.attack_cfg, "mpaf_lambda", 1.0))
+        squared_norm = 0.0
+        raw_deltas: List[np.ndarray | None] = []
+        for global_param, base_param in zip(global_params, base_params):
+            if _is_floating_array(global_param):
+                delta = attack_scale * (
+                    np.asarray(base_param, dtype=np.float64)
+                    - np.asarray(global_param, dtype=np.float64)
+                )
+                squared_norm += float(np.dot(delta.reshape(-1), delta.reshape(-1)))
+                raw_deltas.append(delta)
+            else:
+                raw_deltas.append(None)
+        norm = float(np.sqrt(squared_norm))
+        ceiling = float(getattr(self.attack_cfg, "mpaf_max_update_norm", 0.0))
+        applied_scale = (
+            min(1.0, ceiling / norm)
+            if ceiling > 0.0 and norm > 0.0
+            else 1.0
+        )
+        attacked: List[np.ndarray] = []
+        for global_param, delta in zip(global_params, raw_deltas):
+            if delta is None:
+                attacked.append(global_param.copy())
+            else:
+                value = (
+                    np.asarray(global_param, dtype=np.float64)
+                    + applied_scale * delta
+                )
+                attacked.append(value.astype(global_param.dtype, copy=False))
+        metrics["mpaf_raw_update_norm"] = norm
+        metrics["mpaf_applied_scale"] = applied_scale
+        logger.debug(
+            "Client %d: MPAF (lambda=%.3f raw_norm=%.4f applied_scale=%.4f)",
+            self.client_id,
+            attack_scale,
+            norm,
+            applied_scale,
+        )
+        return attacked
+
+
 # ── Registry ──────────────────────────────────────────────────────────────────
 
 ATTACK_REGISTRY: Dict[str, Type[FedSecClient]] = {
-    "label_flip":        LabelFlipClient,
+    "label_flip_targeted":    LabelFlipClient,
+    "label_flip_all_reverse": LabelFlipClient,
     "backdoor":          BackdoorClient,
     "dba":               DBAClient,
     "gaussian_noise":    GaussianNoiseClient,
     "byzantine":         ByzantineClient,
     "model_replacement": ModelReplacementClient,
+    "mpaf":              MPAFClient,
     # ── Extension point ────────────────────────────────────────────
     # "your_attack": YourAttackClient,
 }
@@ -435,6 +620,11 @@ ATTACK_REGISTRY: Dict[str, Type[FedSecClient]] = {
 
 def get_attack_client_class(attack_type: str) -> Type[FedSecClient]:
     t = attack_type.lower()
+    if t == "label_flip":
+        raise ValueError(
+            "Attack type 'label_flip' is no longer supported; use "
+            "'label_flip_targeted' or 'label_flip_all_reverse'."
+        )
     if t not in ATTACK_REGISTRY:
         raise ValueError(
             f"Unknown attack {t!r}. Available: {list(ATTACK_REGISTRY)}"

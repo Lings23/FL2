@@ -1,0 +1,235 @@
+{
+  "passed": true,
+  "content_hash": "326e8792f9744c6a81d8ace1215b72d67b3f5cb0c0691af6bf43a485bd9d6369",
+  "calibration_seeds": [
+    40,
+    41
+  ],
+  "evaluation_seeds": [
+    42,
+    46,
+    47,
+    48,
+    51
+  ],
+  "development_seeds": [
+    43,
+    44,
+    45
+  ],
+  "seed_sets_disjoint": true,
+  "all_seed_roles_disjoint": true,
+  "q_min_less_than_one": true,
+  "q_value_less_than_one": true,
+  "semantic_q_min_less_than_one": true,
+  "stable_cones_frozen": true,
+  "clip_profiles": {
+    "warmup": {
+      "lower": 12.702752219363083,
+      "upper": 64.97920923254361
+    },
+    "steady": {
+      "lower": 11.290285675669697,
+      "upper": 16.02424031823799
+    },
+    "late": {
+      "lower": 10.492318130802657,
+      "upper": 15.298792601937476
+    }
+  },
+  "server_budget_envelopes": {
+    "full/1/anchor": {
+      "observed_max": 0.28196547166924907,
+      "observed_p99": 0.23684108802483844,
+      "budget_min": 4.211336723184655
+    },
+    "full/1/residual": {
+      "observed_max": 1.7341653858544506,
+      "observed_p99": 1.6521301140613556,
+      "budget_min": 1.9075819244398957
+    },
+    "full/1/total": {
+      "observed_max": 2.0161308575236996,
+      "observed_p99": 1.8889712020861942,
+      "budget_min": 6.118918647624549
+    },
+    "full/4/anchor": {
+      "observed_max": 0.43975798858834014,
+      "observed_p99": 0.4266957771358093,
+      "budget_min": 6.5680700395411895
+    },
+    "full/4/residual": {
+      "observed_max": 5.288095123411354,
+      "observed_p99": 5.067728187558383,
+      "budget_min": 5.81690463575249
+    },
+    "full/4/total": {
+      "observed_max": 5.7278531119996945,
+      "observed_p99": 5.456655016783679,
+      "budget_min": 12.384974675293678
+    },
+    "full/8/anchor": {
+      "observed_max": 0.5873870503879262,
+      "observed_p99": 0.5770577901905438,
+      "budget_min": 8.773005578936514
+    },
+    "full/8/residual": {
+      "observed_max": 9.237943176039478,
+      "observed_p99": 9.014270602768216,
+      "budget_min": 10.161737493643427
+    },
+    "full/8/total": {
+      "observed_max": 9.825330226427404,
+      "observed_p99": 9.552984921063256,
+      "budget_min": 18.934743072579938
+    }
+  },
+  "principal_budget_envelopes": {
+    "full/1": {
+      "observed_max": 1.9600881670855532,
+      "observed_p99": 1.6899859141635476,
+      "beta_min": 2.1560969837941086
+    },
+    "full/4": {
+      "observed_max": 1.9600881670855532,
+      "observed_p99": 1.6899859141635476,
+      "beta_min": 2.1560969837941086
+    },
+    "full/8": {
+      "observed_max": 1.9600881670855532,
+      "observed_p99": 1.6899859141635476,
+      "beta_min": 2.1560969837941086
+    }
+  },
+  "cone_budget_envelopes": {
+    "full/1/residual": {
+      "observed_max": 0.6932809910375384,
+      "observed_p99": 0.5135006631229978,
+      "budget_min": 0.7626090901412923
+    },
+    "full/4/residual": {
+      "observed_max": 1.6271209231620705,
+      "observed_p99": 1.5420191213836787,
+      "budget_min": 1.7898330154782776
+    },
+    "full/8/residual": {
+      "observed_max": 2.6785890727698556,
+      "observed_p99": 2.60879841702839,
+      "budget_min": 2.9464479800468415
+    }
+  },
+  "cone_clustering": {
+    "warmup": {
+      "prototype_count": 15,
+      "coverage": 1.0,
+      "overflow_rate": 0.0,
+      "similarity_min": 0.07377369086801505,
+      "similarity_q01": 0.09780064798346387,
+      "similarity_q25": 0.3046190338104936,
+      "max_angular_drift": 0.018596317441075975
+    },
+    "steady": {
+      "prototype_count": 16,
+      "coverage": 0.99,
+      "overflow_rate": 0.010000000000000009,
+      "similarity_min": 0.044392366781698396,
+      "similarity_q01": 0.08131673445953777,
+      "similarity_q25": 0.19988914298297294,
+      "max_angular_drift": 0.019838129529145498
+    },
+    "late": {
+      "prototype_count": 16,
+      "coverage": 0.9983333333333333,
+      "overflow_rate": 0.0016666666666667052,
+      "similarity_min": 0.05184362718586631,
+      "similarity_q01": 0.07803681361195018,
+      "similarity_q25": 0.19719144184739595,
+      "max_angular_drift": 0.019794648350998666
+    }
+  },
+  "semantic_budget_envelopes": {
+    "global/1": {
+      "observed_max": 0.0173860837075134,
+      "budget": 0.01912469207826474
+    },
+    "global/4": {
+      "observed_max": 0.039801971557259855,
+      "budget": 0.04378216871298585
+    },
+    "global/8": {
+      "observed_max": 0.056187260663068256,
+      "budget": 0.06180598672937509
+    },
+    "principal/1": {
+      "observed_max": 0.0173860837075134,
+      "budget": 0.01912469207826474
+    },
+    "principal/4": {
+      "observed_max": 0.05376151825125131,
+      "budget": 0.05913767007637645
+    },
+    "principal/8": {
+      "observed_max": 0.1010144211104944,
+      "budget": 0.11111586322154385
+    },
+    "pair/1": {
+      "observed_max": 0.0173860837075134,
+      "budget": 0.01912469207826474
+    },
+    "pair/4": {
+      "observed_max": 0.05376151825125132,
+      "budget": 0.05913767007637646
+    },
+    "pair/8": {
+      "observed_max": 0.08944190202716815,
+      "budget": 0.09838609222988497
+    }
+  },
+  "cone_sketch_dimension": 256,
+  "source_runs": [
+    {
+      "run_id": "none__calibration_clean__m0.0__s40__rtc_v3__iid__p0.50__b10__189fe059",
+      "seed": 40,
+      "trial_plan_hash": "1a6dccd88e6836bb6cba538e30a1578a438428facd3a21bd339eadea2ce89270",
+      "round_sha256": "be81140eb2256451064b2f147224f6de5dd9663b935c5e8144adf7c89e498bbf",
+      "client_sha256": "9df9b30c8ab116dbc0f3a53177a61d7a48ab087f85ef446f35157b938c0b9f1c",
+      "config_sha256": "4b61bfc2ef58500cdd5206ad6d5422bb4324ba350fba1c828c2130a6e5c7206b",
+      "data_manifest_sha256": "0a9a0864faf7be4532bb00a9ca75a0bac5ab259916a3434cd84d7e36677476f9",
+      "sketch_sidecar": "D:\\workspace\\FL2\\logs\\rtc_v3_semantic_formal_calibration_iid\\raw\\none__calibration_clean__m0.0__s40__rtc_v3__iid__p0.50__b10__189fe059_rtc_v3_sketches.parquet",
+      "sketch_sidecar_sha256": "8e0745e680acfd872d14872b7ff90b085132dafe30d30e7b375b5a99a73205ca",
+      "sketch_dimension": 256,
+      "sketch_algorithm_version": "splitmix64_v1",
+      "semantic_row_count": 10,
+      "semantic_ordered_pair_count": 90,
+      "collection_manifest_hash": "a0c9c13404a3648c6600b6909c6fc37fca27f79e4802a1e7679a2fbb1a6c83ca",
+      "collection_manifest_archive": "D:\\workspace\\FL2\\logs\\rtc_v3_semantic_formal_calibration_iid\\rtc_v3_semantic_collection_bootstrap_a0c9c13404a3.json",
+      "collection_manifest_archive_sha256": "be32c3973bf62e159f25b260028c954fef60e0ebd8c6bc7b699d4c55fc9f8fcc",
+      "collection_observation_contract_hash": "2cbb6e75a9ea6c603fbb335c26e228cf53c499bcbcaee58edc186ba5835aa7a7",
+      "pairing_mode": "strict",
+      "sampling_protocol": "principal_uniform",
+      "deterministic_client_training": true
+    },
+    {
+      "run_id": "none__calibration_clean__m0.0__s41__rtc_v3__iid__p0.50__b10__af70c414",
+      "seed": 41,
+      "trial_plan_hash": "5af1c89e2dc687d064cc697468bc9364eb699b3ae42b336f07ce97cf10266d00",
+      "round_sha256": "908a93aa4d37bad60cde5e0778cb9157b785d10b906d08916b1fdaeb563bfed2",
+      "client_sha256": "a79ca636786a67088f1c0742d4124dad047217ac2453cf93e4a606e14008a44f",
+      "config_sha256": "a2b498e5c2b67e43e89491aca51fe49a196794396c9d9afcf3407b78f8f6ca5e",
+      "data_manifest_sha256": "d3066eaaf80e118d1c5091b6f258dec58d24a98a3606cb088a662f24ca688148",
+      "sketch_sidecar": "D:\\workspace\\FL2\\logs\\rtc_v3_semantic_formal_calibration_iid\\raw\\none__calibration_clean__m0.0__s41__rtc_v3__iid__p0.50__b10__af70c414_rtc_v3_sketches.parquet",
+      "sketch_sidecar_sha256": "9d4ce03bb93229a867b44ecb2eab33940b482dbefb523cfe34d19a4d0b04ac62",
+      "sketch_dimension": 256,
+      "sketch_algorithm_version": "splitmix64_v1",
+      "semantic_row_count": 10,
+      "semantic_ordered_pair_count": 90,
+      "collection_manifest_hash": "6716fdf38ab837ed12e53e63520be5ce4d9799e222eed8e5e8ec96ebe15daadb",
+      "collection_manifest_archive": "D:\\workspace\\FL2\\logs\\rtc_v3_semantic_formal_calibration_iid\\rtc_v3_semantic_collection_bootstrap_6716fdf38ab8.json",
+      "collection_manifest_archive_sha256": "ae4bd4e29a50b0bfe839b3f38fe72ca030c82ae8755f9ec41c41063ef537bbca",
+      "collection_observation_contract_hash": "2cbb6e75a9ea6c603fbb335c26e228cf53c499bcbcaee58edc186ba5835aa7a7",
+      "pairing_mode": "strict",
+      "sampling_protocol": "principal_uniform",
+      "deterministic_client_training": true
+    }
+  ]
+}

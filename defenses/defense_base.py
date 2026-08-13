@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Type
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Type
 
 import numpy as np
 
@@ -65,6 +65,11 @@ class BaseDefense(ABC):
         server_round: int,
         client_ids: Sequence[str],
         global_params: Sequence[np.ndarray],
+        *,
+        principal_ids: Sequence[str] | None = None,
+        server_optimizer: str | None = None,
+        parameter_roles: Mapping[int | str, str] | None = None,
+        **_: Any,
     ) -> None:
         """Optional per-round context for stateful defenses.
 
@@ -489,6 +494,9 @@ DEFENSE_REGISTRY: Dict[str, Any] = {
     "foolsgold":     FoolsGoldDefense,
     "freqfed":       FreqFedDefense,
     "time_consistency": "TimeConsistencyDefense",
+    "rtc_full":      "TimeConsistencyDefense",
+    "rtc_v2_legacy": "TimeConsistencyDefense",
+    "rtc_v3_candidate": "RTCv3Defense",
     # ── Extension point ────────────────────────────────────────────────────
     # "your_defense": YourDefenseClass,
 }
@@ -505,6 +513,9 @@ def get_defense(cfg: DefenseConfig, **kwargs: Any) -> BaseDefense:
     if cls == "TimeConsistencyDefense":
         from defenses.time_consistency_defense import TimeConsistencyDefense
         cls = TimeConsistencyDefense
+    elif cls == "RTCv3Defense":
+        from defenses.rtc.v3 import RTCv3Defense
+        cls = RTCv3Defense
     # Pass extra kwargs (e.g. num_clients for FoolsGold)
     try:
         return cls(cfg, **kwargs)

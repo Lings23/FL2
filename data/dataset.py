@@ -108,9 +108,29 @@ class BaseDataset(ABC):
     def load_test(self) -> Dataset:
         ...
 
-    def get_test_loader(self, batch_size: int = 128) -> DataLoader:
-        return DataLoader(self.load_test(), batch_size=batch_size,
-                          shuffle=False, num_workers=2, pin_memory=True)
+    def get_test_loader(
+        self,
+        batch_size: int = 128,
+        *,
+        num_workers: int = 0,
+        pin_memory: bool = False,
+    ) -> DataLoader:
+        """Build the deterministic server-evaluation loader.
+
+        Server evaluation runs in the simulation driver.  Spawning additional
+        Windows DataLoader processes requires named-pipe permissions that are
+        unavailable in restricted/sandboxed runs and adds no sampling benefit
+        for the fixed-order test set.  Keep the safe deterministic default at
+        zero workers; callers may explicitly opt in on supported hosts.
+        """
+
+        return DataLoader(
+            self.load_test(),
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=int(num_workers),
+            pin_memory=bool(pin_memory),
+        )
 
 
 # ── Concrete dataset implementations ─────────────────────────────────────────

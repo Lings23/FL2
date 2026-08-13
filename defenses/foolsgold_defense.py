@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from typing import Dict
 
 import numpy as np
@@ -78,6 +79,12 @@ class FoolsGoldDefense(BaseDefense):
             "foolsgold_zero_weight_clients": float(np.count_nonzero(alphas <= self.eps)),
             "foolsgold_history_clients": float(len(self._history)),
             "foolsgold_fallback": float(fallback),
+            "foolsgold_history_partition_ids_json": json.dumps(
+                sorted(
+                    self._history,
+                    key=lambda value: (0, int(value)) if value.isdigit() else (1, value),
+                )
+            ),
         }
         return self._weighted_average_with_weights(updates, raw_weights)
 

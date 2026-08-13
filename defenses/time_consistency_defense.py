@@ -65,8 +65,7 @@ class TimeConsistencyDefense(BaseDefense):
         if not updates:
             return []
         if self._global_params is None:
-            logger.warning("TimeConsistencyDefense missing global context; falling back to FedAvg.")
-            return self._weighted_average(updates)
+            raise RuntimeError("TimeConsistencyDefense requires global model context for safe aggregation")
 
         client_ids = self._client_ids_for(len(updates))
         records = self._build_records(updates, client_ids)
@@ -81,7 +80,9 @@ class TimeConsistencyDefense(BaseDefense):
             )
 
         self.aggregator.assign_weights(records)
-        aggregated = self.aggregator.aggregate(updates, records, self._global_params)
+        aggregated = self.aggregator.aggregate(
+            updates, records, self._global_params, server_round=self._server_round
+        )
 
         self._record_bookkeeping(records)
         for record in records:
@@ -89,6 +90,7 @@ class TimeConsistencyDefense(BaseDefense):
                 server_round=self._server_round,
                 norm=record.norm,
                 impact=record.impact_proxy,
+                effective_influence=record.influence_effective,
                 signature=record.signature,
                 feature=record.feature_vector,
                 risk=record.total_risk,
@@ -177,7 +179,7 @@ class TimeConsistencyDefense(BaseDefense):
 
     def _aggregate_with_effective_weights(self, updates: UpdateList, effective_weights: Sequence[float]) -> List[np.ndarray]:
         if self._global_params is None:
-            return self._weighted_average(updates)
+            raise RuntimeError("TimeConsistencyDefense requires global model context for safe aggregation")
         client_ids = self._client_ids_for(len(updates))
         records = self._build_records(updates, client_ids)
         weights = np.asarray(effective_weights, dtype=np.float64)
@@ -189,7 +191,10 @@ class TimeConsistencyDefense(BaseDefense):
         for record, weight in zip(records, weights):
             record.effective_weight = float(weight)
             record.aggregation_weight = float(weight)
-        result = self.aggregator.aggregate(updates, records, self._global_params)
+            record.weight_cap = 1.0
+        result = self.aggregator.aggregate(
+            updates, records, self._global_params, server_round=self._server_round
+        )
         self._record_bookkeeping(records)
         return result
 
@@ -221,35 +226,17 @@ class TimeConsistencyDefense(BaseDefense):
         normalized = weights / total
         constrained = normalized.copy()
         tags = ["" for _ in records]
-        fixed = np.zeros_like(constrained, dtype=bool)
         for idx, trust in enumerate(trust_scores):
             if trust < quarantine_threshold:
                 constrained[idx] = 0.0
                 tags[idx] = "quarantined"
-                fixed[idx] = True
             elif trust < restricted_threshold:
                 constrained[idx] = min(constrained[idx], low_trust_weight_cap)
                 tags[idx] = "capped"
-                fixed[idx] = True
-        if float(constrained.sum()) <= self.eps:
-            # RTC-v2's safe fallback is "no trusted mass"; do not restore
-            # original FedAvg weights in this compatibility helper.
-            constrained = np.zeros_like(constrained)
-        elif fixed.any() and (~fixed).any():
-            fixed_sum = float(constrained[fixed].sum())
-            remaining = max(0.0, 1.0 - fixed_sum)
-            free_base = normalized[~fixed]
-            free_sum = float(free_base.sum())
-            if free_sum > self.eps:
-                constrained[~fixed] = free_base / free_sum * remaining
-            else:
-                constrained[~fixed] = remaining / int((~fixed).sum())
-        else:
-            constrained = constrained / float(constrained.sum())
         self._last_constraint_tags = tags
         self._last_quarantined_clients = int(sum(tag == "quarantined" for tag in tags))
         self._last_capped_clients = int(sum(tag == "capped" for tag in tags))
-        return (constrained * total).tolist()
+        return constrained.tolist()
 
     def _frequency_features(self, values: List[float]) -> tuple[float, float, float, float]:
         """Compatibility-only FFT summary; RTC-v2 scoring uses true round gaps."""
@@ -297,6 +284,10 @@ class TimeConsistencyDefense(BaseDefense):
             clip_norm=self._last_clip_norm,
             fallback_used=self.aggregator._last_fallback_used,
             fallback_reason=self.aggregator._last_fallback_reason,
+            weight_sum=self.aggregator._last_weight_sum,
+            zero_mass=self.aggregator._last_zero_mass,
+            max_cap_violation=self.aggregator._last_max_cap_violation,
+            max_budget_violation=self.aggregator._last_max_budget_violation,
         )
         if self.log_client_weights:
             self._log_client_weights(records)
@@ -319,6 +310,8 @@ class TimeConsistencyDefense(BaseDefense):
                 f"cid={record.client_id} trust={record.trust:.4f} "
                 f"risk={record.total_risk:.4f} state={record.state} "
                 f"effective_weight={record.effective_weight:.4f} "
-                f"aggregation_weight={record.aggregation_weight:.4f}{suffix}"
+                f"aggregation_weight={record.aggregation_weight:.4f} "
+                f"influence_attempt={record.influence_attempt:.4e} "
+                f"influence_effective={record.influence_effective:.4e}{suffix}"
             )
         logger.info("TimeConsistency round %d client weights | %s", self._server_round, "; ".join(details))

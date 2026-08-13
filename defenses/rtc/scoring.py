@@ -26,6 +26,7 @@ class RiskScorer:
         self.enable_influence = bool(params.get("enable_influence_features", True))
         self.periodic_gap_tolerance = float(params.get("periodic_gap_tolerance", 1.0))
         self.min_periodic_events = int(params.get("min_periodic_events", 4))
+        self.peak_risk_weight = float(np.clip(params.get("peak_risk_weight", 0.75), 0.0, 1.0))
         self.risk_weights = self._risk_weights(params.get("risk_weights"))
 
     def score_records(
@@ -40,19 +41,39 @@ class RiskScorer:
         signatures = np.vstack([r.signature for r in records]).astype(np.float32, copy=False)
         raw_weights = np.asarray([r.raw_weight for r in records], dtype=np.float64)
 
-        norm_sum = float(np.sum(norms)) + self.eps
-        weight_sum = float(np.sum(raw_weights)) + self.eps
+        weight_sum = float(np.sum(np.maximum(raw_weights, 0.0)))
         group_center_sig = np.median(signatures, axis=0).astype(np.float32)
         group_norm_history = norms.tolist()
 
-        for record in records:
+        if weight_sum > self.eps:
+            shares = np.maximum(raw_weights, 0.0) / weight_sum
+        else:
+            shares = np.full(len(records), 1.0 / len(records), dtype=np.float64)
+        if records[0].delta_flat.size:
+            nominal_update = np.zeros_like(records[0].delta_flat, dtype=np.float64)
+            for share, item in zip(shares, records):
+                nominal_update += float(share) * item.delta_flat.astype(np.float64, copy=False)
+        else:
+            nominal_update = np.zeros(0, dtype=np.float64)
+
+        influence_attempts: List[float] = []
+        for share, item in zip(shares, records):
+            if len(records) <= 1 or share >= 1.0 - self.eps:
+                attempt = 0.0
+            else:
+                residual = item.delta_flat.astype(np.float64, copy=False) - nominal_update
+                attempt = float(share / max(1.0 - share, self.eps) * np.linalg.norm(residual))
+            influence_attempts.append(max(0.0, attempt))
+
+        for record, attempt, share in zip(records, influence_attempts, shares):
             history = histories[record.client_id]
-            record.raw_weight_share = float(record.raw_weight / weight_sum)
-            record.norm_share = float(record.norm / norm_sum)
-            record.impact_proxy = float(record.raw_weight_share * record.norm)
+            record.raw_weight_share = float(share)
+            record.norm_share = float(record.norm / (float(np.sum(norms)) + self.eps))
+            record.influence_attempt = float(attempt)
+            record.impact_proxy = float(attempt)
             record.magnitude_risk = self._magnitude_risk(record, history, group_norm_history)
             record.direction_risk = self._direction_risk(record, history, group_center_sig)
-            record.influence_risk = self._influence_risk(record, records)
+            record.influence_risk = self._influence_risk(record, history, influence_attempts)
             # Evaluate temporal evidence only after the instantaneous signals
             # exist. Otherwise the current event is always observed as zero.
             record.event_risk = self._instantaneous_risk(record)
@@ -70,32 +91,49 @@ class RiskScorer:
     ) -> None:
         beta = float(params.get("trust_beta", params.get("beta", 0.75)))
         min_trust = float(params.get("min_trust", 0.05))
-        watch_threshold = float(params.get("watch_threshold", 0.25))
-        restricted_threshold = float(params.get("restricted_threshold", 0.45))
+        watch_threshold = float(params.get("watch_threshold", 0.55))
+        restricted_threshold = float(params.get("restricted_threshold", 0.70))
         quarantine_threshold = float(params.get("quarantine_threshold", 0.80))
+        immediate_quarantine_threshold = float(params.get("immediate_quarantine_threshold", 0.95))
+        quarantine_window = max(1, int(params.get("quarantine_window", 4)))
+        quarantine_strikes = max(1, int(params.get("quarantine_strikes", 2)))
+        recovery_threshold = float(params.get("recovery_threshold", 0.35))
+        recovery_observations = max(1, int(params.get("recovery_observations", 3)))
         cooldown_rounds = int(params.get("quarantine_cooldown_rounds", 2))
 
         observation_trust = 1.0 - float(np.clip(record.total_risk, 0.0, 1.0))
         history.final_trust = float(np.clip(beta * history.final_trust + (1.0 - beta) * observation_trust, min_trust, 1.0))
 
-        recent = list(history.risk_history[-max(1, self.high_risk_window - 1):]) + [record.total_risk]
-        high_count = sum(1 for risk in recent if risk >= self.high_risk_threshold)
-        medium_count = sum(1 for risk in recent if risk >= self.medium_risk_threshold)
+        recent = list(history.risk_history[-max(0, quarantine_window - 1):]) + [record.total_risk]
+        quarantine_count = sum(1 for risk in recent if risk >= quarantine_threshold)
+        if record.total_risk < recovery_threshold:
+            history.low_risk_streak += 1
+        else:
+            history.low_risk_streak = 0
+        recovered = history.low_risk_streak >= recovery_observations
 
         current_round = int(server_round) if server_round is not None else max(1, history.last_seen_round + 1)
-        state = "normal"
-        if record.total_risk >= watch_threshold or medium_count >= 2:
-            state = "watch"
-        if record.total_risk >= restricted_threshold or high_count >= 2:
-            state = "restricted"
-        if (
-            record.total_risk >= quarantine_threshold
-            and (record.temporal_risk >= restricted_threshold or record.influence_risk >= restricted_threshold)
-        ):
+        if record.total_risk >= restricted_threshold:
+            desired_state = "restricted"
+        elif record.total_risk >= watch_threshold:
+            desired_state = "watch"
+        else:
+            desired_state = "normal"
+
+        if record.total_risk >= immediate_quarantine_threshold or quarantine_count >= quarantine_strikes:
             state = "quarantined"
             history.cooldown_until = max(history.cooldown_until, current_round + cooldown_rounds)
-        elif current_round <= history.cooldown_until:
+        elif history.state == "quarantined" and (current_round <= history.cooldown_until or not recovered):
             state = "quarantined"
+        elif history.state == "quarantined":
+            state = "restricted"
+        else:
+            ranks = {"normal": 0, "watch": 1, "restricted": 2, "quarantined": 3}
+            previous_rank = ranks.get(history.state, 0)
+            desired_rank = ranks[desired_state]
+            if desired_rank < previous_rank:
+                desired_rank = previous_rank - 1
+            state = ("normal", "watch", "restricted", "quarantined")[desired_rank]
 
         history.state = state
         record.state = state
@@ -163,25 +201,38 @@ class RiskScorer:
         dominant_frequency = 1.0 / median_gap
         return float(np.clip(consistency, 0.0, 1.0)), float(dominant_frequency)
 
-    def _influence_risk(self, record: RoundRecord, records: Sequence[RoundRecord]) -> float:
+    def _influence_risk(
+        self,
+        record: RoundRecord,
+        history: ClientHistory,
+        influence_attempts: Sequence[float],
+    ) -> float:
         if not self.enable_influence:
             return 0.0
-        n = max(1, len(records))
-        fair_share = 1.0 / n
-        weight_risk = max(0.0, record.raw_weight_share - fair_share) / (fair_share + self.eps)
-        norm_risk = max(0.0, record.norm_share - fair_share) / (fair_share + self.eps)
-        impacts = [r.impact_proxy for r in records]
-        impact_risk = self._robust_z_risk(record.impact_proxy, impacts)
-        return float(np.clip(max(weight_risk, norm_risk, impact_risk), 0.0, 1.0))
+        value = math.log(max(record.influence_attempt, 0.0) + self.eps)
+        group_values = [math.log(max(item, 0.0) + self.eps) for item in influence_attempts]
+        group_risk = self._robust_upper_z_risk(value, group_values)
+        own_risk = 0.0
+        if len(history.impact_history) >= self.min_history_for_self_score:
+            own_values = [math.log(max(item, 0.0) + self.eps) for item in history.impact_history]
+            own_risk = self._robust_upper_z_risk(value, own_values)
+        return float(max(group_risk, own_risk))
 
     def _combine(self, record: RoundRecord) -> float:
         weights = self.risk_weights
-        value = (
+        weighted = (
             weights["magnitude"] * record.magnitude_risk
             + weights["direction"] * record.direction_risk
             + weights["temporal"] * record.temporal_risk
             + weights["influence"] * record.influence_risk
         )
+        peak = max(
+            record.magnitude_risk,
+            record.direction_risk,
+            record.temporal_risk,
+            record.influence_risk,
+        )
+        value = (1.0 - self.peak_risk_weight) * weighted + self.peak_risk_weight * peak
         return float(np.clip(value, 0.0, 1.0))
 
     def _instantaneous_risk(self, record: RoundRecord) -> float:
@@ -195,8 +246,24 @@ class RiskScorer:
         denominator = sum(weights[name] for name in enabled)
         if denominator <= self.eps:
             return 0.0
-        value = sum(weights[name] * risk for name, risk in enabled.items()) / denominator
+        weighted = sum(weights[name] * risk for name, risk in enabled.items()) / denominator
+        peak = max(enabled.values())
+        value = (1.0 - self.peak_risk_weight) * weighted + self.peak_risk_weight * peak
         return float(np.clip(value, 0.0, 1.0))
+
+    def _robust_upper_z_risk(self, value: float, values: Sequence[float]) -> float:
+        """One-sided robust score: only unusually large attempted influence is risky."""
+        arr = np.asarray(values, dtype=np.float64)
+        arr = arr[np.isfinite(arr)]
+        if arr.size < 2 or not np.isfinite(value):
+            return 0.0
+        median = float(np.median(arr))
+        mad = float(np.median(np.abs(arr - median)))
+        scale = 1.4826 * mad
+        if scale <= self.eps:
+            scale = max(abs(median) * 0.1, 1e-6)
+        z = max(0.0, float(value) - median) / scale
+        return float(np.clip(z / self.robust_z_threshold, 0.0, 1.0))
 
     def _robust_z_risk(self, value: float, values: Sequence[float]) -> float:
         arr = np.asarray(values, dtype=np.float64)

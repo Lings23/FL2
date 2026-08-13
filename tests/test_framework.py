@@ -129,13 +129,30 @@ class TestConfigLoading:
         from config.config_loader import Config, override_config
 
         cfg = Config()
+        assert cfg.client.batch_size == 48
+        assert cfg.federation.num_clients == 20
+        assert cfg.federation.clients_per_round == 10
+        assert cfg.federation.min_fit_clients == 10
+        assert cfg.federation.min_available_clients == 20
         assert cfg.ray.client_num_cpus == 1.0
         assert cfg.ray.client_num_gpus == 0.0
         assert cfg.ray.log_to_driver is False
+        assert cfg.ray.include_dashboard is False
+        assert cfg.ray.object_store_memory_mb == 0
+        assert cfg.ray.min_available_memory_mb == 0
+        assert cfg.ray.memory_wait_seconds == pytest.approx(120.0)
+        assert cfg.ray.memory_poll_seconds == pytest.approx(2.0)
 
-        override_config(cfg, {"ray.client_num_gpus": 0.5, "ray.log_to_driver": True})
+        override_config(cfg, {
+            "ray.client_num_gpus": 0.5,
+            "ray.log_to_driver": True,
+            "ray.object_store_memory_mb": 3072,
+            "ray.min_available_memory_mb": 10240,
+        })
         assert cfg.ray.client_num_gpus == 0.5
         assert cfg.ray.log_to_driver is True
+        assert cfg.ray.object_store_memory_mb == 3072
+        assert cfg.ray.min_available_memory_mb == 10240
 
 
 # ── Model factory tests ───────────────────────────────────────────────────────
@@ -339,6 +356,43 @@ class TestDefenses:
         assert d.last_client_aggregation_weights["outlier"] == 0.0
         assert d.last_round_metrics["freqfed_selected_clients"] == 3.0
 
+    def test_freqfed_extracts_triangular_low_frequency_region(self):
+        from defenses.defense_base import FreqFedDefense
+        from config.config_loader import DefenseConfig
+
+        d = FreqFedDefense(DefenseConfig(custom_params={
+            "low_frequency_ratio": 0.5,
+            "low_frequency_shape": "triangular",
+            "projection_dim": 0,
+        }))
+        spectrum = np.arange(16, dtype=np.float32).reshape(4, 4)
+
+        low = d._low_frequency_2d(spectrum)
+
+        np.testing.assert_array_equal(
+            low,
+            np.array([0, 1, 2, 4, 5, 8], dtype=np.float32),
+        )
+
+    def test_freqfed_uses_cosine_distance_matrix(self):
+        from defenses.defense_base import FreqFedDefense
+        from config.config_loader import DefenseConfig
+
+        d = FreqFedDefense(DefenseConfig())
+        fingerprints = np.array([
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 1.0],
+        ], dtype=np.float32)
+
+        distances = d._cosine_distance_matrix(fingerprints)
+
+        assert distances.shape == (3, 3)
+        np.testing.assert_allclose(np.diag(distances), 0.0)
+        np.testing.assert_allclose(distances, distances.T)
+        assert distances[0, 1] == pytest.approx(1.0)
+        assert distances[0, 2] == pytest.approx(1.0 - (1.0 / np.sqrt(2.0)))
+
     def test_freqfed_small_round_uses_median_fallback(self):
         from defenses.defense_base import FreqFedDefense
         from config.config_loader import DefenseConfig
@@ -457,7 +511,7 @@ class TestTimeConsistencyDefense:
 
         np.testing.assert_allclose(aggregated[0], np.zeros(3), atol=1e-6)
         assert aggregated[1].dtype == np.int64
-        assert aggregated[1][0] == 0
+        assert aggregated[1][0] == 2
 
     def test_scaled_integer_buffers_do_not_change_signature_length(self):
         d = self._defense()
@@ -503,12 +557,17 @@ class TestTimeConsistencyDefense:
         clipped_defense = self._defense(
             enable_delta_clipping=True,
             enable_trust_caps=False,
+            enable_exposure_budgets=False,
             norm_clip_factor=2.0,
         )
         clipped_defense.set_context(1, [str(i) for i in range(len(updates))], global_params)
         clipped = clipped_defense._aggregate_with_effective_weights(updates, weights)
 
-        plain_defense = self._defense(enable_delta_clipping=False, enable_trust_caps=False)
+        plain_defense = self._defense(
+            enable_delta_clipping=False,
+            enable_trust_caps=False,
+            enable_exposure_budgets=False,
+        )
         plain_defense.set_context(1, [str(i) for i in range(len(updates))], global_params)
         plain = plain_defense._aggregate_with_effective_weights(updates, weights)
 
@@ -522,9 +581,7 @@ class TestTimeConsistencyDefense:
             trust_scores=[0.30, 0.80, 0.80],
             effective_weights=[100.0, 1.0, 1.0],
         )
-        normalized = np.asarray(constrained) / np.sum(constrained)
-
-        assert normalized[0] <= 0.01 + 1e-9
+        assert constrained[0] <= 0.01 + 1e-9
         assert d._last_capped_clients == 1
         assert d._last_quarantined_clients == 0
 
@@ -682,7 +739,7 @@ class TestPeriodicDefenseAblations:
 
         d.scorer.update_state_and_trust(record, state, d.params)
 
-        assert record.state == "restricted"
+        assert record.state == "quarantined"
         assert 0.0 < record.trust < 1.0
 
     @pytest.mark.parametrize("values, expected", [
@@ -775,6 +832,12 @@ class TestPeriodicDefenseAblations:
         d.scorer.update_state_and_trust(recovering, state, d.params, server_round=12)
         assert recovering.state == "quarantined"
         d.scorer.update_state_and_trust(recovering, state, d.params, server_round=13)
+        assert recovering.state == "quarantined"
+        d.scorer.update_state_and_trust(recovering, state, d.params, server_round=14)
+        assert recovering.state == "restricted"
+        d.scorer.update_state_and_trust(recovering, state, d.params, server_round=15)
+        assert recovering.state == "watch"
+        d.scorer.update_state_and_trust(recovering, state, d.params, server_round=16)
         assert recovering.state == "normal"
 
 
@@ -786,6 +849,9 @@ class TestPeriodicAttackExperiment:
         ]
         assert [attack_active(rnd, 11, 3, 3) for rnd in range(11, 18)] == [
             True, True, True, False, False, False, True,
+        ]
+        assert [attack_active(rnd, 11, 1, 0, end=14) for rnd in range(9, 17)] == [
+            False, False, True, True, True, True, False, False,
         ]
         assert [attack_active(rnd, 3, 1, 1, end=6) for rnd in range(2, 9)] == [
             False, True, False, True, False, False, False,
@@ -812,10 +878,31 @@ class TestPeriodicAttackExperiment:
 
     def test_preregistered_matrix_sizes_and_deduplication(self):
         from experiments.periodic_attack import build_matrix
-        assert len(build_matrix("main")) == 216
-        assert len(build_matrix("ablation")) == 180
+        assert len(build_matrix("main")) == 288
+        assert len(build_matrix("ablation")) == 300
         assert len(build_matrix("untargeted")) == 216
-        assert len(build_matrix("all")) == 576
+        assert len(build_matrix("all")) == 744
+
+    def test_label_flip_specs_carry_protocol_but_not_boost(self):
+        from argparse import Namespace
+        from experiments.periodic_attack import build_matrix, select_matrix
+
+        args = Namespace(
+            attacks="label_flip_targeted", defenses="fedavg",
+            periods="short_1_1", seeds="42", malicious_fractions="0.2",
+            smoke=False, attack_start_round=11, attack_end_round=-1,
+            partition="iid", dirichlet_alpha=0.5, participation_rate=0.5,
+            boost_factor=99.0, label_flip_source_label=5,
+            label_flip_target_label=3, label_flip_poison_fraction=1.0,
+        )
+
+        selected = select_matrix(build_matrix("main"), args)
+
+        assert len(selected) == 1
+        assert selected[0]["label_flip_source_label"] == 5
+        assert selected[0]["label_flip_target_label"] == 3
+        assert selected[0]["label_flip_poison_fraction"] == pytest.approx(1.0)
+        assert "boost_factor" not in selected[0]
 
     def test_smoke_matrix_contains_all_ablations(self):
         from experiments.periodic_attack import build_matrix, clean_baselines
@@ -823,9 +910,10 @@ class TestPeriodicAttackExperiment:
         defenses = {row["defense"] for row in matrix}
         assert {
             "rtc_full", "rtc_no_temporal", "rtc_no_direction", "clip_only",
+            "freqfed",
         } <= defenses
         assert "rtc_no_influence" not in defenses
-        assert len(clean_baselines(matrix, smoke=True)) == 2
+        assert len(clean_baselines(matrix, smoke=True)) == 3
 
     def test_round_summary_splits_active_and_residual_asr(self):
         from experiments.periodic_attack import summarize_run, tracker_to_rounds
@@ -840,6 +928,96 @@ class TestPeriodicAttackExperiment:
         result = summarize_run(tracker_to_rounds(records, spec), spec)
         assert result["active_asr"] == pytest.approx(0.7)
         assert result["residual_asr"] == pytest.approx(0.15)
+
+    def test_label_flip_summary_uses_summed_exposure_counts(self):
+        from experiments.periodic_attack import summarize_run
+
+        spec = {
+            "attack": "label_flip_targeted", "period": "continuous_1_0",
+            "on_rounds": 1, "off_rounds": 0, "malicious_fraction": 0.2,
+            "seed": 42, "defense": "fedavg", "defense_type": "none",
+            "custom_params": {}, "attack_start_round": 1,
+            "label_flip_source_label": 5, "label_flip_target_label": 3,
+            "label_flip_poison_fraction": 1.0,
+        }
+        rounds = pd.DataFrame({
+            "round": [1, 2],
+            "planned_attack_active": [1.0, 1.0],
+            "server_accuracy": [0.2, 0.3],
+            "server_asr": [0.5, 0.4],
+            "fit_label_flip_poisoned_exposures": [10, 30],
+            "fit_label_flip_eligible_exposures": [10, 30],
+            "fit_selected_training_exposures": [100, 300],
+            "fit_label_flip_active_malicious_exposure_rate": [0.2, 0.2],
+        })
+
+        result = summarize_run(rounds, spec)
+
+        assert result["label_flip_poisoned_exposures"] == 40
+        assert result["label_flip_global_exposure_rate"] == pytest.approx(0.1)
+        assert result["label_flip_eligible_poison_rate"] == pytest.approx(1.0)
+        assert result["label_flip_active_malicious_exposure_rate"] == pytest.approx(0.2)
+
+    def test_all_reverse_summary_reports_objective_asr_without_reclassifying_attack(self):
+        from experiments.periodic_attack import summarize_run
+
+        spec = {
+            "attack": "label_flip_all_reverse", "attack_group": "untargeted",
+            "period": "continuous_1_0", "on_rounds": 1, "off_rounds": 0,
+            "malicious_fraction": 0.2, "seed": 42, "defense": "rtc_v3",
+            "defense_type": "rtc_v3_candidate", "custom_params": {},
+            "attack_start_round": 1,
+        }
+        rounds = pd.DataFrame({
+            "round": [1, 2],
+            "planned_attack_active": [1.0, 1.0],
+            "server_accuracy": [0.8, 0.7],
+            "server_asr": [0.1, 0.2],
+        })
+
+        result = summarize_run(rounds, spec)
+
+        assert result["active_asr"] == pytest.approx(0.15)
+        assert result["active_asr_auc"] == pytest.approx(0.15)
+        assert result["peak_asr"] == pytest.approx(0.2)
+        assert result["attack_group"] == "untargeted"
+
+    def test_bootstrap_summary_reports_freqfed_diagnostics(self):
+        from experiments.periodic_attack import bootstrap_summary
+
+        rows = []
+        for seed, fallback, selected, rejected, noise, clusters, ratio, seconds in (
+            (42, 0.0, 4.0, 6.0, 6.0, 1.0, 0.4, 3.0),
+            (43, 0.2, 6.0, 4.0, 4.0, 2.0, 0.6, 5.0),
+        ):
+            rows.append({
+                "attack": "none", "period": "clean", "malicious_fraction": 0.0,
+                "partition": "iid", "dirichlet_alpha": 0.5,
+                "participation_rate": 0.5, "boost_factor": 10.0,
+                "defense": "freqfed", "seed": seed,
+                "freqfed_fallback": fallback,
+                "freqfed_selected_clients": selected,
+                "freqfed_rejected_clients": rejected,
+                "freqfed_noise_clients": noise,
+                "freqfed_cluster_count": clusters,
+                "freqfed_selected_ratio": ratio,
+                "aggregation_time_seconds": seconds,
+            })
+
+        report = bootstrap_summary(pd.DataFrame(rows), seed=7).set_index("metric")
+        expected = {
+            "freqfed_fallback": 0.1,
+            "freqfed_selected_clients": 5.0,
+            "freqfed_rejected_clients": 5.0,
+            "freqfed_noise_clients": 5.0,
+            "freqfed_cluster_count": 1.5,
+            "freqfed_selected_ratio": 0.5,
+            "aggregation_time_seconds": 4.0,
+        }
+        assert set(expected) <= set(report.index)
+        for metric, mean in expected.items():
+            assert report.loc[metric, "mean"] == pytest.approx(mean)
+            assert report.loc[metric, "count"] == 2
 
     def test_first_state_lag_uses_first_active_attack_round(self):
         from experiments.periodic_attack import first_state_lag
@@ -957,6 +1135,7 @@ class TestPeriodicExperimentV2:
         }))
         defense._cluster(np.eye(2, dtype=np.float32))
         assert captured["allow_single_cluster"] is True
+        assert captured["metric"] == "precomputed"
 
     def test_sampling_manifest_mismatch_fails_gate(self, tmp_path):
         import json
@@ -977,6 +1156,62 @@ class TestPeriodicExperimentV2:
         (raw / "a_data_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         gates = validate_sampling_manifests(rounds, raw)
         assert next(g for g in gates if g["gate"] == "selected_partition_ids_match")["passed"] is False
+
+    def test_strict_attack_owned_clean_plans_are_not_cross_compared(self, tmp_path):
+        import json
+        from experiments.periodic_attack import validate_sampling_manifests
+        from experiments.trial_plan import SCHEMA_VERSION, sha256_json
+
+        rounds = tmp_path / "rounds"
+        raw = tmp_path / "raw"
+        plans = tmp_path / "plans"
+        rounds.mkdir(); raw.mkdir(); plans.mkdir()
+        for index, selected in enumerate((["0", "1"], ["2", "3"])):
+            digest = f"fit-digest-{index}"
+            payload = {
+                "schema_version": SCHEMA_VERSION,
+                "pairing_group_id": f"attack-owner-{index}",
+                "sampling_protocol": "principal_uniform",
+                "malicious_partition_ids": [],
+                "rounds": [{
+                    "round": 1,
+                    "partition_ids": selected,
+                    "fit_seed_digest": digest,
+                }],
+            }
+            payload["trial_plan_hash"] = sha256_json(payload)
+            plan_path = plans / f"plan-{index}.json"
+            plan_path.write_text(json.dumps(payload), encoding="utf-8")
+            joined = ",".join(selected)
+            pd.DataFrame([{
+                "attack": "none",
+                "period": "clean",
+                "malicious_fraction": 0.0,
+                "seed": 42,
+                "defense": "fedavg",
+                "pairing_mode": "strict",
+                "round": 1,
+                "trial_plan_hash": payload["trial_plan_hash"],
+                "trial_plan_path": str(plan_path),
+                "fit_trial_plan_hash": payload["trial_plan_hash"],
+                "fit_selected_partition_ids": joined,
+                "fit_planned_partition_ids": joined,
+                "fit_planned_partition_ids_json": json.dumps(selected),
+                "fit_completed_partition_ids_json": json.dumps(selected),
+                "fit_fit_seed_digest": digest,
+            }]).to_csv(rounds / f"clean-{index}.csv", index=False)
+            (raw / f"clean-{index}_data_manifest.json").write_text(
+                json.dumps({"seed": 42, "sha256": "same-data"}),
+                encoding="utf-8",
+            )
+
+        gates = validate_sampling_manifests(rounds, raw)
+        values = {row["gate"]: row["passed"] for row in gates}
+        assert values["selected_partition_ids_match"] is True
+        assert values["trial_plan_hash_match"] is True
+        assert values["trial_plan_sequence_match"] is True
+        assert values["completed_sequence_equals_plan"] is True
+        assert values["client_random_stream_match"] is True
 
     def test_small_sample_statistics_are_descriptive_only(self):
         from experiments.periodic_attack import statistical_tests
@@ -1033,7 +1268,113 @@ class TestMetricTracker:
         assert float(rows[0]["impact_norm"]) == pytest.approx(0.2)
 
 
+class TestLabelFlipExposureMetrics:
+    def test_raw_exposure_counts_are_summed_without_sample_reweighting(self):
+        from strategies.fed_strategy import FedSecStrategy
+
+        records = [
+            {
+                "is_malicious": True,
+                "attack_active": True,
+                "num_examples": 100,
+                "local_epochs": 5,
+                "label_flip_total_examples": 100,
+                "label_flip_eligible_examples": 10,
+                "label_flip_poisoned_examples": 10,
+                "aggregation_weight": None,
+                "impact_norm": None,
+                "trust": None,
+                "state": None,
+                "clipped": False,
+                "quarantined": False,
+            },
+            {
+                "is_malicious": False,
+                "attack_active": False,
+                "num_examples": 300,
+                "local_epochs": 5,
+                "label_flip_total_examples": None,
+                "label_flip_eligible_examples": None,
+                "label_flip_poisoned_examples": None,
+                "aggregation_weight": None,
+                "impact_norm": None,
+                "trust": None,
+                "state": None,
+                "clipped": False,
+                "quarantined": False,
+            },
+        ]
+
+        metrics = FedSecStrategy._security_round_metrics(records)
+
+        assert metrics["label_flip_poisoned_exposures"] == 50
+        assert metrics["label_flip_eligible_exposures"] == 50
+        assert metrics["selected_training_exposures"] == 2000
+        assert metrics["label_flip_global_exposure_rate"] == pytest.approx(0.025)
+        assert metrics["label_flip_eligible_poison_rate"] == pytest.approx(1.0)
+        assert metrics["label_flip_active_malicious_exposure_rate"] == pytest.approx(0.1)
+
+
 class TestServerASR:
+    def test_targeted_label_flip_metrics_use_source_only(self):
+        from config.config_loader import AttackConfig
+        from server.fl_server import label_flip_metrics_from_confusion
+
+        confusion = np.asarray([
+            [4, 0, 0, 0],
+            [0, 5, 0, 0],
+            [0, 0, 6, 0],
+            [0, 0, 2, 2],
+        ])
+        cfg = AttackConfig(
+            enabled=True,
+            type="label_flip_targeted",
+            source_label=3,
+            target_label=2,
+        )
+
+        metrics = label_flip_metrics_from_confusion(confusion, cfg)
+
+        assert metrics["asr"] == pytest.approx(0.5)
+        assert metrics["source_recall"] == pytest.approx(0.5)
+        assert metrics["target_precision"] == pytest.approx(0.75)
+        assert metrics["asr_total"] == 4
+        assert metrics["source_to_target_count"] == 2
+        assert np.asarray(__import__("json").loads(metrics["confusion_matrix_json"])).sum() == 19
+
+    def test_targeted_label_flip_rejects_missing_source_class(self):
+        from config.config_loader import AttackConfig
+        from server.fl_server import label_flip_metrics_from_confusion
+
+        cfg = AttackConfig(
+            enabled=True,
+            type="label_flip_targeted",
+            source_label=3,
+            target_label=2,
+        )
+        confusion = np.eye(4, dtype=int)
+        confusion[3] = 0
+        with pytest.raises(RuntimeError, match="no source label 3"):
+            label_flip_metrics_from_confusion(confusion, cfg)
+
+    def test_all_reverse_reports_reverse_mapping_asr(self):
+        from config.config_loader import AttackConfig
+        from server.fl_server import label_flip_metrics_from_confusion
+
+        cfg = AttackConfig(enabled=True, type="label_flip_all_reverse")
+        confusion = np.asarray([
+            [0, 0, 4],
+            [0, 5, 0],
+            [3, 0, 0],
+        ])
+        metrics = label_flip_metrics_from_confusion(confusion, cfg)
+
+        assert metrics["macro_recall"] == pytest.approx(1 / 3)
+        assert metrics["asr"] == pytest.approx(1.0)
+        assert metrics["reverse_mapping_rate"] == pytest.approx(1.0)
+        assert metrics["reverse_mapping_count"] == 12
+        assert metrics["asr_total"] == 12
+
     def test_dba_full_trigger_stamps_all_fragments(self):
         from config.config_loader import AttackConfig
         from server.fl_server import stamp_dba_full_trigger
@@ -1113,16 +1454,80 @@ class TestServerASR:
 # ── Attack dataset tests ──────────────────────────────────────────────────────
 
 class TestAttackDatasets:
-    def test_label_flip(self, dummy_dataset):
+    def test_targeted_label_flip_changes_only_source_samples(self):
         from attacks.attack_client import LabelFlipDataset
-        ds = LabelFlipDataset(dummy_dataset, source=0, target=9)
-        assert len(ds) == len(dummy_dataset)
-        # At least one flip should have occurred
-        flipped = sum(1 for i in range(len(ds))
-                      if dummy_dataset[i][1] == 0 and ds[i][1] == 9)
-        original_zeros = sum(1 for i in range(len(dummy_dataset))
-                             if dummy_dataset[i][1] == 0)
-        assert flipped == original_zeros
+
+        base = TensorDataset(torch.zeros(8, 1), torch.tensor([5, 1, 5, 3, 5, 0, 4, 5]))
+        ds = LabelFlipDataset(
+            base,
+            attack_type="label_flip_targeted",
+            num_classes=10,
+            source=5,
+            target=3,
+            poison_fraction=1.0,
+            seed=7,
+        )
+
+        labels = [int(ds[i][1]) for i in range(len(ds))]
+        assert labels == [3, 1, 3, 3, 3, 0, 4, 3]
+        assert ds.eligible_examples == 4
+        assert ds.poisoned_examples == 4
+
+    def test_all_reverse_flips_every_selected_label(self):
+        from attacks.attack_client import LabelFlipDataset
+
+        labels = torch.arange(10)
+        base = TensorDataset(torch.zeros(10, 1), labels)
+        ds = LabelFlipDataset(
+            base,
+            attack_type="label_flip_all_reverse",
+            num_classes=10,
+            poison_fraction=1.0,
+            seed=7,
+        )
+
+        assert [int(ds[i][1]) for i in range(len(ds))] == list(reversed(range(10)))
+        assert ds.eligible_examples == 10
+        assert ds.poisoned_examples == 10
+
+    def test_partial_label_flip_is_deterministic(self):
+        from attacks.attack_client import LabelFlipDataset
+
+        base = TensorDataset(torch.zeros(20, 1), torch.full((20,), 5))
+        kwargs = dict(
+            attack_type="label_flip_targeted",
+            num_classes=10,
+            source=5,
+            target=3,
+            poison_fraction=0.25,
+            seed=42,
+        )
+        left = LabelFlipDataset(base, **kwargs)
+        right = LabelFlipDataset(base, **kwargs)
+
+        assert left.poison_indices == right.poison_indices
+        assert left.poisoned_examples == 5
+
+    @pytest.mark.parametrize(
+        "attack_type, kwargs, message",
+        [
+            ("label_flip_targeted", {"source": 3, "target": 3}, "must be different"),
+            ("label_flip_targeted", {"source": -1, "target": 3}, "source_label"),
+            ("label_flip_all_reverse", {"poison_fraction": 1.1}, "must be in"),
+            ("label_flip", {}, "no longer supported"),
+        ],
+    )
+    def test_invalid_label_flip_configuration_fails(self, attack_type, kwargs, message):
+        from attacks.attack_client import LabelFlipDataset
+
+        base = TensorDataset(torch.zeros(4, 1), torch.arange(4))
+        with pytest.raises(ValueError, match=message):
+            LabelFlipDataset(
+                base,
+                attack_type=attack_type,
+                num_classes=4,
+                **kwargs,
+            )
 
     def test_backdoor_trigger_stamped(self, dummy_dataset):
         from attacks.attack_client import BackdoorDataset

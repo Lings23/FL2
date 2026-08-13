@@ -241,6 +241,41 @@ def get_parameters(model: nn.Module) -> List:
     return [val.cpu().numpy() for val in model.state_dict().values()]
 
 
+def get_parameter_roles(model: nn.Module) -> dict[str, str]:
+    """Return server-owned RTC roles in deterministic ``state_dict`` order.
+
+    The final registered linear module is the classifier for every model
+    currently supported by this project.  Keeping this mapping on the server
+    prevents clients from choosing the tensors interpreted as class rows.
+    """
+
+    linear_modules = [
+        (name, module)
+        for name, module in model.named_modules()
+        if name and isinstance(module, nn.Linear)
+    ]
+    if not linear_modules:
+        return {}
+    classifier_name, classifier = linear_modules[-1]
+    role_by_name = {f"{classifier_name}.weight": "classifier_weight"}
+    if classifier.bias is not None:
+        role_by_name[f"{classifier_name}.bias"] = "classifier_bias"
+    return {
+        str(index): role_by_name[name]
+        for index, name in enumerate(model.state_dict().keys())
+        if name in role_by_name
+    }
+
+
+def get_parameter_names(model: nn.Module) -> dict[str, str]:
+    """Return the immutable name associated with each state_dict index."""
+
+    return {
+        str(index): str(name)
+        for index, name in enumerate(model.state_dict().keys())
+    }
+
+
 def set_parameters(model: nn.Module, parameters: List) -> None:
     """Load a list of numpy arrays into a model's state dict."""
     state_dict = model.state_dict()

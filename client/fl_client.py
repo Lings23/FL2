@@ -6,7 +6,10 @@ Flower FlowerClient implementation.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
+import random
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -34,6 +37,37 @@ from config.config_loader import ClientConfig, AttackConfig, DPConfig
 from models.model_factory import get_parameters, set_parameters
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_cpu_worker_threads(device: torch.device) -> None:
+    """Apply an opt-in per-Ray-actor PyTorch CPU thread ceiling.
+
+    BLAS environment variables alone do not constrain PyTorch's intra-op
+    pool.  The explicit switch keeps CPU smoke tests from multiplying a full
+    thread pool by every concurrent Flower actor.  GPU/formal runs are
+    deliberately unaffected unless they explicitly select a CPU device.
+    """
+
+    if device.type != "cpu":
+        return
+    raw = os.environ.get("FEDSEC_CPU_THREADS", "").strip()
+    if not raw:
+        return
+    try:
+        threads = int(raw)
+    except ValueError as exc:
+        raise ValueError("FEDSEC_CPU_THREADS must be a positive integer") from exc
+    if threads <= 0:
+        raise ValueError("FEDSEC_CPU_THREADS must be a positive integer")
+    torch.set_num_threads(threads)
+    # Inter-op threads can only be initialized once in a process. Ray may
+    # reuse an actor for multiple logical clients, so an already initialized
+    # pool is acceptable after the intra-op ceiling has been enforced.
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError as exc:
+        if "cannot set number of interop threads" not in str(exc).lower():
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +197,8 @@ class FedSecClient(fl.client.Client):
         attack_cfg: Optional[AttackConfig] = None,
         dp_cfg: Optional[DPConfig] = None,
         device: Optional[torch.device] = None,
+        experiment_seed: int = 0,
+        num_classes: int = 10,
     ):
         self.client_id = client_id
         self.model = model
@@ -172,11 +208,55 @@ class FedSecClient(fl.client.Client):
         self.client_cfg = client_cfg
         self.attack_cfg = attack_cfg or AttackConfig()
         self.dp_cfg = dp_cfg or DPConfig()
+        self.experiment_seed = int(experiment_seed)
+        self.num_classes = int(num_classes)
         self.device = device or torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
         self.trainer = LocalTrainer(model, client_cfg, self.device, dp_cfg)
         self._attack_active = False
+        self._current_attack_seed = int(experiment_seed)
+
+    @staticmethod
+    def _rebuild_train_loader(loader: DataLoader, seed: int) -> DataLoader:
+        """Recreate shuffle and augmentation RNG for one client-round stream."""
+        generator = torch.Generator()
+        generator.manual_seed(int(seed))
+        return DataLoader(
+            loader.dataset,
+            batch_size=loader.batch_size,
+            shuffle=True,
+            num_workers=0,
+            collate_fn=loader.collate_fn,
+            pin_memory=loader.pin_memory,
+            drop_last=loader.drop_last,
+            timeout=0,
+            worker_init_fn=None,
+            generator=generator,
+        )
+
+    @contextlib.contextmanager
+    def _client_round_randomness(self, seed: int, deterministic: bool):
+        """Isolate Python/NumPy/Torch/CUDA randomness from actor scheduling."""
+        python_state = random.getstate()
+        numpy_state = np.random.get_state()
+        cuda_devices = list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
+        if deterministic:
+            torch.use_deterministic_algorithms(True)
+            if hasattr(torch.backends, "cudnn"):
+                torch.backends.cudnn.deterministic = True
+                torch.backends.cudnn.benchmark = False
+        try:
+            with torch.random.fork_rng(devices=cuda_devices, enabled=True):
+                random.seed(int(seed))
+                np.random.seed(int(seed) % (2**32))
+                torch.manual_seed(int(seed))
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed_all(int(seed))
+                yield
+        finally:
+            random.setstate(python_state)
+            np.random.set_state(numpy_state)
 
     def _is_attack_active(self, server_round: int) -> bool:
         if not self.is_malicious or not self.attack_cfg.enabled:
@@ -207,19 +287,35 @@ class FedSecClient(fl.client.Client):
         server_params = parameters_to_ndarrays(ins.parameters)
         config = ins.config
         server_round = int(config.get("server_round", 1))
+        fit_seed = int(config.get(
+            "fit_seed",
+            (self.experiment_seed * 1_000_003 + server_round * 1009 + self.client_id) % (2**32),
+        ))
+        attack_seed = int(config.get(
+            "attack_seed",
+            (self.experiment_seed * 1_000_003 + self.client_id) % (2**32),
+        ))
+        deterministic = bool(config.get("deterministic_client_training", False))
+        self._current_attack_seed = attack_seed
         self.train_loader = self._clean_train_loader
         self._attack_active = self._is_attack_active(server_round)
 
-        set_parameters(self.model, server_params)
-        self.on_before_fit(server_params, config)
+        with self._client_round_randomness(fit_seed, deterministic):
+            set_parameters(self.model, server_params)
+            with self._client_round_randomness(attack_seed, deterministic=False):
+                self.on_before_fit(server_params, config)
+            self.train_loader = self._rebuild_train_loader(self.train_loader, fit_seed)
 
-        metrics = self.trainer.train(
-            self.train_loader,
-            epochs=int(config.get("local_epochs", self.client_cfg.local_epochs)),
-        )
+            local_epochs = int(config.get("local_epochs", self.client_cfg.local_epochs))
+            metrics = self.trainer.train(
+                self.train_loader,
+                epochs=local_epochs,
+            )
+            metrics["local_epochs"] = local_epochs
 
-        updated_params = get_parameters(self.model)
-        updated_params = self.on_after_fit(updated_params, metrics)
+            updated_params = get_parameters(self.model)
+            with self._client_round_randomness(attack_seed, deterministic=False):
+                updated_params = self.on_after_fit(updated_params, metrics)
 
         logger.debug("Client %d | loss=%.4f acc=%.4f",
                      self.client_id, metrics["train_loss"], metrics["train_accuracy"])
@@ -230,6 +326,8 @@ class FedSecClient(fl.client.Client):
         fit_metrics["client_id"] = int(self.client_id)
         fit_metrics["is_malicious"] = bool(self.is_malicious)
         fit_metrics["attack_active"] = bool(self._attack_active)
+        fit_metrics["fit_seed"] = int(fit_seed)
+        fit_metrics["attack_seed"] = int(attack_seed)
 
         return FitRes(
             status=Status(code=Code.OK, message=""),
@@ -240,12 +338,23 @@ class FedSecClient(fl.client.Client):
 
     def evaluate(self, ins: EvaluateIns) -> EvaluateRes:
         server_params = parameters_to_ndarrays(ins.parameters)
-        loss, n, metrics = self.on_evaluate(server_params, ins.config)
+        eval_seed = int(ins.config.get(
+            "eval_seed",
+            (self.experiment_seed * 1_000_003 + self.client_id * 1013) % (2**32),
+        ))
+        deterministic = bool(
+            ins.config.get("deterministic_client_evaluation", False)
+        )
+        with self._client_round_randomness(eval_seed, deterministic):
+            loss, n, metrics = self.on_evaluate(server_params, ins.config)
+        metrics = {k: float(v) for k, v in metrics.items()}
+        metrics["client_id"] = int(self.client_id)
+        metrics["eval_seed"] = int(eval_seed)
         return EvaluateRes(
             status=Status(code=Code.OK, message=""),
             loss=loss,
             num_examples=n,
-            metrics={k: float(v) for k, v in metrics.items()},
+            metrics=metrics,
         )
 
     def _default_evaluate(
@@ -280,6 +389,8 @@ def make_client_fn(
     dp_cfg: Optional[DPConfig] = None,
     malicious_ids: Optional[set] = None,
     device: Optional[torch.device] = None,
+    experiment_seed: int = 0,
+    num_classes: int = 10,
 ):
     """
     Return a Flower-compatible client_fn(cid: str) -> fl.client.Client.
@@ -309,6 +420,7 @@ def make_client_fn(
 
     def client_fn(cid: str) -> fl.client.Client:
         cid_int = int(cid)
+        _configure_cpu_worker_threads(_device)
         model = model_factory()
         train_loader, val_loader = _loaders[cid_int]
 
@@ -326,6 +438,8 @@ def make_client_fn(
             attack_cfg=attack_cfg,
             dp_cfg=dp_cfg,
             device=_device,
+            experiment_seed=experiment_seed,
+            num_classes=num_classes,
         )
         client.is_malicious = cid_int in malicious_ids
         return client

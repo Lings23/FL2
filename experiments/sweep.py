@@ -33,7 +33,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_ATTACKS = [
     "none",
-    "label_flip",
+    "label_flip_targeted",
+    "label_flip_all_reverse",
     "gaussian_noise",
     "byzantine",
     "backdoor",
@@ -68,6 +69,11 @@ def run_sweep(
     Columns: attack, defense, best_accuracy, final_accuracy,
              best_round, total_rounds
     """
+    if "label_flip" in attacks:
+        raise ValueError(
+            "Attack 'label_flip' was removed; use 'label_flip_targeted' or "
+            "'label_flip_all_reverse'."
+        )
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -219,7 +225,7 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
-    attacks  = args.attacks  or (["none", "label_flip"] if args.quick else DEFAULT_ATTACKS)
+    attacks  = args.attacks  or (["none", "label_flip_targeted"] if args.quick else DEFAULT_ATTACKS)
     defenses = args.defenses or (["none", "krum"]       if args.quick else DEFAULT_DEFENSES)
     rounds   = 5 if args.quick else args.rounds
     extra_overrides: Dict[str, Any] = {}

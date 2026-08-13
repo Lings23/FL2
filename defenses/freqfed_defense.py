@@ -1,4 +1,10 @@
-"""FreqFed frequency-domain client filtering."""
+"""FreqFed frequency-domain client filtering.
+
+This implementation follows the FreqFed paper's main path as closely as the
+project interface allows: build a low-frequency DCT fingerprint for each client,
+compute pairwise cosine distances, cluster clients with HDBSCAN, and aggregate
+only the largest non-noise cluster.
+"""
 
 from __future__ import annotations
 
@@ -20,17 +26,20 @@ class FreqFedDefense(BaseDefense):
     def __init__(self, cfg: DefenseConfig, **_: object):
         super().__init__(cfg)
         params = cfg.custom_params or {}
-        self.low_frequency_ratio = float(params.get("low_frequency_ratio", 0.2))
+        self.low_frequency_ratio = float(params.get("low_frequency_ratio", 0.5))
+        self.low_frequency_shape = str(params.get("low_frequency_shape", "triangular")).lower()
         self.min_cluster_size = int(params.get("min_cluster_size", 3))
         self.min_samples = int(params.get("min_samples", 2))
         self.min_selected_clients = int(params.get("min_selected_clients", 2))
         self.cluster_selection_method = str(params.get("cluster_selection_method", "eom"))
         self.allow_single_cluster = bool(params.get("allow_single_cluster", False))
-        self.projection_dim = int(params.get("projection_dim", 4096))
+        self.projection_dim = int(params.get("projection_dim", 0))
         self.fallback = str(params.get("fallback", "median")).lower()
         self.seed = int(params.get("seed", 42))
         if not 0.0 < self.low_frequency_ratio <= 1.0:
             raise ValueError("FreqFed low_frequency_ratio must be in (0, 1]")
+        if self.low_frequency_shape not in {"triangular", "rectangle"}:
+            raise ValueError("FreqFed low_frequency_shape must be triangular or rectangle")
         if self.min_cluster_size < 2 or self.min_samples < 1:
             raise ValueError("FreqFed clustering sizes must be positive (cluster size >= 2)")
         if self.fallback not in {"median", "fedavg", "keep_global"}:
@@ -105,6 +114,9 @@ class FreqFedDefense(BaseDefense):
                 f"{self.fallback}_fallback" if fallback_used else "cluster"
             ),
             "freqfed_fallback_reason": fallback_reason,
+            "freqfed_low_frequency_ratio": float(self.low_frequency_ratio),
+            "freqfed_low_frequency_shape": self.low_frequency_shape,
+            "freqfed_distance_metric": "precomputed_cosine",
         }
         return result
 
@@ -116,20 +128,37 @@ class FreqFedDefense(BaseDefense):
             value = param.astype(np.float32, copy=False)
             if value.ndim == 1:
                 spectrum = dct(value, type=2, norm="ortho")
-                count = max(1, int(np.ceil(value.shape[0] * self.low_frequency_ratio)))
-                low = spectrum[:count]
+                low = self._low_frequency_1d(spectrum)
             else:
                 matrix = value.reshape(-1, value.shape[-1])
                 spectrum = dctn(matrix, type=2, norm="ortho")
-                rows = max(1, int(np.ceil(matrix.shape[0] * self.low_frequency_ratio)))
-                cols = max(1, int(np.ceil(matrix.shape[1] * self.low_frequency_ratio)))
-                low = spectrum[:rows, :cols].ravel()
+                low = self._low_frequency_2d(spectrum)
             norm = float(np.linalg.norm(low))
             chunks.append(low / norm if norm > 1e-12 else np.zeros_like(low))
         if not chunks:
             return np.zeros(0, dtype=np.float32)
         fingerprint = np.concatenate(chunks).astype(np.float32, copy=False)
         return self._project(fingerprint)
+
+    def _low_frequency_1d(self, spectrum: np.ndarray) -> np.ndarray:
+        count = max(1, int(np.ceil(spectrum.shape[0] * self.low_frequency_ratio)))
+        return np.asarray(spectrum[:count], dtype=np.float32)
+
+    def _low_frequency_2d(self, spectrum: np.ndarray) -> np.ndarray:
+        rows, cols = spectrum.shape
+        if self.low_frequency_shape == "rectangle":
+            row_count = max(1, int(np.ceil(rows * self.low_frequency_ratio)))
+            col_count = max(1, int(np.ceil(cols * self.low_frequency_ratio)))
+            return np.asarray(spectrum[:row_count, :col_count].ravel(), dtype=np.float32)
+
+        # FreqFed's paper extracts a low-frequency triangular region from the
+        # DCT coefficient matrix (i + j below a cutoff), rather than a simple
+        # rectangular crop.  The ratio makes that cutoff configurable while the
+        # default path stays triangular.
+        cutoff = max(0, int(np.floor(max(rows, cols) * self.low_frequency_ratio)))
+        row_idx, col_idx = np.indices((rows, cols))
+        mask = (row_idx + col_idx) <= cutoff
+        return np.asarray(spectrum[mask], dtype=np.float32)
 
     def _project(self, vector: np.ndarray) -> np.ndarray:
         if self.projection_dim <= 0 or vector.size <= self.projection_dim:
@@ -146,19 +175,29 @@ class FreqFedDefense(BaseDefense):
             import hdbscan
         except ImportError as exc:
             raise ImportError("install the 'hdbscan' package to enable FreqFed") from exc
+        distances = self._cosine_distance_matrix(fingerprints)
         model = hdbscan.HDBSCAN(
             min_cluster_size=self.min_cluster_size,
             min_samples=self.min_samples,
-            metric="cosine",
+            metric="precomputed",
             algorithm="generic",
             cluster_selection_method=self.cluster_selection_method,
             allow_single_cluster=self.allow_single_cluster,
         )
-        # hdbscan's generic cosine backend expects a double-precision distance
-        # matrix on some platforms (notably its Windows wheels).
-        labels = model.fit_predict(np.asarray(fingerprints, dtype=np.float64))
+        labels = model.fit_predict(distances)
         probabilities = getattr(model, "probabilities_", np.ones(len(labels)))
         return np.asarray(labels, dtype=np.int64), np.asarray(probabilities, dtype=np.float64)
+
+    def _cosine_distance_matrix(self, fingerprints: np.ndarray) -> np.ndarray:
+        if fingerprints.ndim != 2:
+            raise ValueError("FreqFed fingerprints must be a 2D matrix")
+        normalized = fingerprints.astype(np.float64, copy=False)
+        norms = np.linalg.norm(normalized, axis=1, keepdims=True)
+        normalized = normalized / np.maximum(norms, 1e-12)
+        distances = 1.0 - (normalized @ normalized.T)
+        distances = np.clip(distances, 0.0, 2.0)
+        np.fill_diagonal(distances, 0.0)
+        return distances.astype(np.float64, copy=False)
 
     def _select_cluster(
         self,
@@ -168,15 +207,10 @@ class FreqFedDefense(BaseDefense):
         valid_indices: Sequence[int],
     ) -> List[int]:
         candidates = []
-        fp_by_index = {idx: fp for idx, fp in zip(valid_indices, fingerprints)}
         for label in sorted({int(value) for value in labels if value >= 0}):
             members = np.flatnonzero(labels == label).tolist()
-            matrix = np.asarray([fp_by_index[idx] for idx in members])
-            normalized = matrix / np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12)
-            similarity = normalized @ normalized.T
-            mean_distance = float(np.mean(1.0 - similarity))
             mean_probability = float(np.mean(probabilities[members]))
-            candidates.append((-len(members), -mean_probability, mean_distance, label, members))
+            candidates.append((-len(members), label, -mean_probability, members))
         return min(candidates)[-1] if candidates else []
 
     def _fallback_aggregate(self, updates: UpdateList):

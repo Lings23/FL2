@@ -7,11 +7,14 @@ Main entry point for federated security experiments.
 from __future__ import annotations
 
 import argparse
+import gc
+import hashlib
 import json
 import logging
 import os
 import random
 import sys
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
@@ -23,6 +26,9 @@ from torch.utils.data import DataLoader, Subset
 sys.path.insert(0, str(Path(__file__).parent))
 
 import flwr as fl
+import ray
+from ray._common.utils import get_system_memory
+from ray._private.utils import get_used_memory
 
 from config.config_loader import Config, load_config, override_config
 from data.dataset import get_dataset, FederatedPartitioner
@@ -33,6 +39,60 @@ from utils.logger import setup_logging
 from utils.metrics import MetricTracker
 
 logger = logging.getLogger(__name__)
+
+
+class RayResourcePreflightError(RuntimeError):
+    """Raised when the host cannot satisfy the configured Ray memory gate."""
+
+
+def estimate_available_memory_bytes() -> int:
+    """Use the same total-minus-used estimate as the installed Ray version."""
+    return int(get_system_memory() - get_used_memory())
+
+
+def wait_for_available_memory(
+    minimum_mb: int,
+    timeout_seconds: float,
+    poll_seconds: float = 2.0,
+) -> int:
+    """Wait until Ray can start with the configured amount of host memory."""
+    minimum_bytes = max(0, int(minimum_mb)) * 1024 * 1024
+    available = estimate_available_memory_bytes()
+    if minimum_bytes == 0 or available >= minimum_bytes:
+        return available
+
+    timeout = max(0.0, float(timeout_seconds))
+    deadline = time.monotonic() + timeout
+    interval = max(0.05, float(poll_seconds))
+    while time.monotonic() < deadline:
+        gc.collect()
+        remaining = deadline - time.monotonic()
+        time.sleep(min(interval, max(0.0, remaining)))
+        available = estimate_available_memory_bytes()
+        if available >= minimum_bytes:
+            logger.info(
+                "Ray memory preflight recovered | available=%.1f MiB required=%d MiB",
+                available / (1024 * 1024),
+                int(minimum_mb),
+            )
+            return available
+
+    raise RayResourcePreflightError(
+        "Ray memory preflight timed out: "
+        f"available={available / (1024 * 1024):.1f} MiB, "
+        f"required={int(minimum_mb)} MiB, waited={timeout:.1f}s"
+    )
+
+
+def shutdown_ray_runtime() -> None:
+    """Release Ray and allocator-owned memory before another specification."""
+    try:
+        if ray.is_initialized():
+            ray.shutdown()
+    finally:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +271,18 @@ def build_model_factory(cfg: Config) -> Callable[[], torch.nn.Module]:
 # ---------------------------------------------------------------------------
 
 def determine_malicious_ids(cfg: Config) -> set:
+    if cfg.federation.pairing_mode == "strict":
+        from experiments.trial_plan import TrialPlanV1
+
+        plan = TrialPlanV1.load(cfg.federation.trial_plan_path)
+        if int(plan.payload["num_clients"]) != int(cfg.federation.num_clients):
+            raise RuntimeError("TrialPlanV1 num_clients differs from runtime config")
+        mal_ids = {int(value) for value in plan.malicious_partition_ids}
+        logger.info(
+            "Plan-bound malicious identities (%d/%d): %s",
+            len(mal_ids), cfg.federation.num_clients, sorted(mal_ids),
+        )
+        return mal_ids
     if not (cfg.security.attack.enabled and cfg.security.attack.type != "none"):
         return set()
     n_mal = max(1, int(cfg.federation.num_clients * cfg.security.attack.malicious_fraction))
@@ -225,6 +297,13 @@ def determine_malicious_ids(cfg: Config) -> set:
 # ---------------------------------------------------------------------------
 
 def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTracker:
+    from attacks.attack_client import validate_label_flip_config
+
+    validate_label_flip_config(cfg.security.attack, cfg.dataset.num_classes)
+    if cfg.federation.pairing_mode == "strict":
+        # Required by deterministic CUDA matrix multiplication. Set it before
+        # Ray actors or the first CUDA context are created.
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     set_seed(cfg.project.seed)
     setup_logging(cfg.project.log_dir, cfg.project.log_level, name=experiment_name)
     config_path = Path(cfg.project.log_dir) / f"{experiment_name}_config.json"
@@ -232,6 +311,22 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
     with open(config_path, "w", encoding="utf-8") as handle:
         json.dump(asdict(cfg), handle, indent=2, ensure_ascii=False)
     logger.info("Effective config saved -> %s", config_path)
+
+    # Flower's legacy simulation API keeps Ray alive after a successful run.
+    # Tear down any inherited runtime before constructing the next dataset and
+    # model, then wait for enough host memory to provision the object store.
+    shutdown_ray_runtime()
+    available_memory = wait_for_available_memory(
+        cfg.ray.min_available_memory_mb,
+        cfg.ray.memory_wait_seconds,
+        cfg.ray.memory_poll_seconds,
+    )
+    logger.info(
+        "Ray memory preflight | available=%.1f MiB required=%d MiB object_store=%d MiB",
+        available_memory / (1024 * 1024),
+        cfg.ray.min_available_memory_mb,
+        cfg.ray.object_store_memory_mb,
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
@@ -251,6 +346,36 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
 
     malicious_ids = determine_malicious_ids(cfg)
 
+    if cfg.federation.pairing_mode == "strict":
+        initial_hasher = hashlib.sha256()
+        for parameter in global_model.state_dict().values():
+            array = parameter.detach().cpu().numpy()
+            initial_hasher.update(str(array.dtype).encode("ascii"))
+            initial_hasher.update(json.dumps(array.shape).encode("ascii"))
+            initial_hasher.update(array.tobytes(order="C"))
+        with data_manifest_path.open("r", encoding="utf-8") as handle:
+            data_manifest = json.load(handle)
+        runtime_manifest = {
+            "pairing_mode": cfg.federation.pairing_mode,
+            "sampling_protocol": cfg.federation.sampling_protocol,
+            "trial_plan_hash": cfg.federation.trial_plan_hash,
+            "trial_plan_path": cfg.federation.trial_plan_path,
+            "malicious_partition_ids": sorted(int(value) for value in malicious_ids),
+            "malicious_identity_sha256": hashlib.sha256(
+                json.dumps(sorted(malicious_ids), separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+            "data_manifest_sha256": str(data_manifest.get("sha256", "")),
+            "initial_model_sha256": initial_hasher.hexdigest(),
+            "deterministic_client_training": bool(
+                cfg.federation.deterministic_client_training
+            ),
+        }
+        runtime_manifest_path = (
+            Path(cfg.project.log_dir) / f"{experiment_name}_pairing_manifest.json"
+        )
+        with runtime_manifest_path.open("w", encoding="utf-8") as handle:
+            json.dump(runtime_manifest, handle, indent=2, ensure_ascii=False)
+
     client_fn = make_client_fn(
         model_factory=model_factory,
         loaders_map=loaders_map,
@@ -259,6 +384,8 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
         dp_cfg=cfg.differential_privacy if cfg.differential_privacy.enabled else None,
         malicious_ids=malicious_ids,
         device=device,
+        experiment_seed=cfg.project.seed,
+        num_classes=cfg.dataset.num_classes,
     )
 
     server, server_config = build_server(
@@ -341,21 +468,31 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
     }
     logger.info("Ray client resources: %s", client_resources)
 
-    fl.simulation.start_simulation(
-        client_fn=client_fn,
-        num_clients=cfg.federation.num_clients,
-        config=server_config,
-        strategy=server.strategy,
-        client_resources=client_resources,
-        ray_init_args={
-            "ignore_reinit_error": True,
-            "log_to_driver": cfg.ray.log_to_driver,
-        },
-    )
+    ray_init_args = {
+        "ignore_reinit_error": True,
+        "include_dashboard": cfg.ray.include_dashboard,
+        "log_to_driver": cfg.ray.log_to_driver,
+    }
+    if int(cfg.ray.object_store_memory_mb) > 0:
+        ray_init_args["object_store_memory"] = (
+            int(cfg.ray.object_store_memory_mb) * 1024 * 1024
+        )
 
-    tracker.save()
-    tracker.print_summary()
-    return tracker
+    try:
+        fl.simulation.start_simulation(
+            client_fn=client_fn,
+            num_clients=cfg.federation.num_clients,
+            config=server_config,
+            strategy=server.strategy,
+            client_resources=client_resources,
+            ray_init_args=ray_init_args,
+        )
+
+        tracker.save()
+        tracker.print_summary()
+        return tracker
+    finally:
+        shutdown_ray_runtime()
 
 
 # ---------------------------------------------------------------------------

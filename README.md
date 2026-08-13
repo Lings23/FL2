@@ -88,10 +88,13 @@ Launch an experiment with **Label-Flipping Attack** targeting 20% of clients, de
 ```bash
 python main.py \
   --override security.attack.enabled=true \
-  --override security.attack.type=label_flip \
+  --override security.attack.type=label_flip_targeted \
+  --override security.attack.source_label=5 \
+  --override security.attack.target_label=3 \
+  --override security.attack.label_flip_poison_fraction=1.0 \
   --override security.defense.enabled=true \
   --override security.defense.type=krum \
-  --experiment label_flip_vs_krum
+  --experiment label_flip_targeted_vs_krum
 ```
 
 Launch the S1-S7 time-consistency defense, which maintains per-client temporal
@@ -124,9 +127,9 @@ Easily iterate over multiple configurations to compare defenses against differen
 python experiments/sweep.py --quick
 
 # Multi-seed sweep with direct TimeConsistency ablation overrides
-python experiments/sweep.py --rounds 50 --seeds 1 7 21 42 87 \
-  --attacks model_replacement dba \
-  --defenses none trimmed_mean time_consistency \
+python experiments/run.py --profile sweep --rounds 50 --seeds 1,7,21,42,87 \
+  --attacks model_replacement,dba \
+  --defenses none,trimmed_mean,time_consistency \
   --override security.defense.custom_params.enable_trust_caps=true
 ```
 
@@ -137,11 +140,19 @@ delta norms, aggregation weights, and post-clipping impact estimates.
 Run the dedicated periodic-attack benchmark and its FFT/direction ablations:
 
 ```bash
-# 12-round pipeline check
-python experiments/periodic_attack.py --smoke
+# Six-round pipeline check
+python experiments/run.py --profile periodic --smoke
 
 # Full preregistered matrix; completed round files are resumed automatically
-python experiments/periodic_attack.py --mode all --output logs/periodic_attack_v2
+python experiments/run.py --profile periodic --mode all --output logs/periodic_attack_v2
+
+# Focused single-seed RTC/FedAvg continuous-attack comparison
+python experiments/run.py --profile rtc-fedavg --attack-groups all --rounds 60
+
+# Label-flip temporal ablations (short/long are not the main attack protocol)
+python experiments/run.py --profile periodic --mode ablation \
+  --attacks label_flip_targeted,label_flip_all_reverse \
+  --periods short_1_1,long_3_3 --rounds 60
 ```
 
 The runner writes per-round CSVs, bootstrap summaries, Holm-corrected paired
@@ -187,8 +198,11 @@ ray:
 security:
   attack:
     enabled: true
-    type: label_flip     # label_flip | backdoor | dba | gaussian_noise | byzantine | model_replacement
+    type: label_flip_targeted # label_flip_targeted | label_flip_all_reverse | backdoor | dba | gaussian_noise | byzantine | model_replacement
     malicious_fraction: 0.2
+    source_label: 5
+    target_label: 3
+    label_flip_poison_fraction: 1.0
   defense:
     enabled: true
     type: krum           # krum | trimmed_mean | median | fltrust | foolsgold | time_consistency | none

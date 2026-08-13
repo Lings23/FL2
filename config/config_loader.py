@@ -28,12 +28,17 @@ class ProjectConfig:
 @dataclass
 class FederationConfig:
     num_rounds: int = 50
-    num_clients: int = 10
-    clients_per_round: int = 5
-    min_fit_clients: int = 3
+    num_clients: int = 20
+    clients_per_round: int = 10
+    min_fit_clients: int = 10
     min_evaluate_clients: int = 3
-    min_available_clients: int = 5
+    min_available_clients: int = 20
     max_client_samples: int = 0  # 0 keeps the complete client partition
+    pairing_mode: str = "legacy"  # strict for formal paired experiments
+    sampling_protocol: str = "endpoint_uniform"
+    trial_plan_path: str = ""
+    trial_plan_hash: str = ""
+    deterministic_client_training: bool = False
 
 
 @dataclass
@@ -57,7 +62,7 @@ class ModelConfig:
 @dataclass
 class ClientConfig:
     local_epochs: int = 5
-    batch_size: int = 32
+    batch_size: int = 48
     optimizer: str = "sgd"
     learning_rate: float = 0.01
     momentum: float = 0.9
@@ -93,13 +98,17 @@ class AttackConfig:
     dba_scale_update: bool = True
     dba_boost_factor: float = 10.0
     model_replacement_boost_factor: float = 10.0
+    mpaf_lambda: float = 1.0
+    mpaf_base_scale: float = 0.0
+    mpaf_max_update_norm: float = 0.0
     gaussian_noise_std: float = 0.1
     attack_start_round: int = 1
     attack_end_round: int = -1
     attack_on_rounds: int = 1
     attack_off_rounds: int = 0
-    source_label: int = 0
-    target_label: int = 1
+    source_label: int = 5
+    target_label: int = 3
+    label_flip_poison_fraction: float = 1.0
 
 
 @dataclass
@@ -149,6 +158,11 @@ class RayConfig:
     client_num_cpus: float = 1.0
     client_num_gpus: float = 0.0
     log_to_driver: bool = False
+    include_dashboard: bool = False
+    object_store_memory_mb: int = 0
+    min_available_memory_mb: int = 0
+    memory_wait_seconds: float = 120.0
+    memory_poll_seconds: float = 2.0
 
 
 # ── Master Config ─────────────────────────────────────────────────────────────

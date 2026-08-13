@@ -1,0 +1,22 @@
+{
+  "artifact_kind": "rtc_v3_semantic_frozen_candidate_validation_v1",
+  "passed": true,
+  "content_hash": "290d8c82c1fde8f0eb30f0588956b2e847ee97d8557708b1aecf0573266cd7c5",
+  "formal_evaluation_ready": true,
+  "promotion_ready": false,
+  "development_seeds": [
+    43,
+    44,
+    45
+  ],
+  "development_attacks": [
+    "label_flip_all_reverse",
+    "label_flip_targeted"
+  ],
+  "all_strict_gates_passed": true,
+  "all_development_gates_passed": true,
+  "zero_update_rounds": 0,
+  "prototype_update_max": 0.0,
+  "max_constraint_violation": 4.068891782469661e-13,
+  "note": "Development freeze validation only; this is not a promotion attestation and does not establish held-out readiness."
+}

@@ -8,13 +8,19 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import itertools
 import json
 import logging
 import math
+import multiprocessing
 import os
+import platform
+import re
 import sys
 import tempfile
+import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
@@ -29,13 +35,36 @@ import seaborn as sns
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.config_loader import load_config, override_config
-from main import run_simulation
+from experiments.trial_plan import (
+    TrialPlanV1,
+    attach_trial_plans,
+    paired_fedavg_clean_specs,
+)
+from main import (
+    RayResourcePreflightError,
+    run_simulation,
+    shutdown_ray_runtime,
+    wait_for_available_memory,
+)
 
 logger = logging.getLogger(__name__)
 
-TARGETED_ATTACKS = ("backdoor", "dba", "model_replacement")
-UNTARGETED_ATTACKS = ("label_flip", "byzantine", "gaussian_noise")
-PERIODS = {"short_1_1": (1, 1), "long_3_3": (3, 3)}
+LABEL_FLIP_TARGETED = "label_flip_targeted"
+LABEL_FLIP_ALL_REVERSE = "label_flip_all_reverse"
+LABEL_FLIP_ATTACKS = {LABEL_FLIP_TARGETED, LABEL_FLIP_ALL_REVERSE}
+TARGETED_ATTACKS = ("backdoor", "dba", "model_replacement", LABEL_FLIP_TARGETED)
+UNTARGETED_ATTACKS = (LABEL_FLIP_ALL_REVERSE, "byzantine", "gaussian_noise")
+PERIODS = {
+    "continuous_1_0": (1, 0),
+    "short_1_1": (1, 1),
+    "long_3_3": (3, 3),
+}
+# Keep the preregistered/default benchmark unchanged.  ``continuous_1_0`` is
+# an explicit attack-strength validation schedule selected through the focused
+# RTC/FedAvg profile, not an extra cell silently added to every legacy matrix.
+BENCHMARK_PERIODS = {
+    name: PERIODS[name] for name in ("short_1_1", "long_3_3")
+}
 SEEDS = (42, 43, 44)
 MALICIOUS_FRACTIONS = (0.2, 0.4)
 BENCHMARK_VERSION = 2
@@ -46,16 +75,24 @@ RTC_V2_BASE: Dict[str, Any] = {
     "enable_direction_features": True,
     "enable_influence_features": True,
     "trust_beta": 0.75,
-    "watch_threshold": 0.25,
-    "restricted_threshold": 0.45,
+    "watch_threshold": 0.55,
+    "restricted_threshold": 0.70,
     "quarantine_threshold": 0.80,
-    "state_multipliers": {
-        "normal": 1.0,
-        "watch": 0.50,
-        "restricted": 0.05,
+    "immediate_quarantine_threshold": 0.95,
+    "quarantine_window": 4,
+    "quarantine_strikes": 2,
+    "recovery_threshold": 0.35,
+    "recovery_observations": 3,
+    "state_weight_cap_multipliers": {
+        "normal": 2.0,
+        "watch": 1.0,
+        "restricted": 0.1,
         "quarantined": 0.0,
     },
-    "per_client_weight_multiplier": 0.6,
+    "enable_exposure_budgets": True,
+    "exposure_window": 4,
+    "client_exposure_budget_multiplier": 4.0,
+    "direction_exposure_budget_multiplier": 4.0,
     "clip_multiplier": 1.0,
 }
 
@@ -65,6 +102,7 @@ DEFENSES: Dict[str, Tuple[str, Dict[str, Any]]] = {
         "enable_soft_trust_weighting": False,
         "enable_delta_clipping": True,
         "enable_trust_caps": False,
+        "enable_exposure_budgets": False,
         "enable_temporal_features": False,
         "enable_direction_features": False,
         "enable_influence_features": False,
@@ -97,6 +135,7 @@ ABLATIONS: Dict[str, Tuple[str, Dict[str, Any]]] = {
         **RTC_V2_BASE,
         "enable_delta_clipping": False,
         "enable_trust_caps": False,
+        "enable_exposure_budgets": False,
     }),
 }
 
@@ -120,20 +159,28 @@ def build_matrix(mode: str = "all", smoke: bool = False) -> List[Dict[str, Any]]
         periods = {"short_1_1": (1, 1)}
         fractions = (0.2,)
         seeds = (42,)
-        smoke_names = {"fedavg", "clip_only", "rtc_full", "rtc_no_temporal", "rtc_no_direction"}
+        smoke_names = {"fedavg", "freqfed", "clip_only", "rtc_full", "rtc_no_temporal", "rtc_no_direction"}
         definitions = {**DEFENSES, **ABLATIONS}
         defenses = {name: definitions[name] for name in smoke_names}
     elif mode == "main":
         attacks, periods, fractions, seeds, defenses = (
-            TARGETED_ATTACKS, PERIODS, MALICIOUS_FRACTIONS, SEEDS, DEFENSES
+            TARGETED_ATTACKS, BENCHMARK_PERIODS, MALICIOUS_FRACTIONS, SEEDS, DEFENSES
         )
     elif mode == "ablation":
         attacks, periods, fractions, seeds, defenses = (
-            TARGETED_ATTACKS, PERIODS, MALICIOUS_FRACTIONS, SEEDS, ABLATIONS
+            (*TARGETED_ATTACKS, LABEL_FLIP_ALL_REVERSE),
+            BENCHMARK_PERIODS,
+            MALICIOUS_FRACTIONS,
+            SEEDS,
+            ABLATIONS,
         )
     elif mode == "untargeted":
         attacks, periods, fractions, seeds, defenses = (
-            UNTARGETED_ATTACKS, PERIODS, MALICIOUS_FRACTIONS, SEEDS, DEFENSES
+            UNTARGETED_ATTACKS, BENCHMARK_PERIODS, MALICIOUS_FRACTIONS, SEEDS, DEFENSES
+        )
+    elif mode == "mpaf":
+        attacks, periods, fractions, seeds, defenses = (
+            ("mpaf",), BENCHMARK_PERIODS, MALICIOUS_FRACTIONS, SEEDS, DEFENSES
         )
     elif mode == "all":
         return _deduplicate(build_matrix("main") + build_matrix("ablation") + build_matrix("untargeted"))
@@ -169,12 +216,35 @@ def _deduplicate(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def run_id(spec: Dict[str, Any]) -> str:
+    canonical_spec = dict(spec)
+    # The content hash identifies a strict plan; its output-directory-specific
+    # path must not change the run identity.
+    canonical_spec.pop("trial_plan_path", None)
+    if canonical_spec.get("attack") in LABEL_FLIP_ATTACKS:
+        canonical_spec.pop("boost_factor", None)
+    if canonical_spec.get("attack") == LABEL_FLIP_ALL_REVERSE:
+        canonical_spec.pop("label_flip_source_label", None)
+        canonical_spec.pop("label_flip_target_label", None)
     readable = (
         f"{spec['attack']}__{spec['period']}__m{spec['malicious_fraction']:.1f}__"
         f"s{spec['seed']}__{spec['defense']}__{spec.get('partition', 'iid')}__"
-        f"p{spec.get('participation_rate', 0.5):.2f}__b{spec.get('boost_factor', 10.0):g}"
+        f"p{spec.get('participation_rate', 0.5):.2f}"
     )
-    digest = hashlib.sha1(json.dumps(spec, sort_keys=True).encode()).hexdigest()[:8]
+    if spec["attack"] == LABEL_FLIP_TARGETED:
+        readable += (
+            f"__lf{int(spec.get('label_flip_source_label', 5))}to"
+            f"{int(spec.get('label_flip_target_label', 3))}-p"
+            f"{float(spec.get('label_flip_poison_fraction', 1.0)):g}"
+        )
+    elif spec["attack"] == LABEL_FLIP_ALL_REVERSE:
+        readable += (
+            f"__lfrev-p{float(spec.get('label_flip_poison_fraction', 1.0)):g}"
+        )
+    else:
+        readable += f"__b{spec.get('boost_factor', 10.0):g}"
+    digest = hashlib.sha1(
+        json.dumps(canonical_spec, sort_keys=True).encode()
+    ).hexdigest()[:8]
     return f"{readable}__{digest}"
 
 
@@ -205,6 +275,45 @@ def tracker_to_rounds(records: Sequence[Dict[str, Any]], spec: Dict[str, Any]) -
     return pd.DataFrame(rows)
 
 
+def _reverse_mapping_asr_from_confusion(value: Any) -> float:
+    """Recover y -> C-1-y ASR from a serialized confusion matrix.
+
+    This keeps complete pre-column all-reverse runs reusable without weakening
+    the metric gate: the exact objective is reconstructed from immutable
+    per-round evidence and malformed/non-finite inputs still fail closed.
+    """
+    matrix = np.asarray(json.loads(str(value)), dtype=np.int64)
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1] or matrix.shape[0] == 0:
+        raise ValueError(f"invalid all-reverse confusion-matrix shape: {matrix.shape}")
+    total = int(matrix.sum())
+    if total <= 0:
+        raise ValueError("all-reverse confusion matrix has no observations")
+    labels = np.arange(matrix.shape[0])
+    success = int(matrix[labels, matrix.shape[0] - 1 - labels].sum())
+    return float(success / total)
+
+
+def _objective_asr_series(rounds: pd.DataFrame, spec: Dict[str, Any]) -> pd.Series | None:
+    """Return reported ASR, or exact legacy all-reverse ASR when recoverable."""
+    if "server_asr" in rounds:
+        reported = pd.to_numeric(rounds["server_asr"], errors="coerce")
+        if reported.notna().all() and np.isfinite(reported.to_numpy(dtype=float)).all():
+            return reported
+    if (
+        str(spec.get("attack")) == LABEL_FLIP_ALL_REVERSE
+        and "server_confusion_matrix_json" in rounds
+    ):
+        try:
+            derived = rounds["server_confusion_matrix_json"].map(
+                _reverse_mapping_asr_from_confusion
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if derived.notna().all() and np.isfinite(derived.to_numpy(dtype=float)).all():
+            return derived.astype(float)
+    return None
+
+
 def summarize_run(rounds: pd.DataFrame, spec: Dict[str, Any]) -> Dict[str, Any]:
     result = {key: value for key, value in spec.items() if key != "custom_params"}
     result["run_id"] = run_id(spec)
@@ -218,13 +327,21 @@ def summarize_run(rounds: pd.DataFrame, spec: Dict[str, Any]) -> Dict[str, Any]:
     if "server_loss" in rounds:
         losses = pd.to_numeric(rounds["server_loss"], errors="coerce")
         result["numerical_divergence"] = bool((~np.isfinite(losses)).any())
-    if spec["attack"] in TARGETED_ATTACKS and asr_col in rounds:
-        active_asr = pd.to_numeric(active[asr_col], errors="coerce").dropna()
-        inactive_asr = pd.to_numeric(inactive[asr_col], errors="coerce").dropna()
+    objective_asr = _objective_asr_series(rounds, spec)
+    if (
+        spec["attack"] in TARGETED_ATTACKS
+        or spec["attack"] == LABEL_FLIP_ALL_REVERSE
+    ) and objective_asr is not None:
+        active_asr = objective_asr.loc[active.index].dropna()
+        inactive_asr = objective_asr.loc[inactive.index].dropna()
+        raw_auc = _auc(active_asr)
         result.update({
             "active_asr": float(active_asr.mean()) if len(active_asr) else math.nan,
-            "active_asr_auc": _auc(active_asr),
-            "peak_asr": float(pd.to_numeric(rounds[asr_col], errors="coerce").max()),
+            # Backward-compatible alias; new reports should use the explicit fields.
+            "active_asr_auc": raw_auc,
+            "active_asr_auc_raw": raw_auc,
+            "active_asr_auc_normalized": _normalized_auc(active_asr),
+            "peak_asr": float(objective_asr.max()),
             "residual_asr": float(inactive_asr.mean()) if len(inactive_asr) else math.nan,
         })
     if accuracy_col in rounds:
@@ -234,6 +351,39 @@ def summarize_run(rounds: pd.DataFrame, spec: Dict[str, Any]) -> Dict[str, Any]:
             "final_accuracy": float(accuracy.dropna().iloc[-1]) if accuracy.notna().any() else math.nan,
             "min_accuracy": float(accuracy.min()),
             "active_accuracy": float(active_accuracy.mean()) if len(active_accuracy) else math.nan,
+        })
+    if spec["attack"] in LABEL_FLIP_ATTACKS:
+        numerator = pd.to_numeric(
+            active.get("fit_label_flip_poisoned_exposures", pd.Series(dtype=float)),
+            errors="coerce",
+        ).fillna(0.0).sum()
+        selected = pd.to_numeric(
+            active.get("fit_selected_training_exposures", pd.Series(dtype=float)),
+            errors="coerce",
+        ).fillna(0.0).sum()
+        eligible = pd.to_numeric(
+            active.get("fit_label_flip_eligible_exposures", pd.Series(dtype=float)),
+            errors="coerce",
+        ).fillna(0.0).sum()
+        active_malicious_rate = pd.to_numeric(
+            active.get(
+                "fit_label_flip_active_malicious_exposure_rate",
+                pd.Series(dtype=float),
+            ),
+            errors="coerce",
+        ).dropna()
+        result.update({
+            "label_flip_poisoned_exposures": float(numerator),
+            "label_flip_global_exposure_rate": (
+                float(numerator / selected) if selected > 0 else 0.0
+            ),
+            "label_flip_eligible_poison_rate": (
+                float(numerator / eligible) if eligible > 0 else 0.0
+            ),
+            "label_flip_active_malicious_exposure_rate": (
+                float(active_malicious_rate.mean())
+                if len(active_malicious_rate) else 0.0
+            ),
         })
     result["detection_lag"] = detection_lag(rounds)
     for state in ("watch", "restricted", "quarantined"):
@@ -251,6 +401,9 @@ def summarize_run(rounds: pd.DataFrame, spec: Dict[str, Any]) -> Dict[str, Any]:
         "fit_rtc_influence_risk_mean", "fit_rtc_event_risk_mean",
         "fit_time_consistency_fallback_used",
         "fit_freqfed_fallback",
+        "fit_freqfed_selected_clients", "fit_freqfed_rejected_clients",
+        "fit_freqfed_noise_clients", "fit_freqfed_cluster_count",
+        "fit_freqfed_selected_ratio",
     ):
         if column in rounds:
             result[column.removeprefix("fit_")] = float(
@@ -266,6 +419,21 @@ def _auc(values: pd.Series) -> float:
     if len(array) == 1:
         return float(array[0])
     return float(np.trapezoid(array, dx=1.0))
+
+
+def _normalized_auc(values: pd.Series) -> float:
+    """AUC normalized by the active-window span.
+
+    A one-round active window is defined as that round's value.  For two or
+    more observations this is the trapezoidal area divided by ``n - 1``.
+    """
+    raw = _auc(values)
+    count = len(values)
+    if count == 0:
+        return math.nan
+    if count == 1:
+        return raw
+    return float(raw / (count - 1))
 
 
 def detection_lag(rounds: pd.DataFrame, threshold: float = 0.05) -> float:
@@ -311,9 +479,12 @@ def add_accuracy_drop(summary: pd.DataFrame) -> pd.DataFrame:
     if clean.empty:
         summary["accuracy_drop"] = np.nan
         return summary
-    baselines = clean[clean["defense"] == "fedavg"].set_index("seed")["final_accuracy"]
+    pairing_key = "trial_plan_hash" if "trial_plan_hash" in summary else "seed"
+    baselines = clean[clean["defense"] == "fedavg"].set_index(pairing_key)["final_accuracy"]
     summary["accuracy_drop"] = summary.apply(
-        lambda row: float(baselines.get(row["seed"], np.nan) - row.get("final_accuracy", np.nan)),
+        lambda row: float(
+            baselines.get(row[pairing_key], np.nan) - row.get("final_accuracy", np.nan)
+        ),
         axis=1,
     )
     return summary
@@ -337,14 +508,16 @@ def add_accuracy_drop_auc(summary: pd.DataFrame, rounds_dir: Path) -> pd.DataFra
     for frame in frames:
         first = frame.iloc[0]
         if first.get("attack") == "none" and first.get("defense") == "fedavg":
-            clean[int(first["seed"])] = frame
+            pairing_key = str(first.get("trial_plan_hash", first.get("seed")))
+            clean[pairing_key] = frame
         else:
             key = (str(first.get("attack")), str(first.get("period")),
                    float(first.get("malicious_fraction")), int(first.get("seed")),
                    str(first.get("defense")))
             attacked[key] = frame
     for index, row in summary.iterrows():
-        if row["attack"] == "none" or int(row["seed"]) not in clean:
+        pairing_key = str(row.get("trial_plan_hash", row.get("seed")))
+        if row["attack"] == "none" or pairing_key not in clean:
             continue
         key = (str(row["attack"]), str(row["period"]), float(row["malicious_fraction"]),
                int(row["seed"]), str(row["defense"]))
@@ -352,7 +525,7 @@ def add_accuracy_drop_auc(summary: pd.DataFrame, rounds_dir: Path) -> pd.DataFra
         if attack_frame is None or "server_accuracy" not in attack_frame:
             continue
         merged = attack_frame[["round", "planned_attack_active", "server_accuracy"]].merge(
-            clean[int(row["seed"])][["round", "server_accuracy"]],
+            clean[pairing_key][["round", "server_accuracy"]],
             on="round", suffixes=("_attack", "_clean"),
         )
         active = merged[merged["planned_attack_active"] == 1]
@@ -373,8 +546,14 @@ def bootstrap_summary(summary: pd.DataFrame, seed: int = 2026) -> pd.DataFrame:
                           "first_malicious_watch_lag", "first_malicious_restricted_lag",
                           "first_malicious_quarantined_lag",
                           "accuracy_drop", "active_accuracy_drop", "accuracy_drop_auc",
+                          "label_flip_global_exposure_rate",
+                          "label_flip_eligible_poison_rate",
+                          "label_flip_active_malicious_exposure_rate",
                           "malicious_aggregation_weight_share",
-                          "benign_quarantine_rate", "aggregation_time_seconds")
+                          "benign_quarantine_rate", "aggregation_time_seconds",
+                          "freqfed_fallback", "freqfed_selected_clients",
+                          "freqfed_rejected_clients", "freqfed_noise_clients",
+                          "freqfed_cluster_count", "freqfed_selected_ratio")
         if name in summary
     ]
     keys = ["attack", "period", "malicious_fraction", *CONDITION_KEYS, "defense"]
@@ -432,8 +611,8 @@ def statistical_tests(summary: pd.DataFrame, seed: int = 2026) -> pd.DataFrame:
 
 
 def _paired_values(data: pd.DataFrame, left: str, right: str, metric: str) -> pd.DataFrame:
-    keys = ["period", "malicious_fraction", *CONDITION_KEYS, "seed"]
-    keys = [key for key in keys if key in data]
+    keys = ["trial_plan_hash", "period", "malicious_fraction", *CONDITION_KEYS, "seed"]
+    keys = [key for key in keys if key in data and data[key].notna().any()]
     pivot = data[data["defense"].isin([left, right])].pivot_table(
         index=keys, columns="defense", values=metric, aggfunc="first"
     )
@@ -476,7 +655,11 @@ def run_experiments(args: argparse.Namespace) -> pd.DataFrame:
     rounds_dir = output / "rounds"
     rounds_dir.mkdir(parents=True, exist_ok=True)
     matrix = select_matrix(build_matrix(args.mode, args.smoke), args)
-    clean = [] if args.skip_clean else clean_baselines(matrix, args.smoke)
+    if str(getattr(args, "pairing_mode", "strict")) == "strict":
+        matrix = attach_trial_plans(matrix, args, output)
+        clean = [] if args.skip_clean else paired_fedavg_clean_specs(matrix)
+    else:
+        clean = [] if args.skip_clean else clean_baselines(matrix, args.smoke)
     matrix = _deduplicate(clean if args.clean_only else matrix + clean)
     write_experiment_manifest(matrix, output)
 
@@ -554,67 +737,580 @@ def _run_specs(
     output: Path,
     rounds_dir: Path,
 ) -> pd.DataFrame:
-    summaries = []
+    status_dir = output / "status"
+    status_dir.mkdir(parents=True, exist_ok=True)
+    _write_execution_environment(args, output)
+
     for index, base_spec in enumerate(specs, 1):
-        spec = dict(base_spec)
         spec = dict(base_spec)
         identifier = run_id(spec)
         round_path = rounds_dir / f"{identifier}.csv"
+        status_path = status_dir / f"{identifier}.json"
         logger.info("[%d/%d] %s", index, len(specs), identifier)
         if round_path.exists() and not args.rerun:
-            rounds = pd.read_csv(round_path)
-        else:
-            cfg = load_config(args.config)
-            custom = dict(cfg.security.defense.custom_params or {})
-            custom.update(spec["custom_params"])
-            if args.smoke and spec["defense_type"] == "time_consistency":
-                custom.setdefault("log_client_weights", False)
-            num_clients = 10 if args.smoke else int(args.num_clients)
-            clients_per_round = max(1, min(
-                num_clients, int(math.ceil(num_clients * float(spec["participation_rate"])))
-            ))
-            overrides = {
-                "project.seed": spec["seed"],
-                "project.log_dir": str(output / "raw"),
-                "dataset.name": "cifar10",
-                "model.architecture": "resnet18",
-                "federation.num_rounds": 6 if args.smoke else int(args.rounds),
-                "federation.num_clients": num_clients,
-                "federation.clients_per_round": num_clients if args.smoke else clients_per_round,
-                "federation.min_fit_clients": num_clients if args.smoke else clients_per_round,
-                "federation.min_available_clients": num_clients,
-                "federation.max_client_samples": 50 if args.smoke else int(args.max_client_samples),
-                "dataset.partition": spec["partition"],
-                "dataset.dirichlet_alpha": spec["dirichlet_alpha"],
-                "client.local_epochs": 1 if args.smoke else cfg.client.local_epochs,
-                "strategy.name": "fedavg",
-                "security.attack.enabled": spec["attack"] != "none",
-                "security.attack.type": spec["attack"],
-                "security.attack.malicious_fraction": spec["malicious_fraction"],
-                "security.attack.attack_start_round": spec["attack_start_round"],
-                "security.attack.attack_end_round": spec["attack_end_round"],
-                "security.attack.attack_on_rounds": spec["on_rounds"],
-                "security.attack.attack_off_rounds": spec["off_rounds"],
-                "security.attack.poison_fraction": (
-                    0.5 if spec["attack"] in {"backdoor", "dba"} else 0.1
-                ),
-                "security.attack.dba_boost_factor": spec["boost_factor"],
-                "security.attack.model_replacement_boost_factor": spec["boost_factor"],
-                "security.defense.enabled": spec["defense_type"] != "none",
-                "security.defense.type": spec["defense_type"],
-                "security.defense.reserve_root_for_all": True,
-                "security.defense.root_dataset_size": 100,
-                "security.defense.custom_params": custom,
-                "evaluation.save_best_model": False,
-                "evaluation.max_test_samples": 500 if args.smoke else int(args.max_test_samples),
-            }
-            cfg = override_config(cfg, overrides)
-            tracker = run_simulation(cfg, experiment_name=identifier)
-            rounds = tracker_to_rounds(tracker.to_list(), spec)
-            rounds.to_csv(round_path, index=False)
-        summaries.append(summarize_run(rounds, spec))
-        pd.DataFrame(summaries).to_csv(output / "periodic_attack_runs.csv", index=False)
-    return pd.DataFrame(summaries)
+            valid, reason, _ = validate_round_cache(
+                round_path, _expected_rounds(args), spec,
+            )
+            if valid:
+                _write_status(status_path, {
+                    "run_id": identifier,
+                    "state": "completed_cached",
+                    "attempt": 0,
+                    "pid": None,
+                    "exit_code": 0,
+                    "last_round": _expected_rounds(args),
+                    "finished_at": _utc_now(),
+                    "error_type": None,
+                    "error_summary": None,
+                })
+                _write_current_summary(specs, args, output, rounds_dir)
+                continue
+            archived = _archive_invalid_round_cache(round_path)
+            logger.warning("Invalid cached rounds archived | %s | %s", reason, archived)
+            _write_status(status_path, {
+                "run_id": identifier,
+                "state": "invalid_cache",
+                "attempt": 0,
+                "last_round": 0,
+                "error_type": "invalid_round_cache",
+                "error_summary": reason,
+                "archived_round_path": str(archived),
+            })
+
+        try:
+            _run_spec_with_retries(
+                spec, args, output, round_path, status_path,
+            )
+        except BaseException:
+            _write_current_summary(specs, args, output, rounds_dir)
+            raise
+        _write_current_summary(specs, args, output, rounds_dir)
+
+    return _write_current_summary(specs, args, output, rounds_dir)
+
+
+def _expected_rounds(args: argparse.Namespace) -> int:
+    return 6 if bool(getattr(args, "smoke", False)) else int(args.rounds)
+
+
+def _build_spec_config(
+    spec: Dict[str, Any], args: argparse.Namespace, output: Path,
+):
+    cfg = load_config(args.config)
+    custom = dict(cfg.security.defense.custom_params or {})
+    custom.update(spec["custom_params"])
+    if args.smoke and spec["defense_type"] == "time_consistency":
+        custom.setdefault("log_client_weights", False)
+    num_clients = 10 if args.smoke else int(args.num_clients)
+    clients_per_round = max(1, min(
+        num_clients, int(math.ceil(num_clients * float(spec["participation_rate"])))
+    ))
+    overrides = {
+        "project.seed": spec["seed"],
+        "project.log_dir": str(output / "raw"),
+        "dataset.name": "cifar10",
+        "model.architecture": "resnet18",
+        "federation.num_rounds": _expected_rounds(args),
+        "federation.num_clients": num_clients,
+        "federation.clients_per_round": num_clients if args.smoke else clients_per_round,
+        "federation.min_fit_clients": num_clients if args.smoke else clients_per_round,
+        "federation.min_available_clients": num_clients,
+        "federation.max_client_samples": 50 if args.smoke else int(args.max_client_samples),
+        "federation.pairing_mode": str(spec.get("pairing_mode", getattr(args, "pairing_mode", "legacy"))),
+        "federation.sampling_protocol": str(spec.get("sampling_protocol", getattr(args, "sampling_protocol", "endpoint_uniform"))),
+        "federation.trial_plan_path": str(spec.get("trial_plan_path", "")),
+        "federation.trial_plan_hash": str(spec.get("trial_plan_hash", "")),
+        "federation.deterministic_client_training": bool(
+            spec.get("pairing_mode", getattr(args, "pairing_mode", "legacy")) == "strict"
+        ),
+        "dataset.partition": spec["partition"],
+        "dataset.dirichlet_alpha": spec["dirichlet_alpha"],
+        "client.local_epochs": 1 if args.smoke else cfg.client.local_epochs,
+        "client.batch_size": int(getattr(args, "batch_size", 48)),
+        "strategy.name": "fedavg",
+        "security.attack.enabled": spec["attack"] != "none",
+        "security.attack.type": spec["attack"],
+        "security.attack.malicious_fraction": spec["malicious_fraction"],
+        "security.attack.attack_start_round": spec["attack_start_round"],
+        "security.attack.attack_end_round": spec["attack_end_round"],
+        "security.attack.attack_on_rounds": spec["on_rounds"],
+        "security.attack.attack_off_rounds": spec["off_rounds"],
+        "security.attack.poison_fraction": (
+            0.5 if spec["attack"] in {"backdoor", "dba"} else 0.1
+        ),
+        "security.attack.source_label": int(spec.get("label_flip_source_label", 5)),
+        "security.attack.target_label": int(spec.get("label_flip_target_label", 3)),
+        "security.attack.label_flip_poison_fraction": float(
+            spec.get("label_flip_poison_fraction", 1.0)
+        ),
+        "security.attack.dba_boost_factor": float(
+            spec.get("boost_factor", getattr(args, "boost_factor", 10.0))
+        ),
+        "security.attack.model_replacement_boost_factor": float(
+            spec.get("boost_factor", getattr(args, "boost_factor", 10.0))
+        ),
+        "security.attack.mpaf_lambda": float(
+            spec.get("boost_factor", getattr(args, "boost_factor", 1.0))
+        ),
+        "security.defense.enabled": spec["defense_type"] != "none",
+        "security.defense.type": spec["defense_type"],
+        "security.defense.reserve_root_for_all": True,
+        "security.defense.root_dataset_size": 100,
+        "security.defense.custom_params": custom,
+        "evaluation.save_best_model": False,
+        "evaluation.max_test_samples": 500 if args.smoke else int(args.max_test_samples),
+        "ray.object_store_memory_mb": int(
+            getattr(args, "ray_object_store_memory_mb", 0) or 0
+        ),
+        "ray.min_available_memory_mb": int(
+            getattr(args, "ray_min_available_memory_mb", 0) or 0
+        ),
+        "ray.memory_wait_seconds": float(
+            getattr(args, "ray_memory_wait_seconds", 120.0)
+        ),
+        "ray.include_dashboard": False,
+        "ray.client_num_cpus": float(getattr(args, "ray_client_num_cpus", 1.0)),
+        "ray.client_num_gpus": float(getattr(args, "ray_client_num_gpus", 0.0)),
+    }
+    return override_config(cfg, overrides)
+
+
+def _run_spec_worker(
+    spec: Dict[str, Any],
+    args_payload: Dict[str, Any],
+    output_value: str,
+    round_path_value: str,
+    status_path_value: str,
+    attempt: int,
+    log_start_offset: int,
+) -> None:
+    args = argparse.Namespace(**args_payload)
+    output = Path(output_value)
+    round_path = Path(round_path_value)
+    status_path = Path(status_path_value)
+    identifier = run_id(spec)
+    log_path = output / "raw" / f"{identifier}.log"
+    _write_status(status_path, {
+        "run_id": identifier,
+        "state": "running",
+        "attempt": attempt,
+        "pid": os.getpid(),
+        "started_at": _utc_now(),
+        "exit_code": None,
+        "last_round": 0,
+        "ray_session": None,
+        "error_type": None,
+        "error_summary": None,
+    })
+    try:
+        cfg = _build_spec_config(spec, args, output)
+        tracker = run_simulation(cfg, experiment_name=identifier)
+        rounds = tracker_to_rounds(tracker.to_list(), spec)
+        _atomic_write_csv(rounds, round_path)
+        _write_status(status_path, {
+            "run_id": identifier,
+            "state": "completed",
+            "attempt": attempt,
+            "pid": os.getpid(),
+            "exit_code": 0,
+            "last_round": _expected_rounds(args),
+            "finished_at": _utc_now(),
+            "ray_session": _find_ray_session(os.getpid()),
+            "error_type": None,
+            "error_summary": None,
+        })
+    except BaseException as exc:
+        _write_status(status_path, {
+            "run_id": identifier,
+            "state": "failed",
+            "attempt": attempt,
+            "pid": os.getpid(),
+            "exit_code": 1,
+            "last_round": _last_logged_round(log_path, log_start_offset),
+            "finished_at": _utc_now(),
+            "ray_session": _find_ray_session(os.getpid()),
+            "error_type": "python_exception",
+            "error_summary": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+        })
+        raise
+    finally:
+        shutdown_ray_runtime()
+
+
+def _run_spec_with_retries(
+    spec: Dict[str, Any],
+    args: argparse.Namespace,
+    output: Path,
+    round_path: Path,
+    status_path: Path,
+    launch_fn=None,
+) -> None:
+    identifier = run_id(spec)
+    max_retries = max(0, int(getattr(args, "max_spec_retries", 1)))
+    attempts = max_retries + 1
+    launcher = launch_fn or _launch_spec_process
+    for attempt in range(1, attempts + 1):
+        if round_path.exists():
+            archived = _archive_round_cache(round_path, f"attempt{attempt}-previous")
+            logger.info("Previous round output preserved before attempt | %s", archived)
+        try:
+            wait_for_available_memory(
+                int(getattr(args, "ray_min_available_memory_mb", 0) or 0),
+                float(getattr(args, "ray_memory_wait_seconds", 120.0)),
+            )
+        except RayResourcePreflightError as exc:
+            _write_status(status_path, {
+                "run_id": identifier,
+                "state": "resource_blocked",
+                "attempt": attempt,
+                "pid": None,
+                "exit_code": None,
+                "last_round": 0,
+                "finished_at": _utc_now(),
+                "error_type": "ray_memory_preflight",
+                "error_summary": str(exc),
+            })
+            raise
+
+        log_path = output / "raw" / f"{identifier}.log"
+        log_start_offset = log_path.stat().st_size if log_path.exists() else 0
+        _write_status(status_path, {
+            "run_id": identifier,
+            "state": "launching",
+            "attempt": attempt,
+            "pid": None,
+            "started_at": _utc_now(),
+            "exit_code": None,
+            "last_round": 0,
+            "log_start_offset": log_start_offset,
+            "error_type": None,
+            "error_summary": None,
+        })
+        exit_code, child_pid = launcher(
+            spec,
+            dict(vars(args)),
+            output,
+            round_path,
+            status_path,
+            attempt,
+            log_start_offset,
+        )
+        valid, reason, _ = validate_round_cache(
+            round_path, _expected_rounds(args), spec,
+        )
+        if exit_code == 0 and valid:
+            _write_status(status_path, {
+                "run_id": identifier,
+                "state": "completed",
+                "attempt": attempt,
+                "pid": child_pid,
+                "exit_code": 0,
+                "last_round": _expected_rounds(args),
+                "finished_at": _utc_now(),
+                "error_type": None,
+                "error_summary": None,
+            })
+            return
+
+        current = _read_status(status_path)
+        error_type, error_summary, ray_session = _classify_child_failure(
+            child_pid, exit_code, current, reason,
+        )
+        failed_payload = {
+            "run_id": identifier,
+            "state": "retrying" if attempt < attempts else "failed",
+            "attempt": attempt,
+            "pid": child_pid,
+            "exit_code": exit_code,
+            "last_round": _last_logged_round(log_path, log_start_offset),
+            "finished_at": _utc_now(),
+            "ray_session": ray_session,
+            "error_type": error_type,
+            "error_summary": error_summary,
+        }
+        _write_status(status_path, failed_payload)
+        if attempt < attempts:
+            logger.warning(
+                "Specification failed; retrying after resource preflight | run=%s attempt=%d/%d error=%s",
+                identifier, attempt, attempts, error_summary,
+            )
+            continue
+        raise RuntimeError(
+            f"Specification failed after {attempts} attempts: {identifier}: {error_summary}"
+        )
+
+
+def _launch_spec_process(
+    spec: Dict[str, Any],
+    args_payload: Dict[str, Any],
+    output: Path,
+    round_path: Path,
+    status_path: Path,
+    attempt: int,
+    log_start_offset: int,
+) -> Tuple[int, int | None]:
+    context = multiprocessing.get_context("spawn")
+    process = context.Process(
+        target=_run_spec_worker,
+        args=(
+            spec,
+            args_payload,
+            str(output),
+            str(round_path),
+            str(status_path),
+            attempt,
+            log_start_offset,
+        ),
+        name=f"fedsec-{run_id(spec)}-attempt{attempt}",
+    )
+    process.start()
+    child_pid = process.pid
+    try:
+        process.join()
+    except BaseException:
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=10)
+        raise
+    return int(process.exitcode if process.exitcode is not None else -1), child_pid
+
+
+def validate_round_cache(
+    path: Path,
+    expected_rounds: int,
+    spec: Dict[str, Any] | None = None,
+) -> Tuple[bool, str, pd.DataFrame | None]:
+    try:
+        frame = pd.read_csv(path)
+    except Exception as exc:
+        return False, f"unreadable CSV: {exc}", None
+    required_columns = {"round", "server_loss", "server_accuracy"}
+    missing = sorted(required_columns - set(frame.columns))
+    if missing:
+        return False, f"missing columns: {','.join(missing)}", frame
+    numeric_rounds = pd.to_numeric(frame["round"], errors="coerce")
+    if numeric_rounds.isna().any() or not np.equal(numeric_rounds, numeric_rounds.astype(int)).all():
+        return False, "round values must be finite integers", frame
+    round_values = numeric_rounds.astype(int)
+    if round_values.duplicated().any():
+        return False, "duplicate round values", frame
+    expected = set(range(1, int(expected_rounds) + 1))
+    observed = set(round_values.tolist())
+    missing_rounds = sorted(expected - observed)
+    unexpected = sorted(observed - expected - {0})
+    if missing_rounds:
+        return False, f"missing rounds: {missing_rounds[:10]}", frame
+    if unexpected:
+        return False, f"unexpected rounds: {unexpected[:10]}", frame
+    selected = round_values.isin(expected | {0})
+    accuracy = pd.to_numeric(frame.loc[selected, "server_accuracy"], errors="coerce")
+    if accuracy.isna().any() or not np.isfinite(accuracy.to_numpy()).all():
+        return False, "server accuracy must be finite", frame
+    raw_loss = frame.loc[selected, "server_loss"]
+    numeric_loss = pd.to_numeric(raw_loss, errors="coerce")
+    invalid_loss = raw_loss.notna() & numeric_loss.isna()
+    if invalid_loss.any():
+        return False, "server loss contains non-numeric values", frame
+    if spec is not None and (
+        str(spec.get("attack_group")) == "targeted"
+        or str(spec.get("attack")) in TARGETED_ATTACKS
+        or str(spec.get("attack")) == LABEL_FLIP_ALL_REVERSE
+    ):
+        asr = _objective_asr_series(frame.loc[selected], spec)
+        if asr is None:
+            return False, "attack-objective ASR must be finite or exactly recoverable", frame
+    if spec is not None and spec.get("pairing_mode") == "strict":
+        required_pairing = {
+            "fit_trial_plan_hash", "fit_planned_partition_ids_json",
+            "fit_completed_partition_ids_json", "fit_fit_seed_digest",
+        }
+        missing_pairing = sorted(required_pairing.difference(frame.columns))
+        if missing_pairing:
+            return False, f"missing strict-pairing columns: {','.join(missing_pairing)}", frame
+        expected_hash = str(spec.get("trial_plan_hash", ""))
+        fit_rows = frame[round_values.isin(expected)].copy()
+        if set(fit_rows["fit_trial_plan_hash"].astype(str)) != {expected_hash}:
+            return False, "trial-plan hash differs from experiment spec", frame
+        plan = TrialPlanV1.load(str(spec.get("trial_plan_path", "")))
+        for _, row in fit_rows.iterrows():
+            round_plan = plan.round(int(row["round"]))
+            planned = json.loads(str(row["fit_planned_partition_ids_json"]))
+            completed = json.loads(str(row["fit_completed_partition_ids_json"]))
+            if planned != list(round_plan["partition_ids"]):
+                return False, f"planned sequence differs at round {int(row['round'])}", frame
+            if completed != planned:
+                return False, f"completed sequence differs at round {int(row['round'])}", frame
+            if str(row["fit_fit_seed_digest"]) != str(round_plan["fit_seed_digest"]):
+                return False, f"fit random stream differs at round {int(row['round'])}", frame
+    return True, "complete", frame
+
+
+def _write_current_summary(
+    specs: Sequence[Dict[str, Any]],
+    args: argparse.Namespace,
+    output: Path,
+    rounds_dir: Path,
+) -> pd.DataFrame:
+    rows = []
+    for base_spec in specs:
+        spec = dict(base_spec)
+        path = rounds_dir / f"{run_id(spec)}.csv"
+        if not path.exists():
+            continue
+        valid, _, frame = validate_round_cache(path, _expected_rounds(args), spec)
+        if valid and frame is not None:
+            rows.append(summarize_run(frame, spec))
+    summary = pd.DataFrame(rows)
+    _atomic_write_csv(summary, output / "periodic_attack_runs.csv")
+    return summary
+
+
+def _archive_invalid_round_cache(path: Path) -> Path:
+    return _archive_round_cache(path, "incomplete")
+
+
+def _archive_round_cache(path: Path, label: str) -> Path:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archived = path.with_name(f"{path.stem}.{label}-{timestamp}{path.suffix}")
+    counter = 1
+    while archived.exists():
+        archived = path.with_name(
+            f"{path.stem}.{label}-{timestamp}-{counter}{path.suffix}"
+        )
+        counter += 1
+    os.replace(path, archived)
+    return archived
+
+
+def _write_execution_environment(args: argparse.Namespace, output: Path) -> None:
+    def version(name: str) -> str | None:
+        try:
+            return importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            return None
+
+    payload = {
+        "created_at": _utc_now(),
+        "python": sys.version,
+        "platform": platform.platform(),
+        "packages": {
+            "ray": version("ray"),
+            "flwr": version("flwr"),
+            "torch": version("torch"),
+        },
+        "execution_mode": "spawn_per_spec",
+        "ray_object_store_memory_mb": int(
+            getattr(args, "ray_object_store_memory_mb", 0) or 0
+        ),
+        "ray_min_available_memory_mb": int(
+            getattr(args, "ray_min_available_memory_mb", 0) or 0
+        ),
+        "ray_memory_wait_seconds": float(
+            getattr(args, "ray_memory_wait_seconds", 120.0)
+        ),
+        "max_spec_retries": int(getattr(args, "max_spec_retries", 1)),
+    }
+    _atomic_write_json(payload, output / "execution_environment.json")
+
+
+def _classify_child_failure(
+    child_pid: int | None,
+    exit_code: int,
+    current_status: Dict[str, Any],
+    cache_reason: str,
+) -> Tuple[str, str, str | None]:
+    ray_session = _find_ray_session(child_pid)
+    if ray_session:
+        raylet_error = Path(ray_session) / "logs" / "raylet.err"
+        if raylet_error.exists():
+            text = raylet_error.read_text(encoding="utf-8", errors="replace")
+            if "GetLastError() = 1450" in text or "CreateFileMapping() failed" in text:
+                return (
+                    "ray_object_store_resource",
+                    "Ray shared-memory mapping failed with Windows error 1450",
+                    ray_session,
+                )
+    if current_status.get("error_type"):
+        return (
+            str(current_status["error_type"]),
+            str(current_status.get("error_summary") or cache_reason),
+            ray_session or current_status.get("ray_session"),
+        )
+    if exit_code == 0:
+        return "invalid_round_output", cache_reason, ray_session
+    return (
+        "native_child_exit",
+        f"child exited with code {exit_code}; round output: {cache_reason}",
+        ray_session,
+    )
+
+
+def _find_ray_session(driver_pid: int | None) -> str | None:
+    if not driver_pid:
+        return None
+    root = Path(tempfile.gettempdir()) / "ray"
+    candidates = list(root.glob(f"session_*_{int(driver_pid)}")) if root.exists() else []
+    if not candidates:
+        return None
+    return str(max(candidates, key=lambda path: path.stat().st_mtime))
+
+
+def _last_logged_round(path: Path, start_offset: int = 0) -> int:
+    if not path.exists():
+        return 0
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(min(max(0, int(start_offset)), path.stat().st_size))
+            content = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return 0
+    matches = [int(value) for value in re.findall(r"\bRound (\d+) (?:evaluate|aggregation done)", content)]
+    return max(matches, default=0)
+
+
+def _read_status(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_status(path: Path, payload: Dict[str, Any]) -> None:
+    current = _read_status(path)
+    current.update(payload)
+    _atomic_write_json(current, path)
+
+
+def _atomic_write_json(payload: Dict[str, Any], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _atomic_write_csv(frame: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        frame.to_csv(temporary, index=False)
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def write_experiment_manifest(specs: Sequence[Dict[str, Any]], output: Path) -> None:
@@ -629,6 +1325,11 @@ def write_experiment_manifest(specs: Sequence[Dict[str, Any]], output: Path) -> 
 def select_matrix(matrix: Sequence[Dict[str, Any]], args: argparse.Namespace) -> List[Dict[str, Any]]:
     """Apply explicit low-cost screening filters without changing benchmark definitions."""
     selected = list(matrix)
+    if "label_flip" in _csv_values(getattr(args, "attacks", "")):
+        raise ValueError(
+            "Attack 'label_flip' was removed; use 'label_flip_targeted' or "
+            "'label_flip_all_reverse'."
+        )
     filters = {
         "attack": _csv_values(getattr(args, "attacks", "")),
         "defense": _csv_values(getattr(args, "defenses", "")),
@@ -650,15 +1351,34 @@ def select_matrix(matrix: Sequence[Dict[str, Any]], args: argparse.Namespace) ->
         ]
     if not selected:
         raise ValueError("Experiment filters selected no runs")
-    return [{
-        **spec,
-        "attack_start_round": 3 if args.smoke else int(args.attack_start_round),
-        "attack_end_round": int(args.attack_end_round),
-        "partition": args.partition,
-        "dirichlet_alpha": float(args.dirichlet_alpha),
-        "participation_rate": 1.0 if args.smoke else float(args.participation_rate),
-        "boost_factor": float(args.boost_factor),
-    } for spec in selected]
+    normalized = []
+    for spec in selected:
+        row = {
+            **spec,
+            "attack_start_round": 3 if args.smoke else int(args.attack_start_round),
+            "attack_end_round": int(args.attack_end_round),
+            "partition": args.partition,
+            "dirichlet_alpha": float(args.dirichlet_alpha),
+            "participation_rate": 1.0 if args.smoke else float(args.participation_rate),
+        }
+        if spec["attack"] in LABEL_FLIP_ATTACKS:
+            row["label_flip_poison_fraction"] = float(
+                getattr(args, "label_flip_poison_fraction", 1.0)
+            )
+            if spec["attack"] == LABEL_FLIP_TARGETED:
+                row.update({
+                    "label_flip_source_label": int(
+                        getattr(args, "label_flip_source_label", 5)
+                    ),
+                    "label_flip_target_label": int(
+                        getattr(args, "label_flip_target_label", 3)
+                    ),
+                })
+            row.pop("boost_factor", None)
+        else:
+            row["boost_factor"] = float(args.boost_factor)
+        normalized.append(row)
+    return normalized
 
 
 def _csv_values(raw: str) -> set[str]:
@@ -684,7 +1404,16 @@ def validate_sampling_manifests(
     frames = [pd.read_csv(path) for path in paths]
     gates: List[Dict[str, Any]] = []
     per_run_match = True
+    strict_seen = False
+    plan_hash_match = True
+    plan_sequence_match = True
+    completed_sequence_match = True
+    random_stream_match = True
+    foolsgold_history_match = True
+    foolsgold_seen = False
     schedules: Dict[Tuple[Any, ...], Dict[int, str]] = {}
+    schedules_by_plan: Dict[str, Dict[int, str]] = {}
+    seeds_by_plan: Dict[str, Dict[int, str]] = {}
     for frame in frames:
         if frame.empty or "fit_selected_partition_ids" not in frame:
             per_run_match = False
@@ -698,11 +1427,87 @@ def validate_sampling_manifests(
             == fit["fit_planned_partition_ids"].astype(str)
         ).all())
         first = frame.iloc[0]
-        key = (first.get("attack"), first.get("period"), first.get("malicious_fraction"), first.get("seed"))
-        schedule = dict(zip(fit["round"].astype(int), fit["fit_selected_partition_ids"].astype(str)))
-        previous = schedules.setdefault(key, schedule)
-        if previous != schedule:
-            per_run_match = False
+        pairing_mode = str(first.get("pairing_mode", "legacy"))
+        schedule = dict(zip(
+            fit["round"].astype(int),
+            fit["fit_selected_partition_ids"].astype(str),
+        ))
+        # Legacy runs have no TrialPlan identity, so their condition tuple is
+        # the only available cross-defense pairing key.  Strict runs must not
+        # use that tuple: attack-specific FedAvg-clean counterfactuals all have
+        # attack=none in their round files while intentionally retaining
+        # different owner-plan hashes.  Comparing those unrelated clean plans
+        # creates a false mismatch.  Strict cross-run equality is checked below
+        # exclusively within each cryptographically bound plan hash.
+        if pairing_mode != "strict":
+            key = (
+                first.get("attack"), first.get("period"),
+                first.get("malicious_fraction"), first.get("seed"),
+            )
+            previous = schedules.setdefault(key, schedule)
+            if previous != schedule:
+                per_run_match = False
+        if pairing_mode == "strict":
+            strict_seen = True
+            required = {
+                "trial_plan_hash", "trial_plan_path", "fit_trial_plan_hash",
+                "fit_planned_partition_ids_json", "fit_completed_partition_ids_json",
+                "fit_fit_seed_digest",
+            }
+            if not required.issubset(frame.columns):
+                plan_hash_match = plan_sequence_match = False
+                completed_sequence_match = random_stream_match = False
+                continue
+            plan_hash = str(first["trial_plan_hash"])
+            try:
+                plan = TrialPlanV1.load(str(first["trial_plan_path"]))
+            except Exception:
+                plan_hash_match = False
+                continue
+            fit = frame[pd.to_numeric(frame["round"], errors="coerce") >= 1]
+            plan_hash_match &= (
+                plan.trial_plan_hash == plan_hash
+                and set(fit["fit_trial_plan_hash"].astype(str)) == {plan_hash}
+            )
+            plan_schedule: Dict[int, str] = {}
+            seed_schedule: Dict[int, str] = {}
+            for _, row in fit.iterrows():
+                rnd = int(row["round"])
+                expected = list(plan.round(rnd)["partition_ids"])
+                try:
+                    planned = json.loads(str(row["fit_planned_partition_ids_json"]))
+                    completed = json.loads(str(row["fit_completed_partition_ids_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    plan_sequence_match = completed_sequence_match = False
+                    continue
+                plan_sequence_match &= planned == expected
+                completed_sequence_match &= completed == planned
+                random_stream_match &= (
+                    str(row["fit_fit_seed_digest"])
+                    == str(plan.round(rnd)["fit_seed_digest"])
+                )
+                plan_schedule[rnd] = json.dumps(planned, separators=(",", ":"))
+                seed_schedule[rnd] = str(row["fit_fit_seed_digest"])
+            if str(first.get("defense")) == "foolsgold":
+                foolsgold_seen = True
+                if "fit_foolsgold_history_partition_ids_json" not in fit:
+                    foolsgold_history_match = False
+                else:
+                    appeared: set[str] = set()
+                    for _, row in fit.sort_values("round").iterrows():
+                        appeared.update(str(value) for value in plan.round(int(row["round"]))["partition_ids"])
+                        try:
+                            history = set(json.loads(str(
+                                row["fit_foolsgold_history_partition_ids_json"]
+                            )))
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            foolsgold_history_match = False
+                            continue
+                        foolsgold_history_match &= history == appeared
+            previous_plan = schedules_by_plan.setdefault(plan_hash, plan_schedule)
+            previous_seeds = seeds_by_plan.setdefault(plan_hash, seed_schedule)
+            plan_sequence_match &= previous_plan == plan_schedule
+            random_stream_match &= previous_seeds == seed_schedule
     gates.append(_gate("selected_partition_ids_match", per_run_match, per_run_match, "true"))
 
     hashes_by_seed: Dict[int, set[str]] = {}
@@ -720,6 +1525,63 @@ def validate_sampling_manifests(
     gates.append(_gate("data_manifest_hash_match", data_match,
                        {seed: len(values) for seed, values in hashes_by_seed.items()},
                        "one hash per seed"))
+    if strict_seen:
+        gates.extend([
+            _gate("trial_plan_hash_match", plan_hash_match, plan_hash_match, "true"),
+            _gate("trial_plan_sequence_match", plan_sequence_match, plan_sequence_match, "true"),
+            _gate(
+                "completed_sequence_equals_plan", completed_sequence_match,
+                completed_sequence_match, "true",
+            ),
+            _gate("client_random_stream_match", random_stream_match, random_stream_match, "true"),
+        ])
+
+        pairing_manifests = list(raw_dir.glob("*_pairing_manifest.json"))
+        if expected_ids is not None:
+            pairing_manifests = [
+                path for path in pairing_manifests
+                if path.name.removesuffix("_pairing_manifest.json") in expected_ids
+            ]
+        malicious_by_plan: Dict[str, set[str]] = {}
+        data_by_plan: Dict[str, set[str]] = {}
+        initial_by_plan: Dict[str, set[str]] = {}
+        for path in pairing_manifests:
+            with path.open(encoding="utf-8") as handle:
+                manifest = json.load(handle)
+            plan_hash = str(manifest.get("trial_plan_hash", ""))
+            malicious_by_plan.setdefault(plan_hash, set()).add(
+                str(manifest.get("malicious_identity_sha256", ""))
+            )
+            data_by_plan.setdefault(plan_hash, set()).add(
+                str(manifest.get("data_manifest_sha256", ""))
+            )
+            initial_by_plan.setdefault(plan_hash, set()).add(
+                str(manifest.get("initial_model_sha256", ""))
+            )
+        expected_plan_hashes = set(schedules_by_plan)
+        manifests_complete = expected_plan_hashes == set(malicious_by_plan)
+        malicious_match = manifests_complete and all(
+            len(values) == 1 and "" not in values for values in malicious_by_plan.values()
+        )
+        runtime_data_match = manifests_complete and all(
+            len(values) == 1 and "" not in values for values in data_by_plan.values()
+        )
+        initial_match = manifests_complete and all(
+            len(values) == 1 and "" not in values for values in initial_by_plan.values()
+        )
+        gates.extend([
+            _gate("malicious_identity_match", malicious_match,
+                  {key: len(value) for key, value in malicious_by_plan.items()}, "one per plan"),
+            _gate("paired_data_manifest_match", runtime_data_match,
+                  {key: len(value) for key, value in data_by_plan.items()}, "one per plan"),
+            _gate("initial_model_match", initial_match,
+                  {key: len(value) for key, value in initial_by_plan.items()}, "one per plan"),
+        ])
+        if foolsgold_seen:
+            gates.append(_gate(
+                "foolsgold_history_equals_planned_union",
+                foolsgold_history_match, foolsgold_history_match, "true",
+            ))
     return gates
 
 
@@ -788,6 +1650,12 @@ def validate_smoke(summary: pd.DataFrame, rounds_dir: Path, raw_dir: Path) -> Li
         freq = freq_rows.iloc[0]
         fallback = float(freq.get("freqfed_fallback", math.nan))
         gates.append(_gate("freqfed_fallback_rate", np.isfinite(fallback) and fallback <= 0.25,
+                           fallback, "<= 0.25"))
+    clean_freq_rows = summary[(summary["attack"] == "none") & (summary["defense"] == "freqfed")]
+    if not clean_freq_rows.empty:
+        fallback = float(clean_freq_rows.iloc[0].get("freqfed_fallback", math.nan))
+        gates.append(_gate("freqfed_clean_fallback_rate",
+                           np.isfinite(fallback) and fallback <= 0.25,
                            fallback, "<= 0.25"))
     expected_ids = [str(row["run_id"]) for _, row in summary.iterrows()]
     unique_logs = all(
@@ -884,20 +1752,29 @@ def clean_baselines(matrix: Sequence[Dict[str, Any]], smoke: bool) -> List[Dict[
     defense_names = ["fedavg"]
     if "rtc_full" in selected_names:
         defense_names.append("rtc_full")
-    if not smoke:
+    if (not smoke) or ("freqfed" in selected_names):
         defense_names.extend(
             name for name in ("freqfed", "fltrust") if name in selected_names
         )
     rows = []
     definitions = {**DEFENSES, **ABLATIONS}
+    clean_condition_keys = (
+        "partition", "dirichlet_alpha", "participation_rate",
+        "attack_start_round", "attack_end_round",
+    )
     conditions = {
-        tuple((key, spec.get(key)) for key in (*CONDITION_KEYS, "attack_start_round", "attack_end_round"))
+        tuple((key, spec.get(key)) for key in clean_condition_keys)
         for spec in matrix
     }
+    representative_boost = next(
+        (float(spec["boost_factor"]) for spec in matrix if "boost_factor" in spec),
+        10.0,
+    )
     for seed, defense_name, condition_items in itertools.product(seeds, defense_names, conditions):
         defense_type, custom = definitions[defense_name]
         rows.append({**dict(condition_items), "attack": "none", "period": "clean", "on_rounds": 1,
                      "off_rounds": 0, "malicious_fraction": 0.0, "seed": seed,
+                     "boost_factor": representative_boost,
                      "benchmark_version": BENCHMARK_VERSION,
                      "defense": defense_name, "defense_type": defense_type,
                      "custom_params": dict(custom)})
@@ -949,7 +1826,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Periodic attack defense benchmark")
     parser.add_argument("--config", default="config/config.yaml")
     parser.add_argument("--output", default="logs/periodic_attack_v2")
-    parser.add_argument("--mode", choices=("main", "ablation", "untargeted", "all"), default="all")
+    parser.add_argument(
+        "--mode",
+        choices=("main", "ablation", "untargeted", "mpaf", "all"),
+        default="all",
+    )
     parser.add_argument("--smoke", action="store_true", help="Run a 6-round single-condition matrix")
     parser.add_argument("--rerun", action="store_true")
     parser.add_argument("--skip-clean", action="store_true", help="Run attacked screening cells only")
@@ -965,11 +1846,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--partition", choices=("iid", "non_iid", "dirichlet"), default="iid")
     parser.add_argument("--dirichlet-alpha", type=float, default=0.5)
     parser.add_argument("--boost-factor", type=float, default=10.0)
+    parser.add_argument("--label-flip-source-label", type=int, default=5)
+    parser.add_argument("--label-flip-target-label", type=int, default=3)
+    parser.add_argument("--label-flip-poison-fraction", type=float, default=1.0)
     parser.add_argument("--attack-start-round", type=int, default=11)
     parser.add_argument("--attack-end-round", type=int, default=-1)
     parser.add_argument("--max-client-samples", type=int, default=0)
     parser.add_argument("--max-test-samples", type=int, default=0)
-    return parser.parse_args()
+    parser.add_argument("--ray-object-store-memory-mb", type=int, default=3072)
+    parser.add_argument("--ray-min-available-memory-mb", type=int, default=10240)
+    parser.add_argument("--ray-memory-wait-seconds", type=float, default=120.0)
+    parser.add_argument("--max-spec-retries", type=int, default=1)
+    parser.add_argument(
+        "--pairing-mode", choices=("strict", "legacy"), default="strict",
+    )
+    parser.add_argument(
+        "--sampling-protocol",
+        choices=("principal_uniform", "endpoint_uniform"),
+        default="principal_uniform",
+    )
+    args = parser.parse_args()
+    if min(
+        args.ray_object_store_memory_mb,
+        args.ray_min_available_memory_mb,
+        args.ray_memory_wait_seconds,
+        args.max_spec_retries,
+    ) < 0:
+        parser.error("Ray resource and retry parameters must be non-negative")
+    if not 0.0 <= args.label_flip_poison_fraction <= 1.0:
+        parser.error("--label-flip-poison-fraction must be in [0, 1]")
+    return args
 
 
 if __name__ == "__main__":

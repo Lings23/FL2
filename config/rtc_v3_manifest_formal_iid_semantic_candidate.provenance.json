@@ -1,0 +1,12 @@
+{
+  "artifact_kind": "rtc_v3_semantic_frozen_candidate_provenance_v1",
+  "content_hash": "290d8c82c1fde8f0eb30f0588956b2e847ee97d8557708b1aecf0573266cd7c5",
+  "candidate_path": "D:\\workspace\\FL2\\config\\rtc_v3_manifest_formal_iid_semantic_candidate.json",
+  "candidate_sha256": "7ef9a07ffff6598d5c9a306d4eb37d0fdba622e0d28370a032019375a41e0bc6",
+  "source_manifest_path": "D:\\workspace\\FL2\\config\\rtc_v3_manifest_formal_iid_semantic_candidate.predev.v2.json",
+  "source_manifest_sha256": "a58558043192c0e4cc747cda5ed5c8c74963dfec03b13f5cd0716639d6c04e2f",
+  "development_evidence_path": "D:\\workspace\\FL2\\logs\\rtc_v3_semantic_development_evidence.v2.json",
+  "development_evidence_sha256": "31a9382dba1ec46291c905c6e37cf052514a5ba7fb29361a66da9420bfef6431",
+  "decision": "freeze_unchanged",
+  "promotion_attestation_generated": false
+}

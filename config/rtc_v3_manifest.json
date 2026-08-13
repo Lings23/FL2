@@ -1,0 +1,102 @@
+{
+  "schema_version": "rtc_v3.calibration.v1",
+  "rtc_version": "rtc_v3_candidate",
+  "profile": "bootstrap_runtime_smoke",
+  "model_metadata_hash": "d47436f9b370c43d5bdba6be9175e93e2df59a10468d98838134c8d46f76f098",
+  "server_optimizer": "fedavg",
+  "validated_mass_policy": "unit_principal",
+  "principal_mapping_version": "v1",
+  "clip_lower": 0.0,
+  "clip_upper": 1000000000000.0,
+  "resolutions": [
+    "full"
+  ],
+  "residual_scales": {
+    "full": 1.0
+  },
+  "server_windows": [
+    1,
+    8
+  ],
+  "server_budgets": {
+    "full": {
+      "1": {
+        "anchor": 1000000000000.0,
+        "residual": 1000000000000.0,
+        "total": 1000000000000.0
+      },
+      "8": {
+        "anchor": 1000000000000.0,
+        "residual": 1000000000000.0,
+        "total": 1000000000000.0
+      }
+    }
+  },
+  "principal_windows": [
+    1,
+    4
+  ],
+  "principal_betas": {
+    "full": {
+      "1": 1000000000000.0,
+      "4": 1000000000000.0
+    }
+  },
+  "stable_cones": {
+    "enabled": true,
+    "dimension": 256,
+    "seed": 42,
+    "sketch_algorithm_version": "splitmix64_v1",
+    "coordinate_median_block_size": 262144,
+    "max_prototypes": 16,
+    "match_threshold": 0.85,
+    "momentum": 0.8,
+    "retirement_rounds": 16
+  },
+  "cone_budgets": {
+    "full": {
+      "1": 1000000000000.0,
+      "8": 1000000000000.0
+    }
+  },
+  "cumulative": {
+    "enabled": true,
+    "resolutions": {
+      "full": {
+        "scale_center": 1.0,
+        "scale_lower": 1e-12,
+        "scale_upper": 1000000000000.0,
+        "kappa": 1000000000000.0,
+        "threshold": 1000000000000.0,
+        "eta": 0.0,
+        "q_min": 1.0
+      }
+    }
+  },
+  "direction_persistence": {
+    "enabled": true,
+    "resolutions": {
+      "full": {
+        "z_threshold": 1000000000000.0,
+        "history_length": 4,
+        "min_matches": 3,
+        "server_window": 8,
+        "principal_window": 4,
+        "server_usage_threshold": 1000000000000.0,
+        "principal_usage_threshold": 1000000000000.0,
+        "q_value": 1.0
+      }
+    }
+  },
+  "metadata": {
+    "artifact_kind": "rtc_v3_bootstrap",
+    "formal_evaluation_ready": false,
+    "warning": "Runtime smoke only. Replace with a manifest calibrated from independent clean seeds before reporting defense results.",
+    "source_config": "D:\\workspace\\FL2\\config\\config.yaml",
+    "dataset": "cifar10",
+    "model_architecture": "resnet18",
+    "num_classes": 10,
+    "sketch_algorithm_version": "splitmix64_v1"
+  },
+  "content_hash": "5cb1433fd02295d4488e1be5b42b7e92b731c94f2066f6a9a1de57e6c80d7f7e"
+}

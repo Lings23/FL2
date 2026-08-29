@@ -7,13 +7,13 @@ cover both attack objectives:
 * untargeted: all-label reverse, Byzantine, and Gaussian noise;
 * default schedule: continuous_1_0;
 * temporal ablations use short_1_1 and long_3_3 through the periodic profile;
-* defenses: FedAvg and either the compatible RTC-v2 or manifest-bound RTC-v3.
+* defenses: FedAvg and the promoted manifest-bound RTC-v3.
 
 With one seed this produces 24 attacked runs plus two clean utility baselines.
 The report is descriptive; it does not claim statistical significance.
 
-``rtc_full`` intentionally retains its RTC-v2 meaning.  Select ``rtc_v3`` and
-provide a frozen calibration manifest to run the isolated RTC-v3 candidate.
+``rtc_full`` and ``rtc_v3`` both select the promoted RTC-v3 implementation.
+``rtc_v2_legacy`` remains available only through historical/explicit entrypoints.
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ from experiments.periodic_attack import (
     UNTARGETED_ATTACKS,
     _run_specs,
     _objective_asr_series,
+    RTC_V3_PROMOTED_MANIFEST,
     add_accuracy_drop,
     add_accuracy_drop_auc,
     attack_active,
@@ -64,7 +65,7 @@ DEFAULT_ATTACKS = tuple((*TARGETED_ATTACKS, *UNTARGETED_ATTACKS))
 DEFAULT_PERIODS = ("continuous_1_0",)
 DEFAULT_DEFENSES = ("fedavg", "rtc_full")
 RTC_V3_DEFENSE = "rtc_v3"
-RTC_V3_DEFENSE_TYPE = "rtc_v3_candidate"
+RTC_V3_DEFENSE_TYPE = "rtc_full"
 RTC_COMPARISON_DEFENSES = ("rtc_full", RTC_V3_DEFENSE)
 RTC_V3_SEMANTIC_ABLATIONS = (
     "semantic_observe",
@@ -72,6 +73,7 @@ RTC_V3_SEMANTIC_ABLATIONS = (
     "semantic_temporal",
     "semantic_exposure",
 )
+RTC_V3_FAMILY = {"rtc_full", RTC_V3_DEFENSE, *RTC_V3_SEMANTIC_ABLATIONS}
 
 
 def build_comparison_matrix(
@@ -84,6 +86,7 @@ def build_comparison_matrix(
     partition: str = "iid",
     dirichlet_alpha: float = 0.5,
     participation_rate: float = 0.5,
+    num_clients: int = 20,
     boost_factor: float = 10.0,
     label_flip_source_label: int = 5,
     label_flip_target_label: int = 3,
@@ -98,12 +101,11 @@ def build_comparison_matrix(
             "Attack 'label_flip' was removed; use 'label_flip_targeted' or "
             "'label_flip_all_reverse'."
         )
-    if (
-        set(defenses).intersection({RTC_V3_DEFENSE, *RTC_V3_SEMANTIC_ABLATIONS})
-        and rtc_v3_custom_params is None
-    ):
-        raise ValueError(
-            "rtc_v3_custom_params is required when defenses includes rtc_v3"
+    if set(defenses).intersection(RTC_V3_FAMILY) and rtc_v3_custom_params is None:
+        rtc_v3_custom_params = build_rtc_v3_custom_params(
+            manifest_path=RTC_V3_PROMOTED_MANIFEST,
+            implementation_phase=6,
+            num_clients=num_clients,
         )
     unknown_attacks = set(attacks) - set(DEFAULT_ATTACKS)
     unknown_periods = set(periods) - set(PERIODS)
@@ -130,7 +132,7 @@ def build_comparison_matrix(
             for defense_name in defenses:
                 defense_type, custom_params = definitions[defense_name]
                 row = {
-                    "benchmark_version": 3 if defense_name == RTC_V3_DEFENSE else 2,
+                    "benchmark_version": 3,
                     "attack_group": group_by_attack[attack],
                     "attack": attack,
                     "period": period_name,
@@ -304,8 +306,9 @@ def validate_execution(
     v3_weight_mass = 0.0
     v3_metrics_present = True
     v3_manifest_match = True
-    has_v2 = any(spec["defense"] == "rtc_full" for spec in specs)
-    has_v3 = any(spec["defense"] == RTC_V3_DEFENSE for spec in specs)
+    has_v2 = any(spec["defense"] == "rtc_v2_legacy" for spec in specs)
+    rtc_v3_family = RTC_V3_FAMILY
+    has_v3 = any(spec["defense"] in rtc_v3_family for spec in specs)
     for spec in specs:
         path = paths.get(run_id(spec))
         if path is None:
@@ -336,7 +339,7 @@ def validate_execution(
             ))
         )
         schedules_match &= bool((planned == expected_active).all())
-        if spec["defense"] == "rtc_full":
+        if spec["defense"] == "rtc_v2_legacy":
             cap_violation = max(cap_violation, _finite_max(
                 frame.get("fit_rtc_max_weight_cap_violation")
             ))
@@ -346,7 +349,7 @@ def validate_execution(
             weight_mass = max(weight_mass, _finite_max(
                 frame.get("fit_rtc_aggregation_weight_sum")
             ))
-        elif spec["defense"] == RTC_V3_DEFENSE:
+        elif spec["defense"] in rtc_v3_family:
             required_v3_columns = {
                 "fit_rtc_v3_calibration_hash",
                 "fit_rtc_v3_max_constraint_violation",
@@ -423,7 +426,7 @@ def run_comparison(args: argparse.Namespace) -> pd.DataFrame:
     )
     defenses = _csv_subset(getattr(args, "defenses", ",".join(DEFAULT_DEFENSES)), definitions)
     rtc_v3_custom_params = None
-    if set(defenses).intersection({RTC_V3_DEFENSE, *RTC_V3_SEMANTIC_ABLATIONS}):
+    if set(defenses).intersection(RTC_V3_FAMILY):
         rtc_v3_custom_params = build_rtc_v3_custom_params(
             manifest_path=getattr(args, "rtc_v3_manifest", ""),
             implementation_phase=getattr(args, "rtc_v3_phase", 6),
@@ -440,6 +443,7 @@ def run_comparison(args: argparse.Namespace) -> pd.DataFrame:
         partition=args.partition,
         dirichlet_alpha=args.dirichlet_alpha,
         participation_rate=args.participation_rate,
+        num_clients=args.num_clients,
         boost_factor=args.boost_factor,
         label_flip_source_label=args.label_flip_source_label,
         label_flip_target_label=args.label_flip_target_label,
@@ -505,8 +509,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--periods", default=",".join(DEFAULT_PERIODS))
     parser.add_argument("--defenses", default=",".join(DEFAULT_DEFENSES))
     parser.add_argument(
-        "--rtc-v3-manifest", default="",
-        help="Frozen RTC-v3 calibration manifest; required when --defenses includes rtc_v3",
+        "--rtc-v3-manifest", default=str(RTC_V3_PROMOTED_MANIFEST),
+        help="RTC-v3 manifest (defaults to the engineering-promoted manifest)",
     )
     parser.add_argument(
         "--rtc-v3-phase", type=int, default=6, choices=range(1, 7),
@@ -581,9 +585,7 @@ def build_rtc_v3_custom_params(
 ) -> Dict[str, Any]:
     """Validate and materialize the immutable RTC-v3 experiment contract."""
     if not str(manifest_path).strip():
-        raise ValueError(
-            "--rtc-v3-manifest is required when --defenses includes rtc_v3"
-        )
+        manifest_path = RTC_V3_PROMOTED_MANIFEST
     if not 1 <= int(implementation_phase) <= 6:
         raise ValueError("rtc_v3 implementation phase must be between 1 and 6")
     if int(num_clients) <= 0:
@@ -661,6 +663,10 @@ def _defense_definitions(
         **ABLATIONS,
     }
     if rtc_v3_custom_params is not None:
+        definitions["rtc_full"] = (
+            RTC_V3_DEFENSE_TYPE,
+            dict(rtc_v3_custom_params),
+        )
         definitions[RTC_V3_DEFENSE] = (
             RTC_V3_DEFENSE_TYPE,
             dict(rtc_v3_custom_params),

@@ -38,8 +38,11 @@ from flwr.common import (
 from flwr.server.client_proxy import ClientProxy
 from flwr.server.strategy import Strategy
 
-from config.config_loader import StrategyConfig, DefenseConfig
+from config.config_loader import AttackConfig, StrategyConfig, DefenseConfig
+from attacks.coordinator import AttackCoordinator
+from attacks.spec import attack_contract_payload
 from defenses.defense_base import BaseDefense, get_defense, UpdateList
+from defenses.rtc.sketch import SPLITMIX64_V1, signed_count_sketch
 from experiments.trial_plan import (
     TrialPlanError,
     TrialPlanV1,
@@ -50,6 +53,10 @@ from experiments.trial_plan import (
 
 logger = logging.getLogger(__name__)
 
+AGGREGATE_UPDATE_SKETCH_VERSION = "aggregate_update_countsketch_v1"
+AGGREGATE_UPDATE_SKETCH_DIMENSION = 256
+AGGREGATE_UPDATE_SKETCH_SEED = 731_993
+
 CLIENT_METADATA_KEYS = {
     "client_id",
     "is_malicious",
@@ -57,9 +64,50 @@ CLIENT_METADATA_KEYS = {
     "label_flip_eligible_examples",
     "label_flip_poisoned_examples",
     "label_flip_total_examples",
+    "dba_fragment_index",
+    "dba_poisoned_examples",
+    "dba_total_examples",
+    "dba_update_scaled",
+    "dba_scaling_mode",
+    "model_replacement_scaling_mode",
     "fit_seed",
     "attack_seed",
 }
+
+
+def _ndarrays_are_finite(values: NDArrays) -> bool:
+    return all(
+        not np.issubdtype(np.asarray(value).dtype, np.floating)
+        or bool(np.isfinite(value).all())
+        for value in values
+    )
+
+
+def aggregate_update_evidence(
+    previous: NDArrays, aggregated: NDArrays
+) -> tuple[float, np.ndarray]:
+    """Return exact update norm and a fixed comparable CountSketch direction."""
+    delta = [
+        np.asarray(value, dtype=np.float64)
+        - np.asarray(reference, dtype=np.float64)
+        for value, reference in zip(aggregated, previous)
+        if np.issubdtype(np.asarray(reference).dtype, np.floating)
+    ]
+    norm = float(
+        np.sqrt(
+            sum(
+                float(np.dot(value.reshape(-1), value.reshape(-1)))
+                for value in delta
+            )
+        )
+    )
+    sketch = signed_count_sketch(
+        delta,
+        dimension=AGGREGATE_UPDATE_SKETCH_DIMENSION,
+        seed=AGGREGATE_UPDATE_SKETCH_SEED,
+        algorithm=SPLITMIX64_V1,
+    )
+    return norm, sketch
 
 
 # ── Metrics aggregation helpers ───────────────────────────────────────────────
@@ -74,6 +122,12 @@ def _weighted_avg_metrics(results: List[Tuple[int, Dict]]) -> Dict:
         for k, v in m.items():
             if k in CLIENT_METADATA_KEYS:
                 continue
+            if not isinstance(
+                v, (int, float, bool, np.integer, np.floating, np.bool_)
+            ):
+                continue
+            if not np.isfinite(float(v)):
+                raise FloatingPointError(f"Non-finite client metric: {k}={v!r}")
             agg[k] = agg.get(k, 0.0) + (n / total) * float(v)
     return agg
 
@@ -118,6 +172,8 @@ class FedSecStrategy(Strategy):
         trial_plan: Optional[TrialPlanV1] = None,
         parameter_roles: Optional[Dict[str, str]] = None,
         parameter_names: Optional[Dict[str, str]] = None,
+        scalable_parameter_indices: Optional[set[int]] = None,
+        attack_cfg: Optional[AttackConfig] = None,
     ):
         self.scfg = strategy_cfg
         self.defense: BaseDefense = get_defense(defense_cfg, num_clients=num_clients)
@@ -142,6 +198,24 @@ class FedSecStrategy(Strategy):
         self.parameter_names = {
             str(key): str(value) for key, value in (parameter_names or {}).items()
         }
+        self.scalable_parameter_indices = (
+            None
+            if scalable_parameter_indices is None
+            else frozenset(int(index) for index in scalable_parameter_indices)
+        )
+        self.attack_cfg = attack_cfg or AttackConfig()
+        self.attack_coordinator = AttackCoordinator(
+            self.attack_cfg,
+            num_clients=num_clients,
+            scalable_parameter_indices=(
+                None
+                if self.scalable_parameter_indices is None
+                else set(self.scalable_parameter_indices)
+            ),
+        )
+        self.attack_contract = attack_contract_payload(
+            self.attack_cfg.type, vars(self.attack_cfg)
+        )
         if self.pairing_mode == "strict" and self.trial_plan is None:
             raise TrialPlanError("Strict pairing requires a TrialPlanV1")
         if self.trial_plan is not None and (
@@ -385,6 +459,11 @@ class FedSecStrategy(Strategy):
             (parameters_to_ndarrays(fit_res.parameters), fit_res.num_examples)
             for _, fit_res in results
         ]
+        received_updates_finite = all(
+            _ndarrays_are_finite(parameters) for parameters, _ in updates
+        )
+        if not received_updates_finite:
+            raise FloatingPointError("Received non-finite client model update")
         selected_partition_ids = [
             self._server_partition_id(client, fit_res)
             for client, fit_res in results
@@ -422,6 +501,24 @@ class FedSecStrategy(Strategy):
                 raise TrialPlanError(
                     f"Round {server_round} clients did not report the planned attack random streams"
                 )
+
+        attack_coordination_started = time.perf_counter()
+        coordinated = self.attack_coordinator.transform(
+            server_round=server_round,
+            updates=updates,
+            global_params=self.global_params,
+            client_ids=client_ids,
+            malicious=malicious_labels,
+            attack_active=attack_active_labels,
+        )
+        updates = list(coordinated.updates)
+        coordinated_updates_finite = all(
+            _ndarrays_are_finite(parameters) for parameters, _ in updates
+        )
+        if not coordinated_updates_finite:
+            raise FloatingPointError("Attack coordination produced a non-finite update")
+        attack_coordinator_metrics = dict(coordinated.metrics)
+        attack_coordination_time = time.perf_counter() - attack_coordination_started
 
         # ── Defense aggregation ───────────────────────────────────────────────
         aggregation_started = time.perf_counter()
@@ -491,6 +588,32 @@ class FedSecStrategy(Strategy):
             aggregated = self._fedadam_step(aggregated)
         # (FedProx changes happen on client side; FedAvg is the default)
 
+        aggregate_parameters_finite = _ndarrays_are_finite(aggregated)
+        if not aggregate_parameters_finite:
+            raise FloatingPointError("Server aggregation produced non-finite parameters")
+
+        running_variances = [
+            np.asarray(aggregated[int(index)], dtype=np.float64)
+            for index, name in self.parameter_names.items()
+            if str(name).endswith("running_var")
+        ]
+        bn_running_var_min = (
+            min(float(np.min(value)) for value in running_variances)
+            if running_variances
+            else None
+        )
+        if bn_running_var_min is not None and bn_running_var_min < 0.0:
+            raise FloatingPointError(
+                f"Server aggregation produced negative BatchNorm running_var: "
+                f"{bn_running_var_min}"
+            )
+
+        aggregate_sketch_started = time.perf_counter()
+        aggregate_update_norm, aggregate_update_sketch = aggregate_update_evidence(
+            self.global_params, aggregated
+        )
+        aggregate_sketch_seconds = time.perf_counter() - aggregate_sketch_started
+
         self.global_params = aggregated
 
         # Aggregate fit metrics
@@ -506,6 +629,17 @@ class FedSecStrategy(Strategy):
             elif isinstance(value, (str, bool)):
                 fit_metrics[key] = value
         fit_metrics.update(self._security_round_metrics(self.last_client_records))
+        for key, value in attack_coordinator_metrics.items():
+            fit_metrics[key] = value
+        fit_metrics["attack_contract_hash"] = str(
+            self.attack_contract["contract_hash"]
+        )
+        fit_metrics["attack_implementation_hash"] = str(
+            self.attack_contract["implementation_hash"]
+        )
+        fit_metrics["attack_coordination_time_seconds"] = float(
+            attack_coordination_time
+        )
         planned_partition_ids = self._planned_partition_ids.get(int(server_round), [])
         fit_metrics["selected_partition_ids"] = ",".join(selected_partition_ids)
         fit_metrics["planned_partition_ids"] = ",".join(planned_partition_ids)
@@ -519,6 +653,23 @@ class FedSecStrategy(Strategy):
             fit_metrics["fit_seed_digest"] = self._fit_seed_digests[int(server_round)]
         fit_metrics["aggregation_time_seconds"] = float(aggregation_time)
         fit_metrics["defense_random_seed"] = int(defense_seed)
+        fit_metrics["aggregate_update_sketch_version"] = AGGREGATE_UPDATE_SKETCH_VERSION
+        fit_metrics["aggregate_update_sketch_algorithm"] = SPLITMIX64_V1
+        fit_metrics["aggregate_update_sketch_dimension"] = AGGREGATE_UPDATE_SKETCH_DIMENSION
+        fit_metrics["aggregate_update_sketch_seed"] = AGGREGATE_UPDATE_SKETCH_SEED
+        fit_metrics["aggregate_update_norm"] = aggregate_update_norm
+        fit_metrics["received_updates_finite"] = received_updates_finite
+        fit_metrics["coordinated_updates_finite"] = coordinated_updates_finite
+        fit_metrics["aggregate_parameters_finite"] = aggregate_parameters_finite
+        if bn_running_var_min is not None:
+            fit_metrics["bn_running_var_min"] = bn_running_var_min
+        fit_metrics["aggregate_update_sketch_json"] = json.dumps(
+            aggregate_update_sketch.astype(np.float32).tolist(),
+            separators=(",", ":"),
+        )
+        fit_metrics["aggregate_update_sketch_seconds"] = float(
+            aggregate_sketch_seconds
+        )
 
         logger.info("Round %d aggregation done (defense=%s)",
                     server_round, self.defense.__class__.__name__)
@@ -619,6 +770,12 @@ class FedSecStrategy(Strategy):
                 "label_flip_total_examples": fit_metrics.get(
                     "label_flip_total_examples"
                 ),
+                "dba_fragment_index": fit_metrics.get("dba_fragment_index"),
+                "dba_poisoned_examples": fit_metrics.get(
+                    "dba_poisoned_examples"
+                ),
+                "dba_total_examples": fit_metrics.get("dba_total_examples"),
+                "dba_update_scaled": fit_metrics.get("dba_update_scaled"),
                 "principal_id": getattr(rtc_record, "principal_id", cid),
                 "validated_mass": getattr(rtc_record, "validated_mass", None),
                 "nominal_mass": getattr(rtc_record, "nominal_mass", None),
@@ -722,8 +879,12 @@ class FedSecStrategy(Strategy):
         for param, reference in zip(params, global_params):
             if not np.issubdtype(reference.dtype, np.floating):
                 continue
-            delta = param.astype(np.float32) - reference.astype(np.float32)
-            total_sq += float(np.sum(delta * delta))
+            delta = param.astype(np.float64) - reference.astype(np.float64)
+            if not np.all(np.isfinite(delta)):
+                return float("inf")
+            total_sq += float(np.dot(delta.reshape(-1), delta.reshape(-1)))
+            if not np.isfinite(total_sq):
+                return float("inf")
         return float(np.sqrt(max(0.0, total_sq)))
 
     @staticmethod
@@ -780,6 +941,36 @@ class FedSecStrategy(Strategy):
                 "label_flip_active_malicious_exposure_rate": (
                     poisoned_exposures / active_malicious_exposures
                     if active_malicious_exposures else 0.0
+                ),
+            })
+
+        dba_records = [
+            record for record in records
+            if record.get("dba_fragment_index") is not None
+            and bool(record.get("attack_active"))
+        ]
+        if dba_records:
+            fragments = sorted(
+                int(float(record["dba_fragment_index"]))
+                for record in dba_records
+            )
+            metrics.update({
+                "dba_active_clients": len(dba_records),
+                "dba_unique_fragments": len(set(fragments)),
+                "dba_fragment_indices_json": json.dumps(
+                    fragments, separators=(",", ":")
+                ),
+                "dba_poisoned_examples": sum(
+                    int(float(record.get("dba_poisoned_examples") or 0))
+                    for record in dba_records
+                ),
+                "dba_total_examples": sum(
+                    int(float(record.get("dba_total_examples") or 0))
+                    for record in dba_records
+                ),
+                "dba_scaled_clients": sum(
+                    bool(record.get("dba_update_scaled"))
+                    for record in dba_records
                 ),
             })
 

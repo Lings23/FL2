@@ -136,12 +136,20 @@ class BaseDefense(ABC):
         back to its original dtype at the end — rounding integer buffers.
         """
         total = sum(n for _, n in updates)
+        if total <= 0 or not np.isfinite(float(total)):
+            raise ValueError("FedAvg requires a positive finite sample count")
         orig_dtypes = [p.dtype for p in updates[0][0]]
 
         # Always accumulate in float32 to avoid int-dtype casting errors
         agg = [np.zeros_like(p, dtype=np.float32) for p in updates[0][0]]
 
         for params, n in updates:
+            if any(
+                np.issubdtype(p.dtype, np.floating)
+                and not np.all(np.isfinite(p))
+                for p in params
+            ):
+                raise FloatingPointError("FedAvg received non-finite client parameters")
             w = n / total
             for i, p in enumerate(params):
                 agg[i] += w * p.astype(np.float32)
@@ -153,6 +161,12 @@ class BaseDefense(ABC):
                 result.append(np.round(arr).astype(dt))
             else:
                 result.append(arr.astype(dt, copy=False))
+        if any(
+            np.issubdtype(value.dtype, np.floating)
+            and not np.all(np.isfinite(value))
+            for value in result
+        ):
+            raise FloatingPointError("FedAvg produced non-finite aggregate parameters")
         return result
 
     @staticmethod
@@ -493,9 +507,12 @@ DEFENSE_REGISTRY: Dict[str, Any] = {
     "fltrust":       FLTrustDefense,
     "foolsgold":     FoolsGoldDefense,
     "freqfed":       FreqFedDefense,
+    # RTC-v2 is retained only for historical reproduction.  All public RTC
+    # aliases resolve to the promoted semantic-temporal-exposure V3 pipeline.
     "time_consistency": "TimeConsistencyDefense",
-    "rtc_full":      "TimeConsistencyDefense",
     "rtc_v2_legacy": "TimeConsistencyDefense",
+    "rtc_full":      "RTCv3Defense",
+    "rtc_v3":        "RTCv3Defense",
     "rtc_v3_candidate": "RTCv3Defense",
     # ── Extension point ────────────────────────────────────────────────────
     # "your_defense": YourDefenseClass,

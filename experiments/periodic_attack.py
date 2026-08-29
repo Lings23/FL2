@@ -67,8 +67,14 @@ BENCHMARK_PERIODS = {
 }
 SEEDS = (42, 43, 44)
 MALICIOUS_FRACTIONS = (0.2, 0.4)
-BENCHMARK_VERSION = 2
-CONDITION_KEYS = ("partition", "dirichlet_alpha", "participation_rate", "boost_factor")
+BENCHMARK_VERSION = 3
+CONDITION_KEYS = (
+    "partition",
+    "dirichlet_alpha",
+    "participation_rate",
+    "boost_factor",
+    "replacement_gain",
+)
 
 RTC_V2_BASE: Dict[str, Any] = {
     "enable_temporal_features": True,
@@ -96,6 +102,18 @@ RTC_V2_BASE: Dict[str, Any] = {
     "clip_multiplier": 1.0,
 }
 
+RTC_V3_PROMOTED_MANIFEST = (
+    Path(__file__).resolve().parent.parent
+    / "config"
+    / "rtc_v3_manifest_formal_iid_semantic.json"
+)
+RTC_V3_PROMOTED_BASE: Dict[str, Any] = {
+    "calibration_path": str(RTC_V3_PROMOTED_MANIFEST),
+    "implementation_phase": 6,
+    # TrialPlanV1 replaces this only after verifying principal-uniform rounds.
+    "principal_first_sampling_verified": False,
+}
+
 DEFENSES: Dict[str, Tuple[str, Dict[str, Any]]] = {
     "fedavg": ("none", {}),
     "clip_only": ("time_consistency", {
@@ -115,9 +133,11 @@ DEFENSES: Dict[str, Tuple[str, Dict[str, Any]]] = {
     }),
     "foolsgold": ("foolsgold", {}),
     "fltrust": ("fltrust", {}),
-    "rtc_full": ("time_consistency", dict(RTC_V2_BASE)),
+    "rtc_full": ("rtc_full", dict(RTC_V3_PROMOTED_BASE)),
 }
-ABLATIONS: Dict[str, Tuple[str, Dict[str, Any]]] = {
+# Historical RTC-V2 ablations. They are retained for explicit reproduction,
+# but excluded from smoke and ``all`` so no current/default matrix uses V2.
+LEGACY_RTC_V2_ABLATIONS: Dict[str, Tuple[str, Dict[str, Any]]] = {
     "rtc_full": DEFENSES["rtc_full"],
     "rtc_no_temporal": ("time_consistency", {
         **RTC_V2_BASE,
@@ -138,6 +158,7 @@ ABLATIONS: Dict[str, Tuple[str, Dict[str, Any]]] = {
         "enable_exposure_budgets": False,
     }),
 }
+ABLATIONS = LEGACY_RTC_V2_ABLATIONS
 
 
 def attack_active(
@@ -159,14 +180,14 @@ def build_matrix(mode: str = "all", smoke: bool = False) -> List[Dict[str, Any]]
         periods = {"short_1_1": (1, 1)}
         fractions = (0.2,)
         seeds = (42,)
-        smoke_names = {"fedavg", "freqfed", "clip_only", "rtc_full", "rtc_no_temporal", "rtc_no_direction"}
+        smoke_names = {"fedavg", "freqfed", "clip_only", "rtc_full"}
         definitions = {**DEFENSES, **ABLATIONS}
         defenses = {name: definitions[name] for name in smoke_names}
     elif mode == "main":
         attacks, periods, fractions, seeds, defenses = (
             TARGETED_ATTACKS, BENCHMARK_PERIODS, MALICIOUS_FRACTIONS, SEEDS, DEFENSES
         )
-    elif mode == "ablation":
+    elif mode == "ablation":  # Explicit RTC-V2 historical reproduction only.
         attacks, periods, fractions, seeds, defenses = (
             (*TARGETED_ATTACKS, LABEL_FLIP_ALL_REVERSE),
             BENCHMARK_PERIODS,
@@ -183,7 +204,7 @@ def build_matrix(mode: str = "all", smoke: bool = False) -> List[Dict[str, Any]]
             ("mpaf",), BENCHMARK_PERIODS, MALICIOUS_FRACTIONS, SEEDS, DEFENSES
         )
     elif mode == "all":
-        return _deduplicate(build_matrix("main") + build_matrix("ablation") + build_matrix("untargeted"))
+        return _deduplicate(build_matrix("main") + build_matrix("untargeted"))
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
@@ -193,7 +214,9 @@ def build_matrix(mode: str = "all", smoke: bool = False) -> List[Dict[str, Any]]
     ):
         defense_type, custom = defenses[defense_name]
         rows.append({
-            "benchmark_version": BENCHMARK_VERSION,
+            "benchmark_version": (
+                2 if defense_type == "time_consistency" else BENCHMARK_VERSION
+            ),
             "attack": attack,
             "period": period_name,
             "on_rounds": period[0],
@@ -241,7 +264,10 @@ def run_id(spec: Dict[str, Any]) -> str:
             f"__lfrev-p{float(spec.get('label_flip_poison_fraction', 1.0)):g}"
         )
     else:
-        readable += f"__b{spec.get('boost_factor', 10.0):g}"
+        if bool(spec.get("aggregation_aware_scaling", False)):
+            readable += f"__g{float(spec.get('replacement_gain', 1.0)):g}"
+        else:
+            readable += f"__b{spec.get('boost_factor', 10.0):g}"
     digest = hashlib.sha1(
         json.dumps(canonical_spec, sort_keys=True).encode()
     ).hexdigest()[:8]
@@ -296,9 +322,9 @@ def _reverse_mapping_asr_from_confusion(value: Any) -> float:
 def _objective_asr_series(rounds: pd.DataFrame, spec: Dict[str, Any]) -> pd.Series | None:
     """Return reported ASR, or exact legacy all-reverse ASR when recoverable."""
     if "server_asr" in rounds:
-        reported = pd.to_numeric(rounds["server_asr"], errors="coerce")
-        if reported.notna().all() and np.isfinite(reported.to_numpy(dtype=float)).all():
-            return reported
+        # Invalid rounds intentionally retain NaN so summaries can count and
+        # exclude them without discarding valid evidence from other rounds.
+        return pd.to_numeric(rounds["server_asr"], errors="coerce")
     if (
         str(spec.get("attack")) == LABEL_FLIP_ALL_REVERSE
         and "server_confusion_matrix_json" in rounds
@@ -313,6 +339,30 @@ def _objective_asr_series(rounds: pd.DataFrame, spec: Dict[str, Any]) -> pd.Seri
             return derived.astype(float)
     return None
 
+def _class_recall_series(rounds: pd.DataFrame, label: int) -> pd.Series:
+    column = f"server_class_recall_{int(label)}"
+    if column in rounds:
+        return pd.to_numeric(rounds[column], errors="coerce")
+    if "server_confusion_matrix_json" not in rounds:
+        return pd.Series(math.nan, index=rounds.index, dtype=float)
+
+    def derive(value: Any) -> float:
+        try:
+            matrix = np.asarray(json.loads(str(value)), dtype=np.float64)
+            if (
+                matrix.ndim != 2
+                or label < 0
+                or label >= matrix.shape[0]
+                or label >= matrix.shape[1]
+            ):
+                return math.nan
+            support = float(matrix[label].sum())
+            return float(matrix[label, label] / support) if support > 0.0 else math.nan
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return math.nan
+
+    return rounds["server_confusion_matrix_json"].map(derive).astype(float)
+
 
 def summarize_run(rounds: pd.DataFrame, spec: Dict[str, Any]) -> Dict[str, Any]:
     result = {key: value for key, value in spec.items() if key != "custom_params"}
@@ -323,26 +373,111 @@ def summarize_run(rounds: pd.DataFrame, spec: Dict[str, Any]) -> Dict[str, Any]:
         & (rounds["round"] >= int(spec.get("attack_start_round", 11)))
     ]
     accuracy_col = "server_accuracy"
-    asr_col = "server_asr"
-    if "server_loss" in rounds:
-        losses = pd.to_numeric(rounds["server_loss"], errors="coerce")
-        result["numerical_divergence"] = bool((~np.isfinite(losses)).any())
+
+    def invalid_flag(column: str) -> pd.Series:
+        if column not in rounds:
+            return pd.Series(False, index=rounds.index, dtype=bool)
+        valid = rounds[column].map(
+            lambda value: (
+                True
+                if pd.isna(value)
+                else bool(value)
+                if isinstance(value, (bool, np.bool_))
+                else str(value).strip().lower() in {"1", "true", "yes"}
+            )
+        )
+        return ~valid.astype(bool)
+
+    losses = pd.to_numeric(
+        rounds.get("server_loss", pd.Series(0.0, index=rounds.index)),
+        errors="coerce",
+    )
+    nonfinite_loss = ~np.isfinite(losses.to_numpy(dtype=float))
+    invalid_model = invalid_flag("server_model_state_valid")
+    invalid_model |= invalid_flag("server_logits_valid")
+    invalid_model |= invalid_flag("server_loss_valid")
+    invalid_update = pd.Series(False, index=rounds.index, dtype=bool)
+    for column in (
+        "fit_received_updates_finite",
+        "fit_coordinated_updates_finite",
+        "fit_aggregate_parameters_finite",
+    ):
+        invalid_update |= invalid_flag(column)
+    numerical_invalid = (
+        pd.Series(nonfinite_loss, index=rounds.index)
+        | invalid_model
+        | invalid_update
+    )
+    result.update({
+        "nan_rounds": int(np.asarray(nonfinite_loss, dtype=bool).sum()),
+        "invalid_model_rounds": int(invalid_model.sum()),
+        "invalid_update_rounds": int(invalid_update.sum()),
+        "nan_detected": bool(numerical_invalid.any()),
+        "numerical_divergence": bool(numerical_invalid.any()),
+        "numerical_collapse": bool(numerical_invalid.any()),
+    })
     objective_asr = _objective_asr_series(rounds, spec)
     if (
-        spec["attack"] in TARGETED_ATTACKS
+        str(spec.get("attack_group")) == "targeted"
+        or spec["attack"] in TARGETED_ATTACKS
         or spec["attack"] == LABEL_FLIP_ALL_REVERSE
     ) and objective_asr is not None:
-        active_asr = objective_asr.loc[active.index].dropna()
-        inactive_asr = objective_asr.loc[inactive.index].dropna()
-        raw_auc = _auc(active_asr)
+        finite_asr = pd.Series(
+            np.isfinite(objective_asr.to_numpy(dtype=float)),
+            index=rounds.index,
+            dtype=bool,
+        )
+        if "server_asr_valid" in rounds:
+            reported_valid = rounds["server_asr_valid"].map(
+                lambda value: (
+                    bool(value)
+                    if isinstance(value, (bool, np.bool_))
+                    else str(value).strip().lower() in {"1", "true", "yes"}
+                )
+            )
+            finite_asr &= reported_valid
+
+        window_valid = finite_asr.loc[active.index]
+        window_asr = objective_asr.loc[active.index][window_valid]
+        residual_valid = finite_asr.loc[inactive.index]
+        residual_values = objective_asr.loc[inactive.index][residual_valid]
+
+        selected_attackers = pd.to_numeric(
+            active.get(
+                "fit_selected_active_attackers",
+                pd.Series(math.nan, index=active.index, dtype=float),
+            ),
+            errors="coerce",
+        )
+        participating = active[selected_attackers > 0]
+        participating_valid = finite_asr.loc[participating.index]
+        participating_values = objective_asr.loc[participating.index][
+            participating_valid
+        ]
+
+        invalid_asr_rounds = int((~window_valid).sum())
+        raw_auc = _auc(window_asr)
         result.update({
-            "active_asr": float(active_asr.mean()) if len(active_asr) else math.nan,
+            "window_asr": float(window_asr.mean()) if len(window_asr) else math.nan,
+            "participating_asr": (
+                float(participating_values.mean())
+                if len(participating_values) else math.nan
+            ),
+            # Backward-compatible alias. New screening code uses the explicit
+            # window/participating distinction.
+            "active_asr": float(window_asr.mean()) if len(window_asr) else math.nan,
+            "asr_valid": bool(len(active) > 0 and invalid_asr_rounds == 0),
+            "invalid_asr_rounds": invalid_asr_rounds,
+            "participating_asr_rounds": int(len(participating_values)),
+            "window_asr_rounds": int(len(window_asr)),
             # Backward-compatible alias; new reports should use the explicit fields.
             "active_asr_auc": raw_auc,
             "active_asr_auc_raw": raw_auc,
-            "active_asr_auc_normalized": _normalized_auc(active_asr),
-            "peak_asr": float(objective_asr.max()),
-            "residual_asr": float(inactive_asr.mean()) if len(inactive_asr) else math.nan,
+            "active_asr_auc_normalized": _normalized_auc(window_asr),
+            "peak_asr": float(objective_asr[finite_asr].max()),
+            "residual_asr": (
+                float(residual_values.mean()) if len(residual_values) else math.nan
+            ),
         })
     if accuracy_col in rounds:
         accuracy = pd.to_numeric(rounds[accuracy_col], errors="coerce")
@@ -352,6 +487,77 @@ def summarize_run(rounds: pd.DataFrame, spec: Dict[str, Any]) -> Dict[str, Any]:
             "min_accuracy": float(accuracy.min()),
             "active_accuracy": float(active_accuracy.mean()) if len(active_accuracy) else math.nan,
         })
+    for label in range(10):
+        recall = _class_recall_series(rounds, label)
+        finite_recall = recall[np.isfinite(recall.to_numpy(dtype=float))]
+        active_recall = recall.loc[active.index]
+        active_recall = active_recall[
+            np.isfinite(active_recall.to_numpy(dtype=float))
+        ]
+        result[f"final_class_recall_{label}"] = (
+            float(finite_recall.iloc[-1]) if len(finite_recall) else math.nan
+        )
+        result[f"active_class_recall_{label}"] = (
+            float(active_recall.mean()) if len(active_recall) else math.nan
+        )
+
+    attack_name = str(spec.get("attack"))
+    if attack_name == "label_flip_targeted":
+        source = int(spec.get("label_flip_source_label", 5))
+        source_recall = (
+            pd.to_numeric(rounds["server_source_recall"], errors="coerce")
+            if "server_source_recall" in rounds
+            else _class_recall_series(rounds, source)
+        )
+        finite_source = source_recall[
+            np.isfinite(source_recall.to_numpy(dtype=float))
+        ]
+        active_source = source_recall.loc[active.index]
+        active_source = active_source[
+            np.isfinite(active_source.to_numpy(dtype=float))
+        ]
+        result.update({
+            "source_label": source,
+            "final_source_recall": (
+                float(finite_source.iloc[-1]) if len(finite_source) else math.nan
+            ),
+            "active_source_recall": (
+                float(active_source.mean()) if len(active_source) else math.nan
+            ),
+            "source_to_target_asr": float(
+                result.get("participating_asr", math.nan)
+            ),
+        })
+
+    active_accuracy_value = float(result.get("active_accuracy", math.nan))
+    final_accuracy_value = float(result.get("final_accuracy", math.nan))
+    evaluation_accuracy = (
+        active_accuracy_value
+        if math.isfinite(active_accuracy_value)
+        else final_accuracy_value
+    )
+    model_random_guess = bool(
+        attack_name != "none"
+        and math.isfinite(evaluation_accuracy)
+        and evaluation_accuracy <= 0.15
+    )
+    targeted_attack = (
+        str(spec.get("attack_group")) == "targeted"
+        or attack_name in TARGETED_ATTACKS
+        or attack_name == LABEL_FLIP_ALL_REVERSE
+    )
+    invalid_asr = targeted_attack and not bool(result.get("asr_valid", False))
+    collapsed_invalid = bool(
+        result.get("numerical_divergence", False)
+        or not math.isfinite(evaluation_accuracy)
+        or model_random_guess
+        or invalid_asr
+    )
+    result.update({
+        "model_random_guess": model_random_guess,
+        "collapsed_invalid": collapsed_invalid,
+        "valid": not collapsed_invalid,
+    })
     if spec["attack"] in LABEL_FLIP_ATTACKS:
         numerator = pd.to_numeric(
             active.get("fit_label_flip_poisoned_exposures", pd.Series(dtype=float)),
@@ -478,15 +684,34 @@ def add_accuracy_drop(summary: pd.DataFrame) -> pd.DataFrame:
     clean = summary[summary["attack"] == "none"] if "attack" in summary else pd.DataFrame()
     if clean.empty:
         summary["accuracy_drop"] = np.nan
+        summary["source_recall_drop"] = np.nan
         return summary
     pairing_key = "trial_plan_hash" if "trial_plan_hash" in summary else "seed"
-    baselines = clean[clean["defense"] == "fedavg"].set_index(pairing_key)["final_accuracy"]
+    clean_fedavg = clean[clean["defense"] == "fedavg"].set_index(pairing_key)
+    baselines = clean_fedavg["final_accuracy"]
     summary["accuracy_drop"] = summary.apply(
         lambda row: float(
             baselines.get(row[pairing_key], np.nan) - row.get("final_accuracy", np.nan)
         ),
         axis=1,
     )
+
+    def source_recall_drop(row: pd.Series) -> float:
+        if str(row.get("attack")) != "label_flip_targeted":
+            return math.nan
+        source = int(row.get("label_flip_source_label", row.get("source_label", 5)))
+        column = f"final_class_recall_{source}"
+        if column not in clean_fedavg:
+            return math.nan
+        baseline = clean_fedavg[column].get(row[pairing_key], math.nan)
+        attacked = row.get("final_source_recall", row.get(column, math.nan))
+        try:
+            value = float(baseline) - float(attacked)
+        except (TypeError, ValueError):
+            return math.nan
+        return value if math.isfinite(value) else math.nan
+
+    summary["source_recall_drop"] = summary.apply(source_recall_drop, axis=1)
     return summary
 
 
@@ -790,7 +1015,11 @@ def _run_specs(
 
 
 def _expected_rounds(args: argparse.Namespace) -> int:
-    return 6 if bool(getattr(args, "smoke", False)) else int(args.rounds)
+    return (
+        int(getattr(args, "smoke_rounds", 6))
+        if bool(getattr(args, "smoke", False))
+        else int(args.rounds)
+    )
 
 
 def _build_spec_config(
@@ -801,7 +1030,20 @@ def _build_spec_config(
     custom.update(spec["custom_params"])
     if args.smoke and spec["defense_type"] == "time_consistency":
         custom.setdefault("log_client_weights", False)
-    num_clients = 10 if args.smoke else int(args.num_clients)
+    smoke = bool(getattr(args, "smoke", False))
+    smoke_all_clients = smoke and bool(
+        getattr(args, "smoke_all_clients", True)
+    )
+    num_clients = (
+        int(getattr(args, "smoke_num_clients", 10))
+        if smoke
+        else int(args.num_clients)
+    )
+    if spec["defense_type"] in {"rtc_full", "rtc_v3", "rtc_v3_candidate"}:
+        custom.setdefault(
+            "principal_map",
+            {str(client_id): str(client_id) for client_id in range(num_clients)},
+        )
     clients_per_round = max(1, min(
         num_clients, int(math.ceil(num_clients * float(spec["participation_rate"])))
     ))
@@ -812,8 +1054,12 @@ def _build_spec_config(
         "model.architecture": "resnet18",
         "federation.num_rounds": _expected_rounds(args),
         "federation.num_clients": num_clients,
-        "federation.clients_per_round": num_clients if args.smoke else clients_per_round,
-        "federation.min_fit_clients": num_clients if args.smoke else clients_per_round,
+        "federation.clients_per_round": (
+            num_clients if smoke_all_clients else clients_per_round
+        ),
+        "federation.min_fit_clients": (
+            num_clients if smoke_all_clients else clients_per_round
+        ),
         "federation.min_available_clients": num_clients,
         "federation.max_client_samples": 50 if args.smoke else int(args.max_client_samples),
         "federation.pairing_mode": str(spec.get("pairing_mode", getattr(args, "pairing_mode", "legacy"))),
@@ -836,7 +1082,9 @@ def _build_spec_config(
         "security.attack.attack_on_rounds": spec["on_rounds"],
         "security.attack.attack_off_rounds": spec["off_rounds"],
         "security.attack.poison_fraction": (
-            0.5 if spec["attack"] in {"backdoor", "dba"} else 0.1
+            float(spec.get("poison_fraction", 0.5))
+            if spec["attack"] in {"backdoor", "dba", "model_replacement", "scaling_backdoor"}
+            else float(spec.get("poison_fraction", 0.1))
         ),
         "security.attack.source_label": int(spec.get("label_flip_source_label", 5)),
         "security.attack.target_label": int(spec.get("label_flip_target_label", 3)),
@@ -849,13 +1097,74 @@ def _build_spec_config(
         "security.attack.model_replacement_boost_factor": float(
             spec.get("boost_factor", getattr(args, "boost_factor", 10.0))
         ),
+        "security.attack.aggregation_aware_scaling": bool(
+            spec.get("aggregation_aware_scaling", False)
+        ),
+        "security.attack.replacement_gain": float(
+            spec.get("replacement_gain", 1.0)
+        ),
         "security.attack.mpaf_lambda": float(
-            spec.get("boost_factor", getattr(args, "boost_factor", 1.0))
+            spec.get("boost_factor", 1.0)
+        ),
+        "security.attack.dba_scale_update": bool(
+            spec.get("dba_scale_update", True)
+        ),
+        "security.attack.dba_pattern_mode": str(
+            spec.get("dba_pattern_mode", "paper_cifar_1x6_2x2")
+        ),
+        "security.attack.dba_trigger_value_mode": str(
+            spec.get("dba_trigger_value_mode", "cifar10_normalized_white")
+        ),
+        "security.attack.gaussian_noise_mean": float(
+            spec.get("gaussian_noise_mean", 0.0)
+        ),
+        "security.attack.gaussian_noise_std": float(
+            spec.get("gaussian_noise_std", 0.1)
+        ),
+        "security.attack.random_noise_scale": float(
+            spec.get("random_noise_scale", 1.0)
+        ),
+        "security.attack.random_noise_distribution": str(
+            spec.get("random_noise_distribution", "rademacher")
+        ),
+        "security.attack.sign_flip_scale": float(
+            spec.get("sign_flip_scale", 1.0)
+        ),
+        "security.attack.lie_z": float(spec.get("lie_z", 0.0)),
+        "security.attack.coordinated_attack_knowledge": str(
+            spec.get("coordinated_attack_knowledge", "all_updates")
+        ),
+        "security.attack.optimization_perturbation": str(
+            spec.get("optimization_perturbation", "inverse_sign")
+        ),
+        "security.attack.optimization_gamma_init": float(
+            spec.get("optimization_gamma_init", 0.001)
+        ),
+        "security.attack.optimization_tolerance": float(
+            spec.get("optimization_tolerance", 1e-6)
+        ),
+        "security.attack.optimization_max_iterations": int(
+            spec.get("optimization_max_iterations", 64)
+        ),
+        "security.attack.optimization_gamma_fraction": float(
+            spec.get("optimization_gamma_fraction", 1.0)
+        ),
+        "security.attack.optimization_gamma_max": float(
+            spec.get("optimization_gamma_max", 1.0e6)
         ),
         "security.defense.enabled": spec["defense_type"] != "none",
         "security.defense.type": spec["defense_type"],
         "security.defense.reserve_root_for_all": True,
         "security.defense.root_dataset_size": 100,
+        "security.defense.krum_num_malicious": int(
+            spec.get("krum_num_malicious", 1)
+        ),
+        "security.defense.krum_num_to_select": int(
+            spec.get("krum_num_to_select", 1)
+        ),
+        "security.defense.trim_fraction": float(
+            spec.get("trim_fraction", 0.1)
+        ),
         "security.defense.custom_params": custom,
         "evaluation.save_best_model": False,
         "evaluation.max_test_samples": 500 if args.smoke else int(args.max_test_samples),
@@ -871,6 +1180,7 @@ def _build_spec_config(
         "ray.include_dashboard": False,
         "ray.client_num_cpus": float(getattr(args, "ray_client_num_cpus", 1.0)),
         "ray.client_num_gpus": float(getattr(args, "ray_client_num_gpus", 0.0)),
+        "ray.force_cpu": bool(getattr(args, "force_cpu", False)),
     }
     return override_config(cfg, overrides)
 
@@ -945,7 +1255,7 @@ def _run_spec_with_retries(
     round_path: Path,
     status_path: Path,
     launch_fn=None,
-) -> None:
+) -> bool:
     identifier = run_id(spec)
     max_retries = max(0, int(getattr(args, "max_spec_retries", 1)))
     attempts = max_retries + 1
@@ -1029,6 +1339,45 @@ def _run_spec_with_retries(
             "error_type": error_type,
             "error_summary": error_summary,
         }
+        # Preserve catastrophic numerical collapse as screening evidence, but
+        # never classify it as a successful attack configuration.
+        failure_text = "\n".join(
+            str(value)
+            for value in (
+                error_summary,
+                current.get("error_summary", ""),
+                current.get("traceback", ""),
+            )
+        )
+        expected_divergence = (
+            bool(getattr(args, "byzantine_screening", False))
+            and str(spec.get("attack", "none")) != "none"
+            and any(
+                marker in failure_text
+                for marker in (
+                    "CountSketch input must be finite",
+                    "produced a non-finite malicious update",
+                    "produced non-finite model parameters after dtype conversion",
+                    "Min-Max global parameters are non-finite",
+                    "Min-Max client deltas are non-finite",
+                )
+            )
+        )
+        if expected_divergence:
+            failed_payload.update({
+                "state": "diverged",
+                "numerical_divergence": True,
+                "collapsed_invalid": True,
+                "divergence_round": _last_logged_round(log_path, log_start_offset),
+                "error_type": "nonfinite_aggregate",
+            })
+            _write_status(status_path, failed_payload)
+            logger.warning(
+                "Specification recorded as collapsed/invalid; continuing | run=%s round=%s",
+                identifier,
+                failed_payload["divergence_round"],
+            )
+            return True
         _write_status(status_path, failed_payload)
         if attempt < attempts:
             logger.warning(
@@ -1132,6 +1481,29 @@ def validate_round_cache(
         fit_rows = frame[round_values.isin(expected)].copy()
         if set(fit_rows["fit_trial_plan_hash"].astype(str)) != {expected_hash}:
             return False, "trial-plan hash differs from experiment spec", frame
+        if "attack_contract_hash" in spec:
+            required_attack_contract = {
+                "fit_attack_contract_hash",
+                "fit_attack_implementation_hash",
+            }
+            missing_attack_contract = sorted(
+                required_attack_contract.difference(frame.columns)
+            )
+            if missing_attack_contract:
+                return False, (
+                    "missing attack-contract columns: "
+                    + ",".join(missing_attack_contract)
+                ), frame
+            if set(fit_rows["fit_attack_contract_hash"].astype(str)) != {
+                str(spec["attack_contract_hash"])
+            }:
+                return False, "attack-contract hash differs from experiment spec", frame
+            if set(fit_rows["fit_attack_implementation_hash"].astype(str)) != {
+                str(spec["attack_implementation_hash"])
+            }:
+                return False, (
+                    "attack implementation hash differs from experiment spec"
+                ), frame
         plan = TrialPlanV1.load(str(spec.get("trial_plan_path", "")))
         for _, row in fit_rows.iterrows():
             round_plan = plan.round(int(row["round"]))
@@ -1783,16 +2155,125 @@ def clean_baselines(matrix: Sequence[Dict[str, Any]], smoke: bool) -> List[Dict[
 
 def generate_plots(summary: pd.DataFrame, rounds_dir: Path, output: Path) -> None:
     output.mkdir(parents=True, exist_ok=True)
-    sns.set_theme(style="whitegrid")
-    if "active_asr_auc" in summary and summary["active_asr_auc"].notna().any():
-        plt.figure(figsize=(9, 5))
-        sns.barplot(data=summary, x="defense", y="active_asr_auc", hue="attack", errorbar="sd")
-        plt.xticks(rotation=25); plt.tight_layout()
-        plt.savefig(output / "active_asr_auc.png", dpi=180); plt.close()
-    if "final_accuracy" in summary and "active_asr_auc" in summary:
-        plt.figure(figsize=(8, 5))
-        sns.scatterplot(data=summary, x="active_asr_auc", y="final_accuracy", hue="defense", style="attack")
-        plt.tight_layout(); plt.savefig(output / "security_utility_tradeoff.png", dpi=180); plt.close()
+    sns.set_theme(style="whitegrid", context="notebook")
+    strength_order = [
+        value for value in ("weak", "medium", "strong")
+        if value in set(summary.get("strength_level", pd.Series(dtype=str)).dropna())
+    ]
+    extra_strengths = sorted(
+        set(summary.get("strength_level", pd.Series(dtype=str)).dropna())
+        - set(strength_order)
+    )
+    strength_order.extend(extra_strengths)
+    strength_colors = {
+        "weak": "#8FB3D9",
+        "medium": "#3B73B9",
+        "strong": "#164A7B",
+    }
+    neutral = "#555B66"
+
+    attacked = summary[summary.get("attack", pd.Series(dtype=str)).ne("none")].copy()
+    attacked["active_asr_auc_normalized"] = pd.to_numeric(
+        attacked.get("active_asr_auc_normalized"), errors="coerce"
+    )
+    attacked["final_accuracy"] = pd.to_numeric(
+        attacked.get("final_accuracy"), errors="coerce"
+    )
+
+    auc_data = attacked.dropna(subset=["active_asr_auc_normalized"])
+    if not auc_data.empty:
+        group_columns = ["strength_level"]
+        if auc_data["attack"].nunique() > 1:
+            group_columns.append("attack")
+        repeated = auc_data.groupby(group_columns, dropna=False).size().max() > 1
+        fig, ax = plt.subplots(figsize=(8.6, 5.4))
+        plot_kwargs: dict[str, Any] = {
+            "data": auc_data,
+            "x": "strength_level",
+            "y": "active_asr_auc_normalized",
+            "order": strength_order,
+            "errorbar": "sd" if repeated else None,
+            "ax": ax,
+        }
+        if auc_data["attack"].nunique() > 1:
+            plot_kwargs["hue"] = "attack"
+        else:
+            plot_kwargs["color"] = "#3B73B9"
+        sns.barplot(**plot_kwargs)
+        for container in ax.containers:
+            ax.bar_label(container, fmt="%.3f", padding=3, fontsize=9)
+        ax.set(
+            xlabel="Attack strength",
+            ylabel="Normalized active-window ASR AUC",
+            ylim=(0.0, 1.05),
+        )
+        fig.suptitle(
+            "Attack success by configured strength",
+            x=0.125, y=0.985, ha="left", fontsize=15,
+        )
+        ax.set_title(
+            "AUC is normalized to the active attack window; error bars require repeated seeds.",
+            loc="left", color=neutral, fontsize=9, pad=10,
+        )
+        if auc_data["attack"].nunique() == 1 and ax.get_legend() is not None:
+            ax.get_legend().remove()
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
+        fig.savefig(output / "active_asr_auc.png", dpi=180, bbox_inches="tight")
+        plt.close(fig)
+
+    tradeoff = attacked.dropna(
+        subset=["active_asr_auc_normalized", "final_accuracy"]
+    )
+    if not tradeoff.empty:
+        fig, ax = plt.subplots(figsize=(8.6, 5.4))
+        group_columns = ["attack", "defense"]
+        groups = list(tradeoff.groupby(group_columns, dropna=False))
+        line_colors = ["#3B73B9", "#D17A45", "#8A7A36", "#A65A78"]
+        for index, ((attack, defense), group) in enumerate(groups):
+            ordered = group.assign(
+                _strength_order=group["strength_level"].map(
+                    {value: rank for rank, value in enumerate(strength_order)}
+                )
+            ).sort_values("_strength_order")
+            label = str(attack) if tradeoff["defense"].nunique() == 1 else f"{attack} · {defense}"
+            ax.plot(
+                ordered["active_asr_auc_normalized"], ordered["final_accuracy"],
+                color=line_colors[index % len(line_colors)], marker="o", linewidth=1.8,
+                markersize=7, label=label,
+            )
+            for _, row in ordered.iterrows():
+                ax.annotate(
+                    str(row["strength_level"]),
+                    (row["active_asr_auc_normalized"], row["final_accuracy"]),
+                    xytext=(6, 6), textcoords="offset points", fontsize=9,
+                )
+        clean_accuracy = pd.to_numeric(
+            summary.loc[summary["attack"].eq("none"), "final_accuracy"],
+            errors="coerce",
+        ).dropna()
+        if not clean_accuracy.empty:
+            baseline = float(clean_accuracy.mean())
+            ax.axhline(
+                baseline, color=neutral, linestyle="--", linewidth=1.4,
+                label=f"Clean accuracy ({baseline:.3f})",
+            )
+        ax.set(
+            xlabel="Normalized active-window ASR AUC",
+            ylabel="Final clean accuracy",
+            xlim=(0.0, 1.02),
+        )
+        fig.suptitle(
+            "Attack success and model utility by strength",
+            x=0.125, y=0.985, ha="left", fontsize=15,
+        )
+        ax.set_title(
+            "Ordered weak → medium → strong screen; dashed line is clean accuracy; y-axis is focused.",
+            loc="left", color=neutral, fontsize=9, pad=10,
+        )
+        ax.legend(frameon=True, title=None)
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
+        fig.savefig(output / "security_utility_tradeoff.png", dpi=180, bbox_inches="tight")
+        plt.close(fig)
     ablation = summary[summary["defense"].isin(ABLATIONS)]
     if not ablation.empty and "active_asr_auc" in ablation:
         plt.figure(figsize=(8, 5))
@@ -1806,20 +2287,70 @@ def generate_plots(summary: pd.DataFrame, rounds_dir: Path, output: Path) -> Non
         if expected_ids is not None and path.stem not in expected_ids:
             continue
         frame = pd.read_csv(path)
-        if frame.get("defense", pd.Series(dtype=str)).eq("rtc_full").any():
-            timeline_frames.append(frame)
+        if frame.empty:
+            continue
+        if "run_id" not in frame:
+            frame["run_id"] = path.stem
+        timeline_frames.append(frame)
     if timeline_frames:
         timeline = pd.concat(timeline_frames, ignore_index=True)
-        columns = [name for name in (
-            "server_asr", "fit_active_attacker_weight_share",
-            "fit_fft_periodic_penalty_clients", "fit_direction_penalty_clients",
-            "fit_rtc_total_risk_mean", "fit_rtc_temporal_risk_mean",
-            "fit_rtc_influence_risk_mean"
-        ) if name in timeline]
-        for metric in columns:
-            plt.figure(figsize=(10, 5))
-            sns.lineplot(data=timeline, x="round", y=metric, hue="attack", style="period", errorbar="sd")
-            plt.tight_layout(); plt.savefig(output / f"timeline_{metric}.png", dpi=180); plt.close()
+        timeline["series_label"] = timeline.apply(
+            lambda row: (
+                "clean" if str(row.get("attack", "")) == "none"
+                else str(row.get("strength_level", row.get("attack", "attack")))
+            ),
+            axis=1,
+        )
+        series_order = [
+            value for value in ("clean", *strength_order)
+            if value in set(timeline["series_label"])
+        ]
+        palette = {
+            "clean": neutral,
+            **{key: value for key, value in strength_colors.items()},
+        }
+        attack_starts = pd.to_numeric(
+            attacked.get("attack_start_round"), errors="coerce"
+        ).dropna()
+        attack_start = int(attack_starts.mode().iloc[0]) if not attack_starts.empty else None
+        timeline_specs = (
+            ("server_asr", "Attack success by round", "Attack success rate", False),
+            ("server_accuracy", "Model accuracy by round", "Clean test accuracy", True),
+        )
+        for metric, title, ylabel, include_clean in timeline_specs:
+            if metric not in timeline:
+                continue
+            plot_data = timeline.copy()
+            if not include_clean:
+                plot_data = plot_data[plot_data["attack"].ne("none")]
+            plot_data[metric] = pd.to_numeric(plot_data[metric], errors="coerce")
+            plot_data = plot_data.dropna(subset=["round", metric])
+            if plot_data.empty:
+                continue
+            plot_series_order = [
+                value for value in series_order
+                if value in set(plot_data["series_label"])
+            ]
+            fig, ax = plt.subplots(figsize=(9.4, 5.4))
+            sns.lineplot(
+                data=plot_data, x="round", y=metric,
+                hue="series_label", hue_order=plot_series_order,
+                palette={key: palette.get(key, "#3B73B9") for key in plot_series_order},
+                style="series_label", style_order=plot_series_order,
+                markers=False, dashes=True, errorbar=None, linewidth=1.8, ax=ax,
+            )
+            if attack_start is not None:
+                ax.axvline(attack_start, color="#2F3338", linestyle=":", linewidth=1.3)
+                ax.text(
+                    attack_start + 0.15, 0.98, f"Attack starts\nround {attack_start}",
+                    transform=ax.get_xaxis_transform(),
+                    va="top", ha="left", fontsize=8, color=neutral,
+                )
+            ax.set(xlabel="Federated round", ylabel=ylabel, title=title)
+            ax.legend(title="Condition", frameon=True)
+            fig.tight_layout()
+            fig.savefig(output / f"timeline_{metric}.png", dpi=180, bbox_inches="tight")
+            plt.close(fig)
 
 
 def parse_args() -> argparse.Namespace:

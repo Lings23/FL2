@@ -36,10 +36,18 @@ def _v3_config(manifest: dict, **params) -> DefenseConfig:
     )
 
 
-def test_public_and_legacy_aliases_remain_rtc_v2():
-    for name in ("time_consistency", "rtc_full", "rtc_v2_legacy"):
+def test_only_explicit_legacy_aliases_remain_rtc_v2():
+    for name in ("time_consistency", "rtc_v2_legacy"):
         defense = get_defense(DefenseConfig(enabled=True, type=name))
         assert isinstance(defense, TimeConsistencyDefense)
+
+
+def test_rtc_full_is_promoted_v3_alias():
+    manifest = build_manifest(params=_params())
+    cfg = _v3_config(manifest)
+    cfg.type = "rtc_full"
+    defense = get_defense(cfg)
+    assert isinstance(defense, RTCv3Defense)
 
 
 def test_v3_has_separate_entry_and_requires_manifest():
@@ -49,7 +57,7 @@ def test_v3_has_separate_entry_and_requires_manifest():
     manifest = build_manifest(params=_params())
     defense = get_defense(_v3_config(manifest))
     assert isinstance(defense, RTCv3Defense)
-    assert defense.version == "rtc_v3_candidate"
+    assert defense.version == "rtc_v3"
 
 
 def test_v3_rejects_unknown_runtime_and_manifest_fields():

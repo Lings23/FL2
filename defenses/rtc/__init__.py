@@ -1,4 +1,8 @@
-"""Versioned RTC building blocks."""
+"""Compatibility exports for historical RTC module paths.
+
+New integrations should import the promoted API from :mod:`defenses.rtc_v3`
+or the frozen historical API from :mod:`defenses.rtc_v2`.
+"""
 
 from .history import ClientHistory, RoundRecord
 from .scoring import RiskScorer

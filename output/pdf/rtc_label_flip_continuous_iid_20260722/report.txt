@@ -1,0 +1,267 @@
+Data Analytics report
+
+      连续 Label Flip：RTC 与 FedAvg 60 轮实验分析
+                                                                                                                                                       Jul 22, 2026, 2:46 AM UTC
+
+IID
+60   轮 IID 连续 Label Flip 的攻击效果、检测分离度、硬约束代价与可信度诊断。
+
+            技术摘要
+            六组结果均完整落盘，硬权重、影响预算、轮次和数据清单门禁全部通过。结论不是“RTC 对 Label Flip 普遍有效”：它对全标
+            签反转很强，但对 5→3 定向翻转失效。
+                 All-reverse：有效。 RTC 将主动期恶意权重从 20.20% 压到 0.08%，主动期准确率由 78.79% 提升到 83.96%；与 RTC
+                 自身 clean 相比只损失 0.48 个百分点。
+                 5→3 targeted：无效且略有负收益。 RTC 主动期 ASR 38.66%，高于 FedAvg 的 34.89%；ASR-AUC 18.86 对 16.93，
+                 恶化 11.4%。主动期准确率也低 1.91 个百分点。
+                 Clean 代价存在。 RTC 第 60 轮准确率 88.91%，低于 FedAvg 的 90.06%；第 11–60 轮等长窗口平均低 1.56 个百分
+                 点。
+            当前实现可保留为高强度更新异常的安全边界，但还不能宣称对隐蔽定向 Label Flip 有效。
+            Source: 实验汇总与配对比较
+            Tables: logs\label_flip_continuous_iid\comparison_runs.csv, logs\label_flip_continuous_iid\rounds\*.csv
+
+
+
+
+                RTC all-reverse     主动期准确率                            RTC targeted ASR-AUC                            RTC clean    最终准确率
+                84%                                                   18.86                                           88.9%
+                All-reverse   第 11–60 轮平均准确率。                           第 11–60 轮 ASR 曲线梯形积分；
+                                                                      5→3                                             无攻击第 60 轮准确率。
+                  FedAvg 78.8%
+                                                                      越低越好。                                            FedAvg 90.1%
+                                                                        FedAvg 16.93
+                Source:    实验汇总与配对比较                                                                                  Source:   实验汇总与配对比较
+                Tables:                                               Source:    实验汇总与配对比较                            Tables:
+                logs\label_flip_continuous_iid\comparison_            Tables:                                         logs\label_flip_continuous_iid\comparison_
+                runs.csv,                                             logs\label_flip_continuous_iid\comparison_      runs.csv,
+                logs\label_flip_continuous_iid\rounds\*.csv           runs.csv,                                       logs\label_flip_continuous_iid\rounds\*.csv
+                                                                      logs\label_flip_continuous_iid\rounds\*.csv
+
+
+
+
+                RTC   恶意权重
+                0.1%
+                All-reverse   第 11–60 轮恶意聚合权重。
+                  FedAvg 20.2%
+
+
+                Source:    逐轮服务器与聚合指标
+                Table:
+                logs\label_flip_continuous_iid\rounds\*.csv
+
+
+
+
+            RTC     阻断了全标签反转，但末轮 FedAvg 单点高度易波动
+                     占主动期总训练暴露 20.20%。FedAvg 第 55、58、60 轮均抽中 3 名攻击者，准确率分别跌至 52.31%、64.76% 和
+            All-reverse
+            36.42%；第 轮只抽中 1 名时回到 89.77%。RTC 从第 11 轮即 restricted、第 12 轮出现 quarantine，主动期 96.0% 的恶意
+                        59
+            参与观测被隔离，恶意权重均值仅 0.08%。
+            第 60 轮 +51.21 个百分点是真实安全效果，但更稳健的主读数是主动期平均 +5.17 个百分点，以及对自身 clean 仅 -0.48 个
+            百分点。
+            Source: 逐轮服务器与聚合指标
+            Table: logs\label_flip_continuous_iid\rounds\*.csv
+   Clean            与 all-reverse 服务器准确率
+   Source: 逐轮服务器与聚合指标
+   Table: logs\label_flip_continuous_iid\rounds\*.csv
+       100%
+
+
+
+                  75%
+
+
+
+
+Server accuracy
+                  50%
+
+
+
+                  25%
+
+
+
+                   0%
+                        1      10              11         12            20               30           40                50   55   60
+                                                                                Round
+
+                                         Clean · FedAvg   Clean · RTC        All-reverse · FedAvg   All-reverse · RTC
+
+
+   RTC             没有压制定向 5→3 攻击
+   Targeted主动期全局投毒暴露率 2.03%，eligible 样本投毒率 100%。第 10 轮攻击前 ASR 为 14.1%（FedAvg）和 15.0%
+   （ ），第 11 轮升到 48.8% 与 49.0%。第 11–60 轮平均 ASR 为 34.89% 和 38.66%；RTC 的 ASR-AUC 高 1.93，源类召回均
+     RTC
+   值更低（46.48% 对 52.95%）。
+   第 60 轮 RTC ASR 44.1% 低于 FedAvg 的 53.8%，但该轮抽中 3 名攻击者，是高波动单点，不能覆盖完整主动期整体更差的事
+   实。
+   Source: 逐轮服务器与聚合指标
+   Table: logs\label_flip_continuous_iid\rounds\*.csv
+
+
+   5→3             定向翻转 ASR
+   Source: 逐轮服务器与聚合指标
+   Table: logs\label_flip_continuous_iid\rounds\*.csv
+        80%
+
+
+
+                  60%
+
+
+
+
+5→3 ASR
+                  40%
+
+
+
+                  20%
+
+
+
+                  0%
+                        1     10               11         12            20               30          40                 50   55   60
+                                                                               Round
+
+                                                                    FedAvg         RTC
+
+
+   定向攻击下四信号分离方向全部反了
+   定向攻击者在 magnitude、direction、frequency-temporal、influence 和 total risk 上的均值都低于良性客户端。恶意 total
+   risk 0.449，良性 0.477；恶意平均 trust 更高（0.570 对 0.544）
+                                                  ，逐轮 trust AUC 仅 0.382。
+   RTC 主动期只把恶意权重从 20.20% 降到 17.77%，恶意单次平均聚合权重 8.79% 高于良性的 7.64%；恶意 quarantine 率
+   11.88%，反而低于良性的 22.06%。这不是单纯调低阈值能解决的问题。
+  Source: RTC           客户端级风险与状态
+  Table: logs\label_flip_continuous_iid\raw\*rtc_full*_clients.csv
+
+
+  5→3          定向翻转的客户端风险均值
+  Source: RTC 客户端级风险与状态
+  Table: logs\label_flip_continuous_iid\raw\*rtc_full*_clients.csv
+
+
+             60%
+
+                                                                                                                                      47.7%
+                        45.1%                                                                                                                     44.9%
+             45%                  42.4%
+                                                   36.7%
+                                                                34%
+
+
+Mean score
+             30%
+
+                                                                                                             19.7%
+                                                                                                                        14.5%
+             15%
+
+                                                                                 4.5%
+                                                                                             1%
+              0%
+                           Magnitude                   Direction             Frequency-temporal                  Influence                    Total
+                                                                                 Risk signal
+
+                                                                        Benign          Malicious
+
+
+  干净代价来自激进裁剪与次概率质量损失
+  Clean RTC  在第 11–60 轮平均裁剪 50.0% 的参与观测、隔离 17.4% 的良性观测，聚合权重和仅 77.38%，即平均保留 22.62%
+  零更新质量；最终准确率低 1.15 个百分点。
+  All-reverse 下主动期零更新质量 40.05%，末轮 63.997%；良性 quarantine 主动期 22.60%，末轮 57.14%。更长训练或 Non-
+  IID 下，有效客户端持续流失可能成为瓶颈。
+
+  Source: RTC 客户端级风险与状态
+  Table: logs\label_flip_continuous_iid\raw\*rtc_full*_clients.csv
+
+
+  六组运行的主动期与最终指标
+  Source:          实验汇总与配对比较
+  Tables: logs\label_flip_continuous_iid\comparison_runs.csv, logs\label_flip_continuous_iid\rounds\*.csv
+
+  #          Scenario           Defense   Active accuracy       Final accuracy    Active ASR        Malicious weight   Benign quarantine   Zero-update mass     Aggregat
+
+  1          5→3 targeted       FedAvg              84.4%              86.2%            34.9%                20.2%                  0%                     —
+
+  2          5→3 targeted       RTC                 82.5%              85.7%            38.7%                17.8%                 22%                21.3%
+
+  3          All-reverse        FedAvg              78.8%              36.4%               —                 20.2%                  0%                     —
+
+  4          All-reverse        RTC                    84%             87.6%               —                  0.1%               22.6%                    40%
+
+  5          Clean              FedAvg                 86%             90.1%               —                    0%                  0%                     —
+
+  6          Clean              RTC                 84.4%              88.9%               —                    0%               17.4%                22.6%
+
+
+  范围、设计与指标口径
+               CIFAR-10 ，ResNet-18，无预训练；20 客户端、每轮 10 个、IID、5 本地 epoch、batch 32、SGD、seed 42。
+               攻击第 11–60 轮连续生效；20% 恶意客户端；六组使用同一数据清单和客户端抽样计划。
+               Targeted 为 Dog 5→Cat 3；all-reverse 为 y′=9−y；两者均对 eligible 样本 100% 翻转。
+               Active accuracy/ASR 是第 11–60 轮算术平均；ASR-AUC 是该区间逐轮 ASR 的梯形积分。
+            comparison_runs.csv     的 malicious_aggregation_weight_share 混入前 10 个无攻击轮；本报告的攻击期权重重新按第 11
+         轮计算。
+            –60
+
+Source: 实验配置清单
+Tables: logs\label_flip_continuous_iid\experiment_manifest.json, logs\label_flip_continuous_iid\raw\*_config.json
+
+
+
+可审计性、限制与稳健性
+6/6  规格完成，每组 61 行（0–60），核心指标有限，数据 manifest hash 一致，硬约束违反量均小于 1e−8，日志未发现 Ray
+容量或错误 1450。
+证据仍是单 seed 描述性结果。同防御的攻击与 clean 运行在第 1–10 轮并非逐值完全重合：targeted 的平均前置差为 FedAvg
+−0.75、RTC +1.20 个百分点，说明跨子进程仍有随机漂移。Clean 又未记录 5→3 ASR/混淆矩阵，无法计算同轮 clean ASR
+lift。定向攻击差异只有约 2 个百分点，正式结论前必须修复这两项。
+
+Source: 执行完整性门禁
+Table: logs\label_flip_continuous_iid\execution_validation.csv
+
+
+执行与硬约束门禁
+Source:      执行完整性门禁
+Table: logs\label_flip_continuous_iid\execution_validation.csv
+
+Gate                                       Passed     Observed          Required
+
+critical_metrics_finite                    true       True              all finite
+
+data_manifest_hash_match                   true       {42: 1}           one hash per seed
+
+matrix_complete                            true       6/6 run files     6/6
+
+rounds_complete                            true       True              rounds 1..60 (+ optional round 0)
+
+rtc_exposure_budget_violation              true       0                 <= 1e-8
+
+rtc_subprobability_mass                    true       1                 <= 1 + 1e-8
+
+rtc_weight_cap_violation                   true       0                 <= 1e-8
+
+selected_partition_ids_match               true       True              true
+
+short_long_schedules_match                 true       True              true
+
+
+建议的改进顺序
+       1. 先修评估与可复现性。 Clean 也记录混淆矩阵和任意 source→target ASR；固定初始权重、DataLoader shuffle 与客户
+          端 RNG，使同防御前 10 轮逐值一致；扩展到 3–5 seeds。
+       2. 为 targeted 加入类别敏感证据。 在服务器小型可信集上计算每个更新对 source=5 loss、target=3 logit margin 或
+          class-conditional gradient 的边际变化。当前四个全局更新信号全部反向，降低统一阈值会先伤害良性客户端。
+       3. 校准 clean 约束。 clip_multiplier=1.0 使每轮约半数客户端被裁剪；联合搜索裁剪分位数/乘数、状态阈值和恢复规
+          则，并以 benign quarantine、zero-update mass、clean accuracy drop 为护栏。
+       4. 分开报告检测与缓解。 All-reverse 证明高影响攻击可被硬约束阻断；targeted 证明检测器没有识别攻击者。分别报告
+          trust AUC、恶意权重、攻击指标和 clean utility。
+       5. 频域价值留给 periodic 消融。 连续 targeted 中恶意 temporal risk 仅 0.010，低于良性的 0.045；不应以 continuous
+          结果作为频域正证据。
+后续应回答的问题
+            多 seed 下，all-reverse 的收益和 targeted 的 ASR 劣化是否稳定？
+            Class-conditional influence 能否把 targeted trust AUC 提升到 0.7 以上且不增加 clean false positive？
+将 clean 零更新质量从 22.6% 降到 10% 以下后，all-reverse 安全收益是否保留？
+Dirichlet α=0.3 下，良性异质性会把 clean quarantine 推高到什么程度？
+

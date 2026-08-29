@@ -1,7 +1,7 @@
-"""RTC-v3 candidate entry point.
+"""Promoted RTC-v3 semantic-temporal-exposure defense.
 
-The candidate is intentionally separate from RTC-v2.  Phase implementations
-live in small modules and are wired here only after their invariants pass.
+The implementation remains state- and manifest-isolated from RTC-v2. Phase
+components are enabled through one invariant-checked pipeline.
 """
 
 from __future__ import annotations
@@ -99,13 +99,13 @@ class RTCv3ClientRecord:
 
 
 class RTCv3Defense(BaseDefense):
-    """Version-isolated RTC-v3 candidate.
+    """Manifest-bound RTC-v3 implementation.
 
     Phase 0 establishes the manifest contract; Phases 1–6 are enabled
     explicitly by ``implementation_phase`` while sharing one fixed pipeline.
     """
 
-    version = "rtc_v3_candidate"
+    version = "rtc_v3"
 
     def __init__(self, cfg: DefenseConfig, num_clients: int = 100):
         super().__init__(cfg)
@@ -120,7 +120,7 @@ class RTCv3Defense(BaseDefense):
             source = params.get("calibration_path")
         if source is None:
             raise ValueError(
-                "rtc_v3_candidate requires calibration_manifest or calibration_path"
+                "rtc_v3 requires calibration_manifest or calibration_path"
             )
         if isinstance(source, (str, Path)):
             self.manifest = CalibrationManifest.load(source)

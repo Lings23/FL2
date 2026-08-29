@@ -276,6 +276,22 @@ def get_parameter_names(model: nn.Module) -> dict[str, str]:
     }
 
 
+def get_trainable_parameter_indices(model: nn.Module) -> set[int]:
+    """Return state-dict indices backed by registered model parameters.
+
+    Floating buffers such as BatchNorm running statistics intentionally do not
+    appear in this set: model-replacement scaling applies to learned parameter
+    deltas, while buffers retain the values produced by normal local training.
+    """
+
+    parameter_names = {str(name) for name, _ in model.named_parameters()}
+    return {
+        index
+        for index, name in enumerate(model.state_dict().keys())
+        if str(name) in parameter_names
+    }
+
+
 def set_parameters(model: nn.Module, parameters: List) -> None:
     """Load a list of numpy arrays into a model's state dict."""
     state_dict = model.state_dict()

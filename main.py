@@ -84,14 +84,14 @@ def wait_for_available_memory(
     )
 
 
-def shutdown_ray_runtime() -> None:
+def shutdown_ray_runtime(*, force_cpu: bool = False) -> None:
     """Release Ray and allocator-owned memory before another specification."""
     try:
         if ray.is_initialized():
             ray.shutdown()
     finally:
         gc.collect()
-        if torch.cuda.is_available():
+        if not force_cpu and torch.cuda.is_available():
             torch.cuda.empty_cache()
 
 
@@ -99,11 +99,11 @@ def shutdown_ray_runtime() -> None:
 # Seed
 # ---------------------------------------------------------------------------
 
-def set_seed(seed: int) -> None:
+def set_seed(seed: int, *, force_cpu: bool = False) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if torch.cuda.is_available():
+    if not force_cpu and torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
@@ -296,15 +296,22 @@ def determine_malicious_ids(cfg: Config) -> set:
 # Main simulation
 # ---------------------------------------------------------------------------
 
-def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTracker:
-    from attacks.attack_client import validate_label_flip_config
+def resolve_device(*, force_cpu: bool = False) -> torch.device:
+    """Choose the execution device without probing CUDA in forced-CPU mode."""
+    if force_cpu:
+        return torch.device("cpu")
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    validate_label_flip_config(cfg.security.attack, cfg.dataset.num_classes)
+
+def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTracker:
+    from attacks.attack_client import validate_attack_config
+
+    validate_attack_config(cfg.security.attack, cfg.dataset.num_classes)
     if cfg.federation.pairing_mode == "strict":
         # Required by deterministic CUDA matrix multiplication. Set it before
         # Ray actors or the first CUDA context are created.
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-    set_seed(cfg.project.seed)
+    set_seed(cfg.project.seed, force_cpu=cfg.ray.force_cpu)
     setup_logging(cfg.project.log_dir, cfg.project.log_level, name=experiment_name)
     config_path = Path(cfg.project.log_dir) / f"{experiment_name}_config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -315,7 +322,7 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
     # Flower's legacy simulation API keeps Ray alive after a successful run.
     # Tear down any inherited runtime before constructing the next dataset and
     # model, then wait for enough host memory to provision the object store.
-    shutdown_ray_runtime()
+    shutdown_ray_runtime(force_cpu=cfg.ray.force_cpu)
     available_memory = wait_for_available_memory(
         cfg.ray.min_available_memory_mb,
         cfg.ray.memory_wait_seconds,
@@ -328,7 +335,7 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
         cfg.ray.object_store_memory_mb,
     )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(force_cpu=cfg.ray.force_cpu)
     logger.info("Device: %s", device)
 
     data_manifest_path = Path(cfg.project.log_dir) / f"{experiment_name}_data_manifest.json"
@@ -461,7 +468,9 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
     #   Prevents Ray from injecting CUDA_VISIBLE_DEVICES="" into actors
     #   when client_num_gpus=0, which would hide the GPU from PyTorch.
     # ------------------------------------------------------------------
-    os.environ["RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO"] = "0"
+    os.environ["RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO"] = (
+        "1" if cfg.ray.force_cpu else "0"
+    )
     client_resources = {
         "num_cpus": cfg.ray.client_num_cpus,
         "num_gpus": cfg.ray.client_num_gpus,
@@ -492,7 +501,7 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
         tracker.print_summary()
         return tracker
     finally:
-        shutdown_ray_runtime()
+        shutdown_ray_runtime(force_cpu=cfg.ray.force_cpu)
 
 
 # ---------------------------------------------------------------------------

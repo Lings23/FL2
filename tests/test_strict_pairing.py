@@ -17,6 +17,7 @@ from experiments.trial_plan import (
     TrialPlanV1,
     attach_trial_plans,
     generate_trial_plan,
+    paired_fedavg_clean_specs,
 )
 from defenses.rtc.calibration import build_manifest
 from strategies.fed_strategy import FedSecStrategy
@@ -73,6 +74,55 @@ def test_attack_conditions_do_not_reuse_plans_and_repeat_exactly(tmp_path):
     reverse = attach_trial_plans([_spec("label_flip_all_reverse")], _args(), tmp_path / "c")[0]
     assert first["trial_plan_hash"] == repeated["trial_plan_hash"]
     assert first["trial_plan_hash"] != reverse["trial_plan_hash"]
+
+
+def test_attack_strength_does_not_change_common_random_number_plan(tmp_path):
+    weak = {
+        **_spec("sign_flip"),
+        "strength_level": "weak",
+        "sign_flip_scale": 1.0,
+        "attack_contract_hash": "weak-contract",
+    }
+    strong = {
+        **_spec("sign_flip"),
+        "strength_level": "strong",
+        "sign_flip_scale": 10.0,
+        "attack_contract_hash": "strong-contract",
+    }
+    rows = attach_trial_plans([weak, strong], _args(), tmp_path)
+    assert rows[0]["trial_plan_hash"] == rows[1]["trial_plan_hash"]
+    assert rows[0]["pairing_group_id"] == rows[1]["pairing_group_id"]
+
+
+def test_paired_clean_counterfactual_drops_dba_runtime_attack_parameters(tmp_path):
+    dba = {
+        **_spec("dba"),
+        "aggregation_aware_scaling": True,
+        "replacement_gain": 0.4,
+        "poison_fraction": 0.1,
+        "dba_scale_update": True,
+        "dba_pattern_mode": "paper_cifar_1x6_2x2",
+        "dba_trigger_value_mode": "cifar10_normalized_white",
+        "boost_factor": 10.0,
+    }
+    planned = attach_trial_plans([dba], _args(), tmp_path)
+    clean = paired_fedavg_clean_specs(planned)[0]
+
+    assert clean["attack"] == "none"
+    assert clean["period"] == "clean"
+    assert clean["malicious_fraction"] == 0.0
+    assert clean["defense"] == "fedavg"
+    assert clean["counterfactual_for"] == planned[0]["pairing_group_id"]
+    for key in (
+        "aggregation_aware_scaling",
+        "replacement_gain",
+        "poison_fraction",
+        "dba_scale_update",
+        "dba_pattern_mode",
+        "dba_trigger_value_mode",
+        "boost_factor",
+    ):
+        assert key not in clean
 
 
 def test_numeric_ids_and_multi_endpoint_principals_are_unambiguous():

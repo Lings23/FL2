@@ -7,6 +7,7 @@ Flower FlowerClient implementation.
 from __future__ import annotations
 
 import contextlib
+from dataclasses import replace
 import logging
 import os
 import random
@@ -320,7 +321,14 @@ class FedSecClient(fl.client.Client):
         logger.debug("Client %d | loss=%.4f acc=%.4f",
                      self.client_id, metrics["train_loss"], metrics["train_accuracy"])
 
-        fit_metrics = {k: float(v) for k, v in metrics.items()}
+        fit_metrics = {
+            key: (
+                value
+                if isinstance(value, (str, bytes))
+                else float(value)
+            )
+            for key, value in metrics.items()
+        }
         # These fields support stable state and offline evaluation. The server
         # must never use is_malicious as an input to a defense decision.
         fit_metrics["client_id"] = int(self.client_id)
@@ -381,6 +389,16 @@ class FedSecClient(fl.client.Client):
 # Client factory
 # ---------------------------------------------------------------------------
 
+def assign_dba_fragments(
+    malicious_ids: set[int], trigger_num: int
+) -> Dict[int, int]:
+    """Deterministically cover DBA fragments by malicious-client rank."""
+    count = max(1, int(trigger_num))
+    return {
+        client_id: rank % count
+        for rank, client_id in enumerate(sorted(int(value) for value in malicious_ids))
+    }
+
 def make_client_fn(
     model_factory: Callable[[], nn.Module],
     loaders_map: Dict[int, Tuple[DataLoader, DataLoader]],
@@ -410,6 +428,10 @@ def make_client_fn(
     from attacks.attack_client import get_attack_client_class
 
     malicious_ids = malicious_ids or set()
+    _dba_fragments = assign_dba_fragments(
+        {int(value) for value in malicious_ids},
+        int(attack_cfg.dba_trigger_num) if attack_cfg is not None else 1,
+    )
     _device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Build a plain dict of (train_loader, val_loader) tuples.
@@ -424,8 +446,20 @@ def make_client_fn(
         model = model_factory()
         train_loader, val_loader = _loaders[cid_int]
 
-        if cid_int in malicious_ids and attack_cfg and attack_cfg.enabled:
-            ClientClass = get_attack_client_class(attack_cfg.type)
+        effective_attack_cfg = attack_cfg
+        if (
+            cid_int in malicious_ids
+            and attack_cfg
+            and attack_cfg.enabled
+            and attack_cfg.type.lower() == "dba"
+        ):
+            effective_attack_cfg = replace(
+                attack_cfg,
+                dba_fragment_index=_dba_fragments[cid_int],
+            )
+
+        if cid_int in malicious_ids and effective_attack_cfg and effective_attack_cfg.enabled:
+            ClientClass = get_attack_client_class(effective_attack_cfg.type)
         else:
             ClientClass = FedSecClient
 
@@ -435,7 +469,7 @@ def make_client_fn(
             train_loader=train_loader,
             val_loader=val_loader,
             client_cfg=client_cfg,
-            attack_cfg=attack_cfg,
+            attack_cfg=effective_attack_cfg,
             dp_cfg=dp_cfg,
             device=_device,
             experiment_seed=experiment_seed,

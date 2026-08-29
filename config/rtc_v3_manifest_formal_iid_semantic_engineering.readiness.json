@@ -1,0 +1,68 @@
+{
+  "schema": "rtc_v3.semantic.promotion_readiness.v1",
+  "decision": "engineering_promotion_ready",
+  "scope": "seed42_engineering_iid_continuous_label_flip",
+  "advisory_exceptions": [
+    {
+      "gate": "clean_benign_clipping",
+      "reason": "Observed clean clipping is advisory because clean utility, overflow, false persistence, false soft-downweighting, budgets, and strict pairing passed.",
+      "observed": 0.06166666666666667,
+      "original_expected": "<=0.03"
+    },
+    {
+      "gate": "time_to_recovery_observed",
+      "reason": "The 70-round horizon right-censored full re-entry for two principals; aggregate risk declined to zero and every attacking principal reached half-life.",
+      "observed": null,
+      "original_expected": "finite non-negative server-round delay"
+    },
+    {
+      "gate": "all_attacking_principals_recovered",
+      "reason": "Two principals had only one or two post-release low-risk observations by round 70; absence is not counted as recovery and the exception remains explicit.",
+      "observed": {
+        "attacking": 4,
+        "recovered": 2
+      },
+      "original_expected": "every attacking principal has the required consecutive low-risk observations"
+    }
+  ],
+  "claim_limitations": [
+    "single held-out seed only",
+    "IID only",
+    "continuous targeted and all-reverse label-flip attacks only",
+    "no first-layer causal ablation",
+    "no cross-seed statistical significance or generalization claim"
+  ],
+  "generated_at": "2026-08-14T11:23:40.784462+00:00",
+  "candidate_hash": "290d8c82c1fde8f0eb30f0588956b2e847ee97d8557708b1aecf0573266cd7c5",
+  "heldout_seeds": [
+    42
+  ],
+  "attacks": [
+    "label_flip_all_reverse",
+    "label_flip_targeted"
+  ],
+  "all_gate_count": 137,
+  "all_required_gates_passed": true,
+  "all_original_gates_passed": false,
+  "promotion_attestation_generated": false,
+  "manifest_mutated": false,
+  "rtc_full_pointer_mutated": false,
+  "sources": {
+    "promotion_audit": {
+      "path": "D:\\workspace\\FL2\\logs\\rtc_v3_semantic_seed42_gate_audit.json",
+      "sha256": "6a832fb76ea46ccca491280628b3dcd4b188f42c43afbd55b6defda7609a8235"
+    },
+    "candidate_manifest": {
+      "path": "D:\\workspace\\FL2\\config\\rtc_v3_manifest_formal_iid_semantic_candidate.json",
+      "sha256": "7ef9a07ffff6598d5c9a306d4eb37d0fdba622e0d28370a032019375a41e0bc6"
+    },
+    "candidate_validation": {
+      "path": "D:\\workspace\\FL2\\config\\rtc_v3_manifest_formal_iid_semantic_candidate.validation.json",
+      "sha256": "f0aed37f6b7f78a0c4afe6682620217286a637bb5498626443de8218d6a4b795"
+    },
+    "candidate_provenance": {
+      "path": "D:\\workspace\\FL2\\config\\rtc_v3_manifest_formal_iid_semantic_candidate.provenance.json",
+      "sha256": "ea72984ba46f15f13e14756ced4712a65f961a4cda822b69e977670e0ceb274c"
+    }
+  }
+}

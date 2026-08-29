@@ -13,6 +13,49 @@ import numpy as np
 
 SCHEMA_VERSION = "trial-plan-v1"
 
+# A TrialPlan owns only common-random-number factors.  Attack strength,
+# implementation/version hashes, optimizer parameters, and defense settings
+# must never perturb participant selection, malicious identities, data, model
+# initialization, or client-local random streams.
+PLAN_CONDITION_KEYS = (
+    "attack",
+    "period",
+    "on_rounds",
+    "off_rounds",
+    "malicious_fraction",
+    "seed",
+    "attack_start_round",
+    "attack_end_round",
+    "partition",
+    "dirichlet_alpha",
+    "participation_rate",
+)
+
+COUNTERFACTUAL_ATTACK_PARAMETER_KEYS = frozenset({
+    "aggregation_aware_scaling",
+    "boost_factor",
+    "coordinated_attack_knowledge",
+    "dba_pattern_mode",
+    "dba_scale_update",
+    "dba_trigger_value_mode",
+    "gaussian_noise_mean",
+    "gaussian_noise_std",
+    "label_flip_poison_fraction",
+    "label_flip_source_label",
+    "label_flip_target_label",
+    "lie_z",
+    "optimization_gamma_fraction",
+    "optimization_gamma_init",
+    "optimization_max_iterations",
+    "optimization_perturbation",
+    "optimization_tolerance",
+    "poison_fraction",
+    "random_noise_distribution",
+    "random_noise_scale",
+    "replacement_gain",
+    "sign_flip_scale",
+})
+
 
 class TrialPlanError(RuntimeError):
     """Raised when a strict trial plan is invalid or cannot be consumed."""
@@ -101,20 +144,29 @@ class TrialPlanV1:
 
 def _condition_payload(spec: Mapping[str, Any], args: Any) -> Dict[str, Any]:
     """Return the defense-free condition that owns a plan."""
-    excluded = {
-        "defense", "defense_type", "custom_params", "trial_plan_path",
-        "trial_plan_hash", "pairing_group_id", "counterfactual_for",
-        "attack_group", "benchmark_version",
+    condition = {
+        key: spec[key]
+        for key in PLAN_CONDITION_KEYS
+        if key in spec
     }
-    condition = {key: value for key, value in spec.items() if key not in excluded}
-    num_clients = 10 if bool(getattr(args, "smoke", False)) else int(
-        getattr(args, "num_clients", 20)
+    smoke = bool(getattr(args, "smoke", False))
+    smoke_all_clients = smoke and bool(
+        getattr(args, "smoke_all_clients", True)
+    )
+    num_clients = (
+        int(getattr(args, "smoke_num_clients", 10))
+        if bool(getattr(args, "smoke", False))
+        else int(getattr(args, "num_clients", 20))
     )
     condition.update({
         "num_clients": num_clients,
-        "rounds": 6 if bool(getattr(args, "smoke", False)) else int(args.rounds),
+        "rounds": (
+            int(getattr(args, "smoke_rounds", 6))
+            if bool(getattr(args, "smoke", False))
+            else int(args.rounds)
+        ),
         "clients_per_round": (
-            num_clients if bool(getattr(args, "smoke", False))
+            num_clients if smoke_all_clients
             else max(1, min(num_clients, int(np.ceil(
                 num_clients * float(spec.get("participation_rate", 0.5))
             ))))
@@ -346,10 +398,7 @@ def paired_fedavg_clean_specs(planned_attacked: Sequence[Mapping[str, Any]]) -> 
         if group_id in rows:
             continue
         row = dict(source)
-        for key in (
-            "label_flip_source_label", "label_flip_target_label",
-            "label_flip_poison_fraction",
-        ):
+        for key in COUNTERFACTUAL_ATTACK_PARAMETER_KEYS:
             row.pop(key, None)
         row.update({
             "attack_group": "clean",

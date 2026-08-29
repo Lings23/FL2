@@ -92,16 +92,37 @@ class AttackConfig:
     trigger_size: int = 3
     trigger_value: float = 1.0
     dba_trigger_num: int = 4
+    dba_pattern_mode: str = "paper_cifar_1x6_2x2"
+    dba_trigger_value_mode: str = "cifar10_normalized_white"
     dba_gap: int = 3
     dba_base_row: int = 0
     dba_base_col: int = 0
+    dba_fragment_index: int = -1
     dba_scale_update: bool = True
     dba_boost_factor: float = 10.0
     model_replacement_boost_factor: float = 10.0
+    # When enabled, scaling is applied once on the server to the model delta
+    # using the active malicious clients' exact FedAvg sample-weight share.
+    # ``replacement_gain=1`` targets one aggregate malicious-model delta after
+    # compensating aggregation dilution; it is not a per-client boost.
+    aggregation_aware_scaling: bool = False
+    replacement_gain: float = 1.0
     mpaf_lambda: float = 1.0
     mpaf_base_scale: float = 0.0
     mpaf_max_update_norm: float = 0.0
     gaussian_noise_std: float = 0.1
+    gaussian_noise_mean: float = 0.0
+    random_noise_scale: float = 1.0
+    random_noise_distribution: str = "rademacher"
+    sign_flip_scale: float = 1.0
+    lie_z: float = 0.0
+    coordinated_attack_knowledge: str = "all_updates"
+    optimization_perturbation: str = "inverse_sign"
+    optimization_gamma_init: float = 0.001
+    optimization_tolerance: float = 1e-6
+    optimization_max_iterations: int = 64
+    optimization_gamma_fraction: float = 1.0
+    optimization_gamma_max: float = 1.0e6
     attack_start_round: int = 1
     attack_end_round: int = -1
     attack_on_rounds: int = 1
@@ -157,6 +178,10 @@ class DPConfig:
 class RayConfig:
     client_num_cpus: float = 1.0
     client_num_gpus: float = 0.0
+    # Resource quota and execution device are separate concerns.  A zero GPU
+    # quota historically meant that Ray did not reserve a GPU while clients
+    # could still use CUDA.  Set force_cpu for a genuinely CUDA-free run.
+    force_cpu: bool = False
     log_to_driver: bool = False
     include_dashboard: bool = False
     object_store_memory_mb: int = 0

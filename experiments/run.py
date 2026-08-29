@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from experiments import periodic_attack
 from experiments import rtc_fedavg_comparison
 from experiments import sweep
+from experiments.rtc_v3 import byzantine
 
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,7 @@ def _run_sweep(args: argparse.Namespace) -> pd.DataFrame:
     overrides.setdefault("federation.min_available_clients", num_clients)
     overrides.setdefault("ray.client_num_cpus", args.ray_client_num_cpus)
     overrides.setdefault("ray.client_num_gpus", args.ray_client_num_gpus)
+    overrides.setdefault("ray.force_cpu", args.force_cpu)
     overrides.setdefault("ray.object_store_memory_mb", args.ray_object_store_memory_mb)
     overrides.setdefault("ray.min_available_memory_mb", args.ray_min_available_memory_mb)
     overrides.setdefault("ray.memory_wait_seconds", args.ray_memory_wait_seconds)
@@ -251,6 +253,27 @@ def _run_strict_sweep(
     return summary
 
 
+def _run_rtc_byzantine(args: argparse.Namespace) -> pd.DataFrame:
+    fractions = _csv(args.malicious_fractions or "0.2")
+    if len(fractions) != 1:
+        raise ValueError("rtc-byzantine requires exactly one malicious fraction")
+    args.malicious_fraction = float(fractions[0])
+    return byzantine.run(args)
+
+
+def _run_rtc_byzantine_screen(args: argparse.Namespace) -> pd.DataFrame:
+    fractions = _csv(args.malicious_fractions or "0.2")
+    if len(fractions) != 1:
+        raise ValueError("rtc-byzantine-screen requires exactly one malicious fraction")
+    if len(_csv(args.seeds or "42")) != 1:
+        raise ValueError("rtc-byzantine-screen requires exactly one seed")
+    args.malicious_fraction = float(fractions[0])
+    args.byzantine_screening = True
+    args.defenses = "fedavg"
+    args.output = args.output or "logs/rtc_v3_byzantine_screen"
+    return byzantine.run(args)
+
+
 PROFILES = {
     profile.name: profile for profile in (
         ExperimentProfile(
@@ -268,6 +291,16 @@ PROFILES = {
             "Generic attack-by-defense grid sweep.",
             _run_sweep,
         ),
+        ExperimentProfile(
+            "rtc-byzantine",
+            "Strictly paired generalized-Byzantine matrix for promoted RTC-V3.",
+            _run_rtc_byzantine,
+        ),
+        ExperimentProfile(
+            "rtc-byzantine-screen",
+            "FedAvg-only weak/medium/strong Byzantine attack screening.",
+            _run_rtc_byzantine_screen,
+        ),
     )
 }
 
@@ -281,14 +314,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--rounds", type=int, default=None)
     parser.add_argument("--attacks", default="", help="Comma-separated attack names")
     parser.add_argument(
+        "--strength-levels",
+        default="",
+        help="Comma-separated weak/medium/strong filter for rtc-byzantine-screen",
+    )
+    parser.add_argument(
         "--attack-groups", choices=("targeted", "untargeted", "all"), default="all",
         help="Used when --attacks is omitted",
     )
     parser.add_argument("--defenses", default="", help="Comma-separated defense/profile names")
     parser.add_argument("--periods", default="", help="Comma-separated periodic schedules")
     parser.add_argument(
-        "--rtc-v3-manifest", default="",
-        help="Frozen RTC-v3 calibration manifest for the rtc-fedavg profile",
+        "--rtc-v3-manifest",
+        default=str(rtc_fedavg_comparison.RTC_V3_PROMOTED_MANIFEST),
+        help="RTC-v3 manifest (defaults to the engineering-promoted manifest)",
     )
     parser.add_argument(
         "--rtc-v3-phase", type=int, default=6, choices=range(1, 7),
@@ -301,6 +340,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--rtc-v3-parameter-roles", default="",
         help="Optional JSON parameter-index-to-role mapping",
+    )
+    parser.add_argument(
+        "--byzantine-attack-freeze",
+        default="",
+        help="Frozen RTCByzantineAttackFreezeV1 JSON for formal rtc-byzantine runs",
     )
     parser.add_argument("--seeds", "--seed", dest="seeds", default="")
     parser.add_argument(
@@ -329,6 +373,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-test-samples", type=int, default=0)
     parser.add_argument("--ray-client-num-cpus", type=float, default=1.0)
     parser.add_argument("--ray-client-num-gpus", type=float, default=0.0)
+    parser.add_argument(
+        "--force-cpu", action="store_true",
+        help="Force the server and all Ray clients to use CPU; independent of the GPU resource quota",
+    )
     parser.add_argument("--ray-object-store-memory-mb", type=int, default=3072)
     parser.add_argument("--ray-min-available-memory-mb", type=int, default=10240)
     parser.add_argument("--ray-memory-wait-seconds", type=float, default=120.0)

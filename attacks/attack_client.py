@@ -9,7 +9,7 @@ Implemented attacks
 • label_flip_all_reverse — flip every selected label with y' = C - 1 - y
 • backdoor          — stamp a pixel trigger + relabel to target class
 • dba               — distributed backdoor with per-client trigger fragments
-• gaussian_noise    — add Gaussian noise to uploaded model weights
+• gaussian_noise    — generic additive Gaussian perturbation of the uploaded update
 • model_replacement — scale update to replace global model (Bagdasaryan et al.)
 • mpaf              — fake-client drift toward a fixed low-accuracy base model
 • byzantine         — send random weights (worst-case adversary)
@@ -68,16 +68,38 @@ def _scale_floating_update(
     global_params: List[np.ndarray],
     local_params: List[np.ndarray],
     boost_factor: float,
+    scalable_indices: Optional[set[int]] = None,
 ) -> List[np.ndarray]:
-    """Scale floating model updates while preserving non-floating buffers."""
+    """Scale selected floating model deltas and preserve all other buffers."""
     scaled: List[np.ndarray] = []
-    for global_param, local_param in zip(global_params, local_params):
-        if _is_floating_array(global_param):
+    for index, (global_param, local_param) in enumerate(
+        zip(global_params, local_params)
+    ):
+        if (
+            _is_floating_array(global_param)
+            and (scalable_indices is None or index in scalable_indices)
+        ):
             arr = global_param + boost_factor * (local_param - global_param)
             scaled.append(arr.astype(global_param.dtype, copy=False))
         else:
             scaled.append(local_param.copy())
     return scaled
+
+
+def _trainable_state_indices(model: nn.Module) -> set[int]:
+    """Map registered parameters to their positions in state-dict order."""
+    trainable_names = {str(name) for name, _ in model.named_parameters()}
+    return {
+        index
+        for index, name in enumerate(model.state_dict().keys())
+        if str(name) in trainable_names
+    }
+
+
+def _client_scalable_indices(client: FedSecClient) -> Optional[set[int]]:
+    """Return a real client's trainable layout; allow lightweight test doubles."""
+    model = getattr(client, "model", None)
+    return _trainable_state_indices(model) if model is not None else None
 
 
 # ── Helper: poisoned data loaders ────────────────────────────────────────────
@@ -113,6 +135,90 @@ def validate_label_flip_config(
             raise ValueError(f"target_label must be in [0, {int(num_classes) - 1}]")
         if source == target:
             raise ValueError("source_label and target_label must be different")
+
+
+def validate_attack_config(attack_cfg: AttackConfig, num_classes: int) -> None:
+    """Validate the complete versioned attack contract before simulation."""
+    from attacks.spec import get_attack_spec
+
+    validate_label_flip_config(attack_cfg, num_classes)
+    attack_type = str(attack_cfg.type).lower()
+    get_attack_spec(attack_type)
+    if not 0.0 <= float(attack_cfg.malicious_fraction) <= 1.0:
+        raise ValueError("malicious_fraction must be in [0, 1]")
+    if not 0.0 <= float(attack_cfg.poison_fraction) <= 1.0:
+        raise ValueError("poison_fraction must be in [0, 1]")
+    if float(attack_cfg.gaussian_noise_std) < 0.0:
+        raise ValueError("gaussian_noise_std must be non-negative")
+    if float(attack_cfg.random_noise_scale) < 0.0:
+        raise ValueError("random_noise_scale must be non-negative")
+    if str(attack_cfg.random_noise_distribution).lower() not in {
+        "rademacher",
+        "gaussian",
+    }:
+        raise ValueError(
+            "random_noise_distribution must be rademacher or gaussian"
+        )
+    if float(attack_cfg.sign_flip_scale) < 0.0:
+        raise ValueError("sign_flip_scale must be non-negative")
+    if (
+        not np.isfinite(float(attack_cfg.replacement_gain))
+        or float(attack_cfg.replacement_gain) <= 0.0
+    ):
+        raise ValueError("replacement_gain must be finite and positive")
+    if bool(attack_cfg.aggregation_aware_scaling) and attack_type not in {
+        "dba", "model_replacement", "scaling_backdoor"
+    }:
+        raise ValueError("aggregation_aware_scaling is only valid for scaled backdoors")
+    if float(attack_cfg.lie_z) < 0.0:
+        raise ValueError("lie_z must be non-negative; zero selects automatic z")
+    if str(attack_cfg.coordinated_attack_knowledge).lower() not in {
+        "all_updates",
+        "malicious_only",
+    }:
+        raise ValueError(
+            "coordinated_attack_knowledge must be all_updates or malicious_only"
+        )
+    if str(attack_cfg.optimization_perturbation).lower() not in {
+        "inverse_std",
+        "inverse_unit",
+        "inverse_sign",
+    }:
+        raise ValueError("unsupported optimization_perturbation")
+    if float(attack_cfg.optimization_gamma_init) <= 0.0:
+        raise ValueError("optimization_gamma_init must be positive")
+    if float(attack_cfg.optimization_tolerance) <= 0.0:
+        raise ValueError("optimization_tolerance must be positive")
+    if int(attack_cfg.optimization_max_iterations) <= 0:
+        raise ValueError("optimization_max_iterations must be positive")
+    if (
+        not np.isfinite(float(attack_cfg.optimization_gamma_max))
+        or float(attack_cfg.optimization_gamma_max) <= 0.0
+    ):
+        raise ValueError("optimization_gamma_max must be finite and positive")
+    if not 0.0 < float(attack_cfg.optimization_gamma_fraction) <= 1.0:
+        raise ValueError("optimization_gamma_fraction must be in (0, 1]")
+    if int(attack_cfg.dba_trigger_num) <= 0:
+        raise ValueError("dba_trigger_num must be positive")
+    if str(attack_cfg.dba_pattern_mode).lower() not in {
+        "paper_cifar_1x6_2x2",
+        "legacy_blocks",
+    }:
+        raise ValueError("unsupported dba_pattern_mode")
+    if str(attack_cfg.dba_trigger_value_mode).lower() not in {
+        "cifar10_normalized_white",
+        "scalar",
+    }:
+        raise ValueError("unsupported dba_trigger_value_mode")
+    if (
+        str(attack_cfg.dba_pattern_mode).lower() == "paper_cifar_1x6_2x2"
+        and int(attack_cfg.dba_trigger_num) != 4
+    ):
+        raise ValueError("paper_cifar_1x6_2x2 requires dba_trigger_num=4")
+    if int(attack_cfg.trigger_size) <= 0:
+        raise ValueError("trigger_size must be positive")
+    if int(attack_cfg.dba_gap) < 0:
+        raise ValueError("dba_gap must be non-negative")
 
 
 class LabelFlipDataset(Dataset):
@@ -230,6 +336,7 @@ def get_dba_trigger_coords(
     image_shape: Tuple[int, ...],
     trigger_size: int = 3,
     dba_trigger_num: int = 4,
+    pattern_mode: str = "paper_cifar_1x6_2x2",
     gap: int = 3,
     base_row: int = 0,
     base_col: int = 0,
@@ -237,9 +344,10 @@ def get_dba_trigger_coords(
     """
     Return clipped pixel coordinates for one DBA trigger fragment.
 
-    Fragments are laid out left-to-right from (base_row, base_col). The
-    returned coordinates are spatial (row, col); all channels are stamped by
-    DBADataset.
+    ``paper_cifar_1x6_2x2`` reproduces the official CIFAR configuration:
+    four 1x6 line fragments at rows 0/4 and columns 0--5/9--14.  The old
+    left-to-right square layout remains available only as ``legacy_blocks``.
+    Returned coordinates are spatial (row, col); all channels are stamped.
     """
     if len(image_shape) < 2:
         raise ValueError(f"DBA expects image tensors with spatial dims, got {image_shape}")
@@ -249,8 +357,29 @@ def get_dba_trigger_coords(
         raise ValueError(f"DBA expects positive spatial dims, got {image_shape}")
 
     trigger_size = max(1, int(trigger_size))
-    fragment_index = int(fragment_index) % max(1, int(dba_trigger_num))
+    trigger_num = max(1, int(dba_trigger_num))
+    fragment_index = int(fragment_index) % trigger_num
     gap = max(0, int(gap))
+
+    mode = str(pattern_mode).lower()
+    if mode == "paper_cifar_1x6_2x2":
+        if trigger_num != 4:
+            raise ValueError("paper_cifar_1x6_2x2 requires dba_trigger_num=4")
+        starts = (
+            (int(base_row), int(base_col)),
+            (int(base_row), int(base_col) + 6 + gap),
+            (int(base_row) + 1 + gap, int(base_col)),
+            (int(base_row) + 1 + gap, int(base_col) + 6 + gap),
+        )
+        start_row, start_col = starts[fragment_index]
+        if start_row < 0 or start_col < 0 or start_row >= height or start_col + 5 >= width:
+            raise ValueError(
+                "paper_cifar_1x6_2x2 does not fit image shape "
+                f"{image_shape} at base ({base_row}, {base_col}) with gap {gap}"
+            )
+        return [(start_row, col) for col in range(start_col, start_col + 6)]
+    if mode != "legacy_blocks":
+        raise ValueError(f"Unsupported DBA pattern mode: {pattern_mode!r}")
 
     start_row = int(base_row)
     start_col = int(base_col) + fragment_index * (trigger_size + gap)
@@ -261,6 +390,37 @@ def get_dba_trigger_coords(
             clipped_col = min(max(col, 0), width - 1)
             coords.append((clipped_row, clipped_col))
     return sorted(set(coords))
+
+
+def stamp_dba_coords_(
+    tensor: torch.Tensor,
+    coords: List[Tuple[int, int]],
+    *,
+    trigger_value: float,
+    value_mode: str,
+) -> torch.Tensor:
+    """Stamp DBA coordinates in-place and return ``tensor``.
+
+    CIFAR-10 tensors in this project are normalized before DBADataset sees
+    them.  The official raw white value therefore has to be transformed per
+    RGB channel rather than written as a scalar 1.0.
+    """
+    mode = str(value_mode).lower()
+    if mode == "scalar":
+        value: float | torch.Tensor = float(trigger_value)
+    elif mode == "cifar10_normalized_white":
+        if tensor.dim() < 3 or int(tensor.shape[-3]) != 3:
+            raise ValueError(
+                "cifar10_normalized_white requires a channel-first RGB tensor"
+            )
+        means = tensor.new_tensor((0.4914, 0.4822, 0.4465))
+        stds = tensor.new_tensor((0.2023, 0.1994, 0.2010))
+        value = (tensor.new_tensor(1.0) - means) / stds
+    else:
+        raise ValueError(f"Unsupported DBA trigger value mode: {value_mode!r}")
+    for row, col in coords:
+        tensor[..., row, col] = value
+    return tensor
 
 
 class DBADataset(Dataset):
@@ -280,6 +440,8 @@ class DBADataset(Dataset):
         trigger_size: int = 3,
         trigger_value: float = 1.0,
         dba_trigger_num: int = 4,
+        pattern_mode: str = "paper_cifar_1x6_2x2",
+        trigger_value_mode: str = "cifar10_normalized_white",
         gap: int = 3,
         base_row: int = 0,
         base_col: int = 0,
@@ -291,6 +453,8 @@ class DBADataset(Dataset):
         self.trigger_size = trigger_size
         self.trigger_value = trigger_value
         self.dba_trigger_num = dba_trigger_num
+        self.pattern_mode = pattern_mode
+        self.trigger_value_mode = trigger_value_mode
         self.gap = gap
         self.base_row = base_row
         self.base_col = base_col
@@ -314,12 +478,17 @@ class DBADataset(Dataset):
                 image_shape=tuple(x.shape),
                 trigger_size=self.trigger_size,
                 dba_trigger_num=self.dba_trigger_num,
+                pattern_mode=self.pattern_mode,
                 gap=self.gap,
                 base_row=self.base_row,
                 base_col=self.base_col,
             )
-            for row, col in coords:
-                x[..., row, col] = self.trigger_value
+            stamp_dba_coords_(
+                x,
+                coords,
+                trigger_value=self.trigger_value,
+                value_mode=self.trigger_value_mode,
+            )
             y = self.target_label
         return x, y
 
@@ -411,7 +580,12 @@ class DBAClient(FedSecClient):
         if not getattr(self, "_attack_active", True):
             return
         self._global_params_cache = [p.copy() for p in parameters]
-        fragment_index = self.client_id % max(1, self.attack_cfg.dba_trigger_num)
+        configured_fragment = int(getattr(self.attack_cfg, "dba_fragment_index", -1))
+        fragment_index = (
+            configured_fragment
+            if configured_fragment >= 0
+            else self.client_id % max(1, self.attack_cfg.dba_trigger_num)
+        )
         poisoned_ds = DBADataset(
             self.train_loader.dataset,
             target_label=self.attack_cfg.backdoor_target_label,
@@ -420,6 +594,8 @@ class DBAClient(FedSecClient):
             trigger_size=self.attack_cfg.trigger_size,
             trigger_value=self.attack_cfg.trigger_value,
             dba_trigger_num=self.attack_cfg.dba_trigger_num,
+            pattern_mode=self.attack_cfg.dba_pattern_mode,
+            trigger_value_mode=self.attack_cfg.dba_trigger_value_mode,
             gap=self.attack_cfg.dba_gap,
             base_row=self.attack_cfg.dba_base_row,
             base_col=self.attack_cfg.dba_base_col,
@@ -431,6 +607,8 @@ class DBAClient(FedSecClient):
             shuffle=True,
             num_workers=0,
         )
+        self._dba_dataset = poisoned_ds
+        self._dba_fragment_index = fragment_index
         logger.debug(
             "Client %d: DBA attack activated (fragment=%d target=%d)",
             self.client_id,
@@ -441,7 +619,38 @@ class DBAClient(FedSecClient):
     def on_after_fit(
         self, parameters: List[np.ndarray], metrics: Dict
     ) -> List[np.ndarray]:
-        if not getattr(self, "_attack_active", True) or not self.attack_cfg.dba_scale_update:
+        aggregation_aware = bool(
+            getattr(self.attack_cfg, "aggregation_aware_scaling", False)
+        )
+        if getattr(self, "_attack_active", True):
+            poisoned_ds = getattr(self, "_dba_dataset", None)
+            metrics["dba_fragment_index"] = int(
+                getattr(self, "_dba_fragment_index", -1)
+            )
+            metrics["dba_poisoned_examples"] = int(
+                len(getattr(poisoned_ds, "poison_indices", ()))
+            )
+            metrics["dba_total_examples"] = int(
+                len(poisoned_ds) if poisoned_ds is not None else 0
+            )
+            metrics["dba_update_scaled"] = bool(self.attack_cfg.dba_scale_update)
+            metrics["dba_scaling_mode"] = (
+                "aggregation_weight_compensated"
+                if aggregation_aware
+                else "fixed_client_boost"
+            )
+            metrics["dba_replacement_gain"] = float(
+                getattr(self.attack_cfg, "replacement_gain", 1.0)
+            )
+        if (
+            not getattr(self, "_attack_active", True)
+            or not self.attack_cfg.dba_scale_update
+        ):
+            return parameters
+
+        # Exact FedAvg-weight compensation needs every selected client's
+        # num_examples and is therefore applied once by AttackCoordinator.
+        if aggregation_aware:
             return parameters
 
         global_params = getattr(self, "_global_params_cache", parameters)
@@ -449,6 +658,7 @@ class DBAClient(FedSecClient):
             global_params,
             parameters,
             self.attack_cfg.dba_boost_factor,
+            _client_scalable_indices(self),
         )
         logger.debug(
             "Client %d: DBA update scaled (boost=%.1f)",
@@ -467,13 +677,102 @@ class GaussianNoiseClient(FedSecClient):
         if not getattr(self, "_attack_active", True):
             return parameters
         attack_cfg = getattr(self, "attack_cfg", None)
+        mean = float(getattr(attack_cfg, "gaussian_noise_mean", 0.0))
         std = float(getattr(attack_cfg, "gaussian_noise_std", 0.1))
         noisy = _apply_to_floating_params(
             parameters,
-            lambda p: p + np.random.normal(0, std, size=p.shape).astype(p.dtype),
+            lambda p: p
+            + np.random.normal(mean, std, size=p.shape).astype(p.dtype),
         )
-        logger.debug("Client %d: Gaussian noise injected (std=%.4f)", self.client_id, std)
+        metrics["gaussian_noise_mean"] = mean
+        metrics["gaussian_noise_std"] = std
+        logger.debug(
+            "Client %d: Gaussian noise injected (mean=%.4f std=%.4f)",
+            self.client_id,
+            mean,
+            std,
+        )
         return noisy
+
+
+class RandomNoiseClient(FedSecClient):
+    """Replaces the local floating update with norm-matched random noise."""
+
+    def on_before_fit(self, parameters: List[np.ndarray], config: Dict) -> None:
+        if getattr(self, "_attack_active", True):
+            self._global_params_cache = [parameter.copy() for parameter in parameters]
+
+    def on_after_fit(
+        self, parameters: List[np.ndarray], metrics: Dict
+    ) -> List[np.ndarray]:
+        if not getattr(self, "_attack_active", True):
+            return parameters
+        global_params = getattr(self, "_global_params_cache", parameters)
+        squared_norm = 0.0
+        dimension = 0
+        for global_param, local_param in zip(global_params, parameters):
+            if _is_floating_array(global_param):
+                delta = np.asarray(local_param, dtype=np.float64) - np.asarray(
+                    global_param, dtype=np.float64
+                )
+                squared_norm += float(np.dot(delta.reshape(-1), delta.reshape(-1)))
+                dimension += int(delta.size)
+        reference_norm = float(np.sqrt(squared_norm))
+        strength = float(getattr(self.attack_cfg, "random_noise_scale", 1.0))
+        coordinate_scale = (
+            strength * reference_norm / np.sqrt(float(dimension))
+            if dimension > 0
+            else 0.0
+        )
+        distribution = str(
+            getattr(self.attack_cfg, "random_noise_distribution", "rademacher")
+        ).lower()
+        attacked: List[np.ndarray] = []
+        for global_param, local_param in zip(global_params, parameters):
+            if _is_floating_array(global_param):
+                if distribution == "rademacher":
+                    noise = np.random.choice((-1.0, 1.0), size=global_param.shape)
+                elif distribution == "gaussian":
+                    noise = np.random.standard_normal(size=global_param.shape)
+                else:
+                    raise ValueError(
+                        "random_noise_distribution must be rademacher or gaussian"
+                    )
+                value = np.asarray(global_param, dtype=np.float64) + coordinate_scale * noise
+                attacked.append(value.astype(global_param.dtype, copy=False))
+            else:
+                attacked.append(local_param.copy())
+        metrics["random_noise_reference_norm"] = reference_norm
+        metrics["random_noise_coordinate_scale"] = float(coordinate_scale)
+        metrics["random_noise_strength"] = strength
+        return attacked
+
+
+class SignFlipClient(FedSecClient):
+    """Reverses and optionally amplifies the client's local model delta."""
+
+    def on_before_fit(self, parameters: List[np.ndarray], config: Dict) -> None:
+        if getattr(self, "_attack_active", True):
+            self._global_params_cache = [parameter.copy() for parameter in parameters]
+
+    def on_after_fit(
+        self, parameters: List[np.ndarray], metrics: Dict
+    ) -> List[np.ndarray]:
+        if not getattr(self, "_attack_active", True):
+            return parameters
+        scale = float(getattr(self.attack_cfg, "sign_flip_scale", 1.0))
+        metrics["sign_flip_scale"] = scale
+        return _scale_floating_update(
+            getattr(self, "_global_params_cache", parameters),
+            parameters,
+            -scale,
+        )
+
+
+class CoordinatedAttackClient(FedSecClient):
+    """Trains normally; the strategy applies the coordinated attack pre-defense."""
+
+    pass
 
 
 class ByzantineClient(FedSecClient):
@@ -509,10 +808,29 @@ class ModelReplacementClient(FedSecClient):
     ) -> List[np.ndarray]:
         if not getattr(self, "_attack_active", True):
             return parameters
+        attack_cfg = getattr(self, "attack_cfg", None)
+        aggregation_aware = bool(
+            getattr(attack_cfg, "aggregation_aware_scaling", False)
+        )
+        metrics["model_replacement_scaling_mode"] = (
+            "aggregation_weight_compensated"
+            if aggregation_aware
+            else "fixed_client_boost"
+        )
+        metrics["model_replacement_gain"] = float(
+            getattr(attack_cfg, "replacement_gain", 1.0)
+        )
+        if aggregation_aware:
+            return parameters
         # Retrieve the global params that were set at fit start
         global_params = getattr(self, "_global_params_cache", parameters)
         # Compute update and amplify
-        scaled = _scale_floating_update(global_params, parameters, self.boost_factor)
+        scaled = _scale_floating_update(
+            global_params,
+            parameters,
+            self.boost_factor,
+            _client_scalable_indices(self),
+        )
         logger.debug("Client %d: model replacement (boost=%.1f)",
                      self.client_id, self.boost_factor)
         return scaled
@@ -527,6 +845,29 @@ class ModelReplacementClient(FedSecClient):
             self.train_loader.dataset,
             target_label=self.attack_cfg.backdoor_target_label,
             poison_fraction=1.0,   # all samples poisoned
+            trigger_size=self.attack_cfg.trigger_size,
+            trigger_value=self.attack_cfg.trigger_value,
+            seed=int(getattr(self, "_current_attack_seed", self.client_id)),
+        )
+        self.train_loader = DataLoader(
+            poisoned_ds,
+            batch_size=self.train_loader.batch_size,
+            shuffle=True,
+            num_workers=0,
+        )
+
+
+class ScalingBackdoorClient(ModelReplacementClient):
+    """Train-and-scale backdoor with an explicit, configurable poison fraction."""
+
+    def on_before_fit(self, parameters: List[np.ndarray], config: Dict) -> None:
+        if not getattr(self, "_attack_active", True):
+            return
+        self._global_params_cache = [parameter.copy() for parameter in parameters]
+        poisoned_ds = BackdoorDataset(
+            self.train_loader.dataset,
+            target_label=self.attack_cfg.backdoor_target_label,
+            poison_fraction=self.attack_cfg.poison_fraction,
             trigger_size=self.attack_cfg.trigger_size,
             trigger_value=self.attack_cfg.trigger_value,
             seed=int(getattr(self, "_current_attack_seed", self.client_id)),
@@ -610,8 +951,15 @@ ATTACK_REGISTRY: Dict[str, Type[FedSecClient]] = {
     "backdoor":          BackdoorClient,
     "dba":               DBAClient,
     "gaussian_noise":    GaussianNoiseClient,
+    "random_noise":      RandomNoiseClient,
+    "sign_flip":         SignFlipClient,
+    "lie":               CoordinatedAttackClient,
+    "alie":              CoordinatedAttackClient,
+    "min_max":           CoordinatedAttackClient,
+    "min_sum":           CoordinatedAttackClient,
     "byzantine":         ByzantineClient,
     "model_replacement": ModelReplacementClient,
+    "scaling_backdoor":  ScalingBackdoorClient,
     "mpaf":              MPAFClient,
     # ── Extension point ────────────────────────────────────────────
     # "your_attack": YourAttackClient,

@@ -110,7 +110,9 @@ def test_run_simulation_always_cleans_up_ray(monkeypatch, tmp_path, raises):
     class Server:
         strategy = Strategy()
 
-    monkeypatch.setattr(main, "shutdown_ray_runtime", lambda: cleanup_calls.append(True))
+    monkeypatch.setattr(
+        main, "shutdown_ray_runtime", lambda **_kwargs: cleanup_calls.append(True)
+    )
     monkeypatch.setattr(
         main,
         "build_data_pipeline",
@@ -159,6 +161,14 @@ def test_round_cache_requires_all_unique_rounds_and_finite_metrics(tmp_path):
     nonfinite.loc[1, "server_accuracy"] = np.nan
     nonfinite.to_csv(path, index=False)
     assert "finite" in periodic_attack.validate_round_cache(path, 2)[1]
+
+
+def test_force_cpu_device_selection_does_not_probe_cuda(monkeypatch):
+    def unexpected_cuda_probe():
+        raise AssertionError("forced CPU mode must not query CUDA availability")
+
+    monkeypatch.setattr(main.torch.cuda, "is_available", unexpected_cuda_probe)
+    assert main.resolve_device(force_cpu=True).type == "cpu"
 
 
 def test_legacy_all_reverse_cache_recovers_exact_asr_from_confusion(tmp_path):

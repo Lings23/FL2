@@ -1,0 +1,1672 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "IID 连续 Label Flip：RTC 与 FedAvg 60 轮实验分析",
+    "description": "60 轮 IID 连续 Label Flip 的攻击效果、检测分离度、硬约束代价与可信度诊断。",
+    "generatedAt": "2026-07-22T02:46:38.996Z",
+    "sources": [
+      {
+        "id": "src_summary",
+        "label": "实验汇总与配对比较",
+        "path": "logs\\label_flip_continuous_iid\\comparison_runs.csv",
+        "query": {
+          "description": "读取六组运行汇总；active 指标按第 11–60 轮重新聚合，final 取第 60 轮。",
+          "language": "sql",
+          "filters": [
+            "seed=42",
+            "partition=iid",
+            "rounds=60",
+            "attack_start_round=11",
+            "attack_end_round=-1"
+          ],
+          "tables_used": [
+            "logs\\label_flip_continuous_iid\\comparison_runs.csv",
+            "logs\\label_flip_continuous_iid\\rounds\\*.csv"
+          ],
+          "metric_definitions": [
+            "active accuracy = rounds 11–60 server_accuracy arithmetic mean",
+            "final accuracy = round 60 server_accuracy",
+            "active ASR = rounds 11–60 P(pred=3 | true=5) arithmetic mean",
+            "active malicious weight = rounds 11–60 malicious aggregation weight share arithmetic mean"
+          ],
+          "engine": "DuckDB",
+          "executed_at": "2026-07-22T02:46:53.159Z",
+          "sql": "SELECT * FROM read_csv_auto('logs/label_flip_continuous_iid/comparison_runs.csv', header=true);"
+        }
+      },
+      {
+        "id": "src_rounds",
+        "label": "逐轮服务器与聚合指标",
+        "path": "logs\\label_flip_continuous_iid\\rounds",
+        "query": {
+          "description": "读取六个完整 round CSV；图表展示 10 个确定性锚点轮次，均值计算仍使用全部第 11–60 轮。",
+          "language": "sql",
+          "filters": [
+            "round between 1 and 60",
+            "active window = rounds 11–60",
+            "continuous schedule on=1, off=0"
+          ],
+          "tables_used": [
+            "logs\\label_flip_continuous_iid\\rounds\\*.csv"
+          ],
+          "metric_definitions": [
+            "ASR = source class 5 test examples predicted as target class 3 / source class 5 test examples",
+            "zero-update mass = 1 - sum of sub-probability aggregation weights"
+          ],
+          "engine": "DuckDB",
+          "executed_at": "2026-07-22T02:46:53.159Z",
+          "sql": "SELECT * FROM read_csv_auto('logs/label_flip_continuous_iid/rounds/*.csv', header=true, union_by_name=true, filename=true);"
+        }
+      },
+      {
+        "id": "src_clients",
+        "label": "RTC 客户端级风险与状态",
+        "path": "logs\\label_flip_continuous_iid\\raw",
+        "query": {
+          "description": "读取 RTC 的 *_clients.csv，筛选第 11–60 轮后按攻击类型和真实恶意标签分组。",
+          "language": "sql",
+          "filters": [
+            "defense=rtc_full",
+            "round between 11 and 60",
+            "split=client"
+          ],
+          "tables_used": [
+            "logs\\label_flip_continuous_iid\\raw\\*rtc_full*_clients.csv"
+          ],
+          "metric_definitions": [
+            "risk score = selected client observation mean within cohort",
+            "quarantine rate = quarantined selected-client observations / selected-client observations",
+            "trust AUC is computed per round from malicious versus benign client trust"
+          ],
+          "engine": "DuckDB",
+          "executed_at": "2026-07-22T02:46:53.159Z",
+          "sql": "SELECT * FROM read_csv_auto('logs/label_flip_continuous_iid/raw/*rtc_full*_clients.csv', header=true, union_by_name=true, filename=true);"
+        }
+      },
+      {
+        "id": "src_validation",
+        "label": "执行完整性门禁",
+        "path": "logs\\label_flip_continuous_iid\\execution_validation.csv",
+        "query": {
+          "description": "核验规格数、轮次、有限指标、硬约束和数据划分一致性。",
+          "language": "sql",
+          "tables_used": [
+            "logs\\label_flip_continuous_iid\\execution_validation.csv"
+          ],
+          "metric_definitions": [
+            "passed=true means the persisted execution gate accepted the observed value"
+          ],
+          "engine": "DuckDB",
+          "executed_at": "2026-07-22T02:46:53.159Z",
+          "sql": "SELECT * FROM read_csv_auto('logs/label_flip_continuous_iid/execution_validation.csv', header=true);"
+        }
+      },
+      {
+        "id": "src_manifest",
+        "label": "实验配置清单",
+        "path": "logs\\label_flip_continuous_iid\\experiment_manifest.json",
+        "query": {
+          "description": "CIFAR-10、ResNet-18、IID、20 客户端、每轮 10 客户端、5 本地 epoch、seed 42。",
+          "language": "sql",
+          "tables_used": [
+            "logs\\label_flip_continuous_iid\\experiment_manifest.json",
+            "logs\\label_flip_continuous_iid\\raw\\*_config.json"
+          ],
+          "engine": "DuckDB",
+          "executed_at": "2026-07-22T02:46:53.159Z",
+          "sql": "SELECT * FROM read_json_auto('logs/label_flip_continuous_iid/experiment_manifest.json');"
+        }
+      }
+    ],
+    "cards": [
+      {
+        "id": "card_reverse_accuracy",
+        "dataset": "headline",
+        "sourceId": "src_summary",
+        "description": "All-reverse 第 11–60 轮平均准确率。",
+        "metrics": [
+          {
+            "label": "RTC all-reverse 主动期准确率",
+            "field": "rtc_reverse_active_accuracy",
+            "format": "percent"
+          },
+          {
+            "label": "FedAvg",
+            "field": "fedavg_reverse_active_accuracy",
+            "format": "percent"
+          }
+        ]
+      },
+      {
+        "id": "card_target_asr",
+        "dataset": "headline",
+        "sourceId": "src_summary",
+        "description": "5→3 第 11–60 轮 ASR 曲线梯形积分；越低越好。",
+        "metrics": [
+          {
+            "label": "RTC targeted ASR-AUC",
+            "field": "rtc_target_asr_auc",
+            "format": "number"
+          },
+          {
+            "label": "FedAvg",
+            "field": "fedavg_target_asr_auc",
+            "format": "number"
+          }
+        ]
+      },
+      {
+        "id": "card_clean_accuracy",
+        "dataset": "headline",
+        "sourceId": "src_summary",
+        "description": "无攻击第 60 轮准确率。",
+        "metrics": [
+          {
+            "label": "RTC clean 最终准确率",
+            "field": "rtc_clean_final_accuracy",
+            "format": "percent"
+          },
+          {
+            "label": "FedAvg",
+            "field": "fedavg_clean_final_accuracy",
+            "format": "percent"
+          }
+        ]
+      },
+      {
+        "id": "card_reverse_weight",
+        "dataset": "headline",
+        "sourceId": "src_rounds",
+        "description": "All-reverse 第 11–60 轮恶意聚合权重。",
+        "metrics": [
+          {
+            "label": "RTC 恶意权重",
+            "field": "rtc_reverse_active_malicious_weight",
+            "format": "percent"
+          },
+          {
+            "label": "FedAvg",
+            "field": "fedavg_reverse_active_malicious_weight",
+            "format": "percent"
+          }
+        ]
+      }
+    ],
+    "charts": [
+      {
+        "id": "chart_reverse_accuracy",
+        "title": "Clean 与 all-reverse 服务器准确率",
+        "subtitle": "展示 10 个锚点轮次；第 11 轮开始连续攻击。",
+        "intent": "trend",
+        "question": "RTC 是否阻止全标签反转造成的准确率下降？",
+        "rationale": "同时展示干净基线与受攻击轨迹，避免末轮单点误导。",
+        "comparisonContext": {
+          "baseline": "同防御 clean 运行",
+          "grain": "federated round",
+          "unit": "accuracy rate",
+          "denominator": "CIFAR-10 full test set"
+        },
+        "type": "line",
+        "dataset": "accuracy",
+        "sourceId": "src_rounds",
+        "encodings": {
+          "x": {
+            "field": "round",
+            "type": "quantitative",
+            "label": "Round"
+          },
+          "y": {
+            "field": "accuracy",
+            "type": "quantitative",
+            "format": "percent",
+            "label": "Server accuracy"
+          },
+          "color": {
+            "field": "series",
+            "type": "nominal",
+            "label": "Run"
+          },
+          "tooltip": [
+            {
+              "field": "phase",
+              "type": "nominal",
+              "label": "Phase"
+            },
+            {
+              "field": "active_attackers",
+              "type": "quantitative",
+              "label": "Selected active attackers"
+            },
+            {
+              "field": "malicious_weight",
+              "type": "quantitative",
+              "format": "percent",
+              "label": "Malicious weight"
+            },
+            {
+              "field": "zero_update_mass",
+              "type": "quantitative",
+              "format": "percent",
+              "label": "Zero-update mass"
+            }
+          ]
+        },
+        "valueFormat": "percent",
+        "layout": "full",
+        "palette": {
+          "kind": "categorical"
+        },
+        "referenceLines": [
+          {
+            "axis": "x",
+            "value": 11,
+            "label": "Attack starts",
+            "color": "neutral",
+            "lineStyle": "dashed"
+          }
+        ],
+        "settings": {
+          "showPoints": "always"
+        },
+        "surface": {
+          "surface": "card",
+          "viewMode": "visualization"
+        }
+      },
+      {
+        "id": "chart_target_asr",
+        "title": "5→3 定向翻转 ASR",
+        "subtitle": "展示 10 个锚点轮次；RTC 的主动期均值与 AUC 均高于 FedAvg。",
+        "intent": "trend",
+        "question": "RTC 是否降低定向 Label Flip 的 5→3 ASR？",
+        "rationale": "逐轮展示可分辨早期峰值、持续暴露和末轮波动。",
+        "comparisonContext": {
+          "baseline": "FedAvg under identical schedule",
+          "grain": "federated round",
+          "unit": "ASR rate",
+          "denominator": "true class-5 test examples"
+        },
+        "type": "line",
+        "dataset": "target",
+        "sourceId": "src_rounds",
+        "encodings": {
+          "x": {
+            "field": "round",
+            "type": "quantitative",
+            "label": "Round"
+          },
+          "y": {
+            "field": "asr",
+            "type": "quantitative",
+            "format": "percent",
+            "label": "5→3 ASR"
+          },
+          "color": {
+            "field": "defense",
+            "type": "nominal",
+            "label": "Defense"
+          },
+          "tooltip": [
+            {
+              "field": "source_recall",
+              "type": "quantitative",
+              "format": "percent",
+              "label": "Source recall"
+            },
+            {
+              "field": "accuracy",
+              "type": "quantitative",
+              "format": "percent",
+              "label": "Accuracy"
+            },
+            {
+              "field": "active_attackers",
+              "type": "quantitative",
+              "label": "Selected active attackers"
+            },
+            {
+              "field": "malicious_weight",
+              "type": "quantitative",
+              "format": "percent",
+              "label": "Malicious weight"
+            }
+          ]
+        },
+        "valueFormat": "percent",
+        "layout": "full",
+        "palette": {
+          "kind": "categorical"
+        },
+        "referenceLines": [
+          {
+            "axis": "x",
+            "value": 11,
+            "label": "Attack starts",
+            "color": "neutral",
+            "lineStyle": "dashed"
+          }
+        ],
+        "settings": {
+          "showPoints": "always"
+        },
+        "surface": {
+          "surface": "card",
+          "viewMode": "visualization"
+        }
+      },
+      {
+        "id": "chart_target_risk",
+        "title": "5→3 定向翻转的客户端风险均值",
+        "subtitle": "第 11–60 轮参与观测；恶意客户端五项风险均低于良性客户端。",
+        "intent": "comparison",
+        "question": "RTC 四信号与总风险能否分开定向攻击者和良性客户端？",
+        "rationale": "按信号分组比较恶意/良性均值，直接检验分离方向。",
+        "comparisonContext": {
+          "grain": "selected-client observation",
+          "unit": "risk score [0,1]",
+          "denominator": "399 benign and 101 malicious observations"
+        },
+        "type": "bar",
+        "dataset": "risk_targeted",
+        "sourceId": "src_clients",
+        "encodings": {
+          "x": {
+            "field": "signal",
+            "type": "nominal",
+            "label": "Risk signal"
+          },
+          "y": {
+            "field": "score",
+            "type": "quantitative",
+            "format": "percent",
+            "label": "Mean score"
+          },
+          "color": {
+            "field": "cohort",
+            "type": "nominal",
+            "label": "Client cohort"
+          },
+          "tooltip": [
+            {
+              "field": "n_observations",
+              "type": "quantitative",
+              "label": "Observations"
+            },
+            {
+              "field": "trust",
+              "type": "quantitative",
+              "format": "percent",
+              "label": "Mean trust"
+            },
+            {
+              "field": "aggregation_weight_per_observation",
+              "type": "quantitative",
+              "format": "percent",
+              "label": "Mean aggregation weight"
+            },
+            {
+              "field": "quarantine_rate",
+              "type": "quantitative",
+              "format": "percent",
+              "label": "Quarantine rate"
+            }
+          ]
+        },
+        "valueFormat": "percent",
+        "layout": "full",
+        "palette": {
+          "kind": "categorical"
+        },
+        "settings": {
+          "groupMode": "grouped",
+          "showValues": true
+        },
+        "surface": {
+          "surface": "card",
+          "viewMode": "visualization"
+        }
+      }
+    ],
+    "tables": [
+      {
+        "id": "table_summary",
+        "title": "六组运行的主动期与最终指标",
+        "subtitle": "主动期为第 11–60 轮；ASR 仅适用于 5→3。",
+        "dataset": "summary",
+        "sourceId": "src_summary",
+        "layout": "full",
+        "density": "dense",
+        "defaultSort": {
+          "field": "sort_order",
+          "direction": "asc"
+        },
+        "columns": [
+          {
+            "field": "sort_order",
+            "label": "#",
+            "format": "number"
+          },
+          {
+            "field": "scenario",
+            "label": "Scenario",
+            "type": "text"
+          },
+          {
+            "field": "defense",
+            "label": "Defense",
+            "type": "text"
+          },
+          {
+            "field": "active_accuracy",
+            "label": "Active accuracy",
+            "format": "percent"
+          },
+          {
+            "field": "final_accuracy",
+            "label": "Final accuracy",
+            "format": "percent"
+          },
+          {
+            "field": "active_asr",
+            "label": "Active ASR",
+            "format": "percent"
+          },
+          {
+            "field": "active_malicious_weight",
+            "label": "Malicious weight",
+            "format": "percent"
+          },
+          {
+            "field": "active_benign_quarantine_rate",
+            "label": "Benign quarantine",
+            "format": "percent"
+          },
+          {
+            "field": "active_zero_update_mass",
+            "label": "Zero-update mass",
+            "format": "percent"
+          },
+          {
+            "field": "aggregation_time_seconds",
+            "label": "Aggregation sec/round",
+            "format": "number"
+          }
+        ]
+      },
+      {
+        "id": "table_validation",
+        "title": "执行与硬约束门禁",
+        "subtitle": "全部门禁通过。",
+        "dataset": "validation",
+        "sourceId": "src_validation",
+        "layout": "full",
+        "density": "dense",
+        "defaultSort": {
+          "field": "gate",
+          "direction": "asc"
+        },
+        "columns": [
+          {
+            "field": "gate",
+            "label": "Gate",
+            "type": "text"
+          },
+          {
+            "field": "passed",
+            "label": "Passed",
+            "type": "text"
+          },
+          {
+            "field": "observed",
+            "label": "Observed",
+            "type": "text"
+          },
+          {
+            "field": "required",
+            "label": "Required",
+            "type": "text"
+          }
+        ]
+      }
+    ],
+    "blocks": [
+      {
+        "id": "title",
+        "type": "markdown",
+        "body": "# IID 连续 Label Flip：RTC 与 FedAvg 60 轮实验分析",
+        "layout": "full"
+      },
+      {
+        "id": "summary",
+        "type": "markdown",
+        "layout": "full",
+        "sourceId": "src_summary",
+        "body": "## 技术摘要\n\n六组结果均完整落盘，硬权重、影响预算、轮次和数据清单门禁全部通过。结论不是“RTC 对 Label Flip 普遍有效”：它对全标签反转很强，但对 5→3 定向翻转失效。\n\n- **All-reverse：有效。** RTC 将主动期恶意权重从 20.20% 压到 0.08%，主动期准确率由 78.79% 提升到 83.96%；与 RTC 自身 clean 相比只损失 0.48 个百分点。\n- **5→3 targeted：无效且略有负收益。** RTC 主动期 ASR 38.66%，高于 FedAvg 的 34.89%；ASR-AUC 18.86 对 16.93，恶化 11.4%。主动期准确率也低 1.91 个百分点。\n- **Clean 代价存在。** RTC 第 60 轮准确率 88.91%，低于 FedAvg 的 90.06%；第 11–60 轮等长窗口平均低 1.56 个百分点。\n\n当前实现可保留为高强度更新异常的安全边界，但还不能宣称对隐蔽定向 Label Flip 有效。"
+      },
+      {
+        "id": "kpis",
+        "type": "metric-strip",
+        "cardIds": [
+          "card_reverse_accuracy",
+          "card_target_asr",
+          "card_clean_accuracy",
+          "card_reverse_weight"
+        ],
+        "layout": "full"
+      },
+      {
+        "id": "reverse",
+        "type": "markdown",
+        "layout": "full",
+        "sourceId": "src_rounds",
+        "body": "## RTC 阻断了全标签反转，但末轮 FedAvg 单点高度易波动\n\nAll-reverse 占主动期总训练暴露 20.20%。FedAvg 第 55、58、60 轮均抽中 3 名攻击者，准确率分别跌至 52.31%、64.76% 和 36.42%；第 59 轮只抽中 1 名时回到 89.77%。RTC 从第 11 轮即 restricted、第 12 轮出现 quarantine，主动期 96.0% 的恶意参与观测被隔离，恶意权重均值仅 0.08%。\n\n第 60 轮 +51.21 个百分点是真实安全效果，但更稳健的主读数是主动期平均 +5.17 个百分点，以及对自身 clean 仅 -0.48 个百分点。"
+      },
+      {
+        "id": "reverse_chart",
+        "type": "chart",
+        "chartId": "chart_reverse_accuracy",
+        "layout": "full"
+      },
+      {
+        "id": "target",
+        "type": "markdown",
+        "layout": "full",
+        "sourceId": "src_rounds",
+        "body": "## RTC 没有压制定向 5→3 攻击\n\nTargeted 主动期全局投毒暴露率 2.03%，eligible 样本投毒率 100%。第 10 轮攻击前 ASR 为 14.1%（FedAvg）和 15.0%（RTC），第 11 轮升到 48.8% 与 49.0%。第 11–60 轮平均 ASR 为 34.89% 和 38.66%；RTC 的 ASR-AUC 高 1.93，源类召回均值更低（46.48% 对 52.95%）。\n\n第 60 轮 RTC ASR 44.1% 低于 FedAvg 的 53.8%，但该轮抽中 3 名攻击者，是高波动单点，不能覆盖完整主动期整体更差的事实。"
+      },
+      {
+        "id": "target_chart",
+        "type": "chart",
+        "chartId": "chart_target_asr",
+        "layout": "full"
+      },
+      {
+        "id": "separation",
+        "type": "markdown",
+        "layout": "full",
+        "sourceId": "src_clients",
+        "body": "## 定向攻击下四信号分离方向全部反了\n\n定向攻击者在 magnitude、direction、frequency-temporal、influence 和 total risk 上的均值都低于良性客户端。恶意 total risk 0.449，良性 0.477；恶意平均 trust 更高（0.570 对 0.544），逐轮 trust AUC 仅 0.382。\n\nRTC 主动期只把恶意权重从 20.20% 降到 17.77%，恶意单次平均聚合权重 8.79% 高于良性的 7.64%；恶意 quarantine 率 11.88%，反而低于良性的 22.06%。这不是单纯调低阈值能解决的问题。"
+      },
+      {
+        "id": "risk_chart",
+        "type": "chart",
+        "chartId": "chart_target_risk",
+        "layout": "full"
+      },
+      {
+        "id": "clean",
+        "type": "markdown",
+        "layout": "full",
+        "sourceId": "src_clients",
+        "body": "## 干净代价来自激进裁剪与次概率质量损失\n\nClean RTC 在第 11–60 轮平均裁剪 50.0% 的参与观测、隔离 17.4% 的良性观测，聚合权重和仅 77.38%，即平均保留 22.62% 零更新质量；最终准确率低 1.15 个百分点。\n\nAll-reverse 下主动期零更新质量 40.05%，末轮 63.997%；良性 quarantine 主动期 22.60%，末轮 57.14%。更长训练或 Non-IID 下，有效客户端持续流失可能成为瓶颈。"
+      },
+      {
+        "id": "summary_table",
+        "type": "table",
+        "tableId": "table_summary",
+        "layout": "full"
+      },
+      {
+        "id": "scope",
+        "type": "markdown",
+        "layout": "full",
+        "sourceId": "src_manifest",
+        "body": "## 范围、设计与指标口径\n\n- CIFAR-10，ResNet-18，无预训练；20 客户端、每轮 10 个、IID、5 本地 epoch、batch 32、SGD、seed 42。\n- 攻击第 11–60 轮连续生效；20% 恶意客户端；六组使用同一数据清单和客户端抽样计划。\n- Targeted 为 Dog 5→Cat 3；all-reverse 为 y′=9−y；两者均对 eligible 样本 100% 翻转。\n- Active accuracy/ASR 是第 11–60 轮算术平均；ASR-AUC 是该区间逐轮 ASR 的梯形积分。\n- comparison_runs.csv 的 malicious_aggregation_weight_share 混入前 10 个无攻击轮；本报告的攻击期权重重新按第 11–60 轮计算。"
+      },
+      {
+        "id": "limits",
+        "type": "markdown",
+        "layout": "full",
+        "sourceId": "src_validation",
+        "body": "## 可审计性、限制与稳健性\n\n6/6 规格完成，每组 61 行（0–60），核心指标有限，数据 manifest hash 一致，硬约束违反量均小于 1e−8，日志未发现 Ray 容量或错误 1450。\n\n证据仍是**单 seed 描述性结果**。同防御的攻击与 clean 运行在第 1–10 轮并非逐值完全重合：targeted 的平均前置差为 FedAvg −0.75、RTC +1.20 个百分点，说明跨子进程仍有随机漂移。Clean 又未记录 5→3 ASR/混淆矩阵，无法计算同轮 clean ASR lift。定向攻击差异只有约 2 个百分点，正式结论前必须修复这两项。"
+      },
+      {
+        "id": "validation",
+        "type": "table",
+        "tableId": "table_validation",
+        "layout": "full"
+      },
+      {
+        "id": "recommendations",
+        "type": "markdown",
+        "layout": "full",
+        "body": "## 建议的改进顺序\n\n1. **先修评估与可复现性。** Clean 也记录混淆矩阵和任意 source→target ASR；固定初始权重、DataLoader shuffle 与客户端 RNG，使同防御前 10 轮逐值一致；扩展到 3–5 seeds。\n2. **为 targeted 加入类别敏感证据。** 在服务器小型可信集上计算每个更新对 source=5 loss、target=3 logit margin 或 class-conditional gradient 的边际变化。当前四个全局更新信号全部反向，降低统一阈值会先伤害良性客户端。\n3. **校准 clean 约束。** clip_multiplier=1.0 使每轮约半数客户端被裁剪；联合搜索裁剪分位数/乘数、状态阈值和恢复规则，并以 benign quarantine、zero-update mass、clean accuracy drop 为护栏。\n4. **分开报告检测与缓解。** All-reverse 证明高影响攻击可被硬约束阻断；targeted 证明检测器没有识别攻击者。分别报告 trust AUC、恶意权重、攻击指标和 clean utility。\n5. **频域价值留给 periodic 消融。** 连续 targeted 中恶意 temporal risk 仅 0.010，低于良性的 0.045；不应以 continuous 结果作为频域正证据。"
+      },
+      {
+        "id": "questions",
+        "type": "markdown",
+        "layout": "full",
+        "body": "## 后续应回答的问题\n\n- 多 seed 下，all-reverse 的收益和 targeted 的 ASR 劣化是否稳定？\n- Class-conditional influence 能否把 targeted trust AUC 提升到 0.7 以上且不增加 clean false positive？\n- 将 clean 零更新质量从 22.6% 降到 10% 以下后，all-reverse 安全收益是否保留？\n- Dirichlet α=0.3 下，良性异质性会把 clean quarantine 推高到什么程度？"
+      }
+    ]
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-07-22T02:46:38.997Z",
+    "status": "ready",
+    "datasets": {
+      "headline": [
+        {
+          "rtc_reverse_active_accuracy": 0.839644,
+          "fedavg_reverse_active_accuracy": 0.787896,
+          "rtc_target_asr_auc": 18.8625,
+          "fedavg_target_asr_auc": 16.931,
+          "rtc_clean_final_accuracy": 0.8891,
+          "fedavg_clean_final_accuracy": 0.9006,
+          "rtc_reverse_active_malicious_weight": 0.0008,
+          "fedavg_reverse_active_malicious_weight": 0.202
+        }
+      ],
+      "accuracy": [
+        {
+          "round": 1,
+          "series": "Clean · FedAvg",
+          "attack": "none",
+          "defense": "fedavg",
+          "phase": "pre-attack",
+          "accuracy": 0.1827,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": null
+        },
+        {
+          "round": 10,
+          "series": "Clean · FedAvg",
+          "attack": "none",
+          "defense": "fedavg",
+          "phase": "pre-attack",
+          "accuracy": 0.7352,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": null
+        },
+        {
+          "round": 11,
+          "series": "Clean · FedAvg",
+          "attack": "none",
+          "defense": "fedavg",
+          "phase": "matched-window",
+          "accuracy": 0.752,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": null
+        },
+        {
+          "round": 12,
+          "series": "Clean · FedAvg",
+          "attack": "none",
+          "defense": "fedavg",
+          "phase": "matched-window",
+          "accuracy": 0.7681,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": null
+        },
+        {
+          "round": 20,
+          "series": "Clean · FedAvg",
+          "attack": "none",
+          "defense": "fedavg",
+          "phase": "matched-window",
+          "accuracy": 0.8277,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": null
+        },
+        {
+          "round": 30,
+          "series": "Clean · FedAvg",
+          "attack": "none",
+          "defense": "fedavg",
+          "phase": "matched-window",
+          "accuracy": 0.8602,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": null
+        },
+        {
+          "round": 40,
+          "series": "Clean · FedAvg",
+          "attack": "none",
+          "defense": "fedavg",
+          "phase": "matched-window",
+          "accuracy": 0.8817,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": null
+        },
+        {
+          "round": 50,
+          "series": "Clean · FedAvg",
+          "attack": "none",
+          "defense": "fedavg",
+          "phase": "matched-window",
+          "accuracy": 0.8923,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": null
+        },
+        {
+          "round": 55,
+          "series": "Clean · FedAvg",
+          "attack": "none",
+          "defense": "fedavg",
+          "phase": "matched-window",
+          "accuracy": 0.8965,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": null
+        },
+        {
+          "round": 60,
+          "series": "Clean · FedAvg",
+          "attack": "none",
+          "defense": "fedavg",
+          "phase": "matched-window",
+          "accuracy": 0.9006,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": null
+        },
+        {
+          "round": 1,
+          "series": "Clean · RTC",
+          "attack": "none",
+          "defense": "rtc_full",
+          "phase": "pre-attack",
+          "accuracy": 0.1639,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": 0
+        },
+        {
+          "round": 10,
+          "series": "Clean · RTC",
+          "attack": "none",
+          "defense": "rtc_full",
+          "phase": "pre-attack",
+          "accuracy": 0.7198,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": 0.1225856516640427
+        },
+        {
+          "round": 11,
+          "series": "Clean · RTC",
+          "attack": "none",
+          "defense": "rtc_full",
+          "phase": "matched-window",
+          "accuracy": 0.7279,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": 0.434245651575414
+        },
+        {
+          "round": 12,
+          "series": "Clean · RTC",
+          "attack": "none",
+          "defense": "rtc_full",
+          "phase": "matched-window",
+          "accuracy": 0.7396,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": 0.3403596036316028
+        },
+        {
+          "round": 20,
+          "series": "Clean · RTC",
+          "attack": "none",
+          "defense": "rtc_full",
+          "phase": "matched-window",
+          "accuracy": 0.8094,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": 0.3460022181844693
+        },
+        {
+          "round": 30,
+          "series": "Clean · RTC",
+          "attack": "none",
+          "defense": "rtc_full",
+          "phase": "matched-window",
+          "accuracy": 0.8446,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": 0.4693997674578404
+        },
+        {
+          "round": 40,
+          "series": "Clean · RTC",
+          "attack": "none",
+          "defense": "rtc_full",
+          "phase": "matched-window",
+          "accuracy": 0.8654,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": 0.1687230448614258
+        },
+        {
+          "round": 50,
+          "series": "Clean · RTC",
+          "attack": "none",
+          "defense": "rtc_full",
+          "phase": "matched-window",
+          "accuracy": 0.8791,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": 0.357944615482009
+        },
+        {
+          "round": 55,
+          "series": "Clean · RTC",
+          "attack": "none",
+          "defense": "rtc_full",
+          "phase": "matched-window",
+          "accuracy": 0.8862,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": 0.2310032118482539
+        },
+        {
+          "round": 60,
+          "series": "Clean · RTC",
+          "attack": "none",
+          "defense": "rtc_full",
+          "phase": "matched-window",
+          "accuracy": 0.8891,
+          "active_attackers": 0,
+          "malicious_weight": 0,
+          "zero_update_mass": 0.1272262849909164
+        },
+        {
+          "round": 1,
+          "series": "All-reverse · FedAvg",
+          "attack": "label_flip_all_reverse",
+          "defense": "fedavg",
+          "phase": "pre-attack",
+          "accuracy": 0.1621,
+          "active_attackers": 0,
+          "malicious_weight": 0.2,
+          "zero_update_mass": null
+        },
+        {
+          "round": 10,
+          "series": "All-reverse · FedAvg",
+          "attack": "label_flip_all_reverse",
+          "defense": "fedavg",
+          "phase": "pre-attack",
+          "accuracy": 0.7438,
+          "active_attackers": 0,
+          "malicious_weight": 0.2,
+          "zero_update_mass": null
+        },
+        {
+          "round": 11,
+          "series": "All-reverse · FedAvg",
+          "attack": "label_flip_all_reverse",
+          "defense": "fedavg",
+          "phase": "active",
+          "accuracy": 0.7345,
+          "active_attackers": 2,
+          "malicious_weight": 0.2,
+          "zero_update_mass": null
+        },
+        {
+          "round": 12,
+          "series": "All-reverse · FedAvg",
+          "attack": "label_flip_all_reverse",
+          "defense": "fedavg",
+          "phase": "active",
+          "accuracy": 0.7507,
+          "active_attackers": 2,
+          "malicious_weight": 0.2,
+          "zero_update_mass": null
+        },
+        {
+          "round": 20,
+          "series": "All-reverse · FedAvg",
+          "attack": "label_flip_all_reverse",
+          "defense": "fedavg",
+          "phase": "active",
+          "accuracy": 0.8136,
+          "active_attackers": 2,
+          "malicious_weight": 0.2,
+          "zero_update_mass": null
+        },
+        {
+          "round": 30,
+          "series": "All-reverse · FedAvg",
+          "attack": "label_flip_all_reverse",
+          "defense": "fedavg",
+          "phase": "active",
+          "accuracy": 0.8378,
+          "active_attackers": 2,
+          "malicious_weight": 0.2,
+          "zero_update_mass": null
+        },
+        {
+          "round": 40,
+          "series": "All-reverse · FedAvg",
+          "attack": "label_flip_all_reverse",
+          "defense": "fedavg",
+          "phase": "active",
+          "accuracy": 0.8637,
+          "active_attackers": 2,
+          "malicious_weight": 0.2,
+          "zero_update_mass": null
+        },
+        {
+          "round": 50,
+          "series": "All-reverse · FedAvg",
+          "attack": "label_flip_all_reverse",
+          "defense": "fedavg",
+          "phase": "active",
+          "accuracy": 0.8815,
+          "active_attackers": 2,
+          "malicious_weight": 0.2,
+          "zero_update_mass": null
+        },
+        {
+          "round": 55,
+          "series": "All-reverse · FedAvg",
+          "attack": "label_flip_all_reverse",
+          "defense": "fedavg",
+          "phase": "active",
+          "accuracy": 0.5231,
+          "active_attackers": 3,
+          "malicious_weight": 0.3,
+          "zero_update_mass": null
+        },
+        {
+          "round": 60,
+          "series": "All-reverse · FedAvg",
+          "attack": "label_flip_all_reverse",
+          "defense": "fedavg",
+          "phase": "active",
+          "accuracy": 0.3642,
+          "active_attackers": 3,
+          "malicious_weight": 0.3,
+          "zero_update_mass": null
+        },
+        {
+          "round": 1,
+          "series": "All-reverse · RTC",
+          "attack": "label_flip_all_reverse",
+          "defense": "rtc_full",
+          "phase": "pre-attack",
+          "accuracy": 0.1761,
+          "active_attackers": 0,
+          "malicious_weight": 0.2041232663132577,
+          "zero_update_mass": 0.0750679967271504
+        },
+        {
+          "round": 10,
+          "series": "All-reverse · RTC",
+          "attack": "label_flip_all_reverse",
+          "defense": "rtc_full",
+          "phase": "pre-attack",
+          "accuracy": 0.7161,
+          "active_attackers": 0,
+          "malicious_weight": 0.1862234512735448,
+          "zero_update_mass": 0.1846022019835913
+        },
+        {
+          "round": 11,
+          "series": "All-reverse · RTC",
+          "attack": "label_flip_all_reverse",
+          "defense": "rtc_full",
+          "phase": "active",
+          "accuracy": 0.7305,
+          "active_attackers": 2,
+          "malicious_weight": 0.02,
+          "zero_update_mass": 0.3413040395593749
+        },
+        {
+          "round": 12,
+          "series": "All-reverse · RTC",
+          "attack": "label_flip_all_reverse",
+          "defense": "rtc_full",
+          "phase": "active",
+          "accuracy": 0.7408,
+          "active_attackers": 2,
+          "malicious_weight": 0.01,
+          "zero_update_mass": 0.3154356507100542
+        },
+        {
+          "round": 20,
+          "series": "All-reverse · RTC",
+          "attack": "label_flip_all_reverse",
+          "defense": "rtc_full",
+          "phase": "active",
+          "accuracy": 0.8127,
+          "active_attackers": 2,
+          "malicious_weight": 0,
+          "zero_update_mass": 0.1027401344740502
+        },
+        {
+          "round": 30,
+          "series": "All-reverse · RTC",
+          "attack": "label_flip_all_reverse",
+          "defense": "rtc_full",
+          "phase": "active",
+          "accuracy": 0.8435,
+          "active_attackers": 2,
+          "malicious_weight": 0,
+          "zero_update_mass": 0.1876303346222365
+        },
+        {
+          "round": 40,
+          "series": "All-reverse · RTC",
+          "attack": "label_flip_all_reverse",
+          "defense": "rtc_full",
+          "phase": "active",
+          "accuracy": 0.8605,
+          "active_attackers": 2,
+          "malicious_weight": 0,
+          "zero_update_mass": 0.3430946486656056
+        },
+        {
+          "round": 50,
+          "series": "All-reverse · RTC",
+          "attack": "label_flip_all_reverse",
+          "defense": "rtc_full",
+          "phase": "active",
+          "accuracy": 0.8689,
+          "active_attackers": 2,
+          "malicious_weight": 0,
+          "zero_update_mass": 0.5177477541915231
+        },
+        {
+          "round": 55,
+          "series": "All-reverse · RTC",
+          "attack": "label_flip_all_reverse",
+          "defense": "rtc_full",
+          "phase": "active",
+          "accuracy": 0.8691,
+          "active_attackers": 3,
+          "malicious_weight": 0,
+          "zero_update_mass": 0.5461249263200503
+        },
+        {
+          "round": 60,
+          "series": "All-reverse · RTC",
+          "attack": "label_flip_all_reverse",
+          "defense": "rtc_full",
+          "phase": "active",
+          "accuracy": 0.8763,
+          "active_attackers": 3,
+          "malicious_weight": 0,
+          "zero_update_mass": 0.6399742405818722
+        }
+      ],
+      "target": [
+        {
+          "round": 1,
+          "defense": "FedAvg",
+          "phase": "pre-attack",
+          "asr": 0,
+          "source_recall": 0.206,
+          "accuracy": 0.1856,
+          "active_attackers": 0,
+          "malicious_weight": 0.2
+        },
+        {
+          "round": 10,
+          "defense": "FedAvg",
+          "phase": "pre-attack",
+          "asr": 0.141,
+          "source_recall": 0.702,
+          "accuracy": 0.7326,
+          "active_attackers": 0,
+          "malicious_weight": 0.2
+        },
+        {
+          "round": 11,
+          "defense": "FedAvg",
+          "phase": "active",
+          "asr": 0.488,
+          "source_recall": 0.312,
+          "accuracy": 0.729,
+          "active_attackers": 2,
+          "malicious_weight": 0.2
+        },
+        {
+          "round": 12,
+          "defense": "FedAvg",
+          "phase": "active",
+          "asr": 0.435,
+          "source_recall": 0.374,
+          "accuracy": 0.7474,
+          "active_attackers": 2,
+          "malicious_weight": 0.2
+        },
+        {
+          "round": 20,
+          "defense": "FedAvg",
+          "phase": "active",
+          "asr": 0.363,
+          "source_recall": 0.484,
+          "accuracy": 0.8124,
+          "active_attackers": 2,
+          "malicious_weight": 0.2
+        },
+        {
+          "round": 30,
+          "defense": "FedAvg",
+          "phase": "active",
+          "asr": 0.346,
+          "source_recall": 0.536,
+          "accuracy": 0.8474,
+          "active_attackers": 2,
+          "malicious_weight": 0.2
+        },
+        {
+          "round": 40,
+          "defense": "FedAvg",
+          "phase": "active",
+          "asr": 0.28,
+          "source_recall": 0.596,
+          "accuracy": 0.8679,
+          "active_attackers": 2,
+          "malicious_weight": 0.2
+        },
+        {
+          "round": 50,
+          "defense": "FedAvg",
+          "phase": "active",
+          "asr": 0.253,
+          "source_recall": 0.658,
+          "accuracy": 0.8822,
+          "active_attackers": 2,
+          "malicious_weight": 0.2
+        },
+        {
+          "round": 55,
+          "defense": "FedAvg",
+          "phase": "active",
+          "asr": 0.457,
+          "source_recall": 0.445,
+          "accuracy": 0.8668,
+          "active_attackers": 3,
+          "malicious_weight": 0.3
+        },
+        {
+          "round": 60,
+          "defense": "FedAvg",
+          "phase": "active",
+          "asr": 0.538,
+          "source_recall": 0.359,
+          "accuracy": 0.8616,
+          "active_attackers": 3,
+          "malicious_weight": 0.3
+        },
+        {
+          "round": 1,
+          "defense": "RTC",
+          "phase": "pre-attack",
+          "asr": 0.02,
+          "source_recall": 0.372,
+          "accuracy": 0.2202,
+          "active_attackers": 0,
+          "malicious_weight": 0.2082832006276943
+        },
+        {
+          "round": 10,
+          "defense": "RTC",
+          "phase": "pre-attack",
+          "asr": 0.15,
+          "source_recall": 0.68,
+          "accuracy": 0.7202,
+          "active_attackers": 0,
+          "malicious_weight": 0.1947587337798636
+        },
+        {
+          "round": 11,
+          "defense": "RTC",
+          "phase": "active",
+          "asr": 0.49,
+          "source_recall": 0.277,
+          "accuracy": 0.712,
+          "active_attackers": 2,
+          "malicious_weight": 0.1991944213926384
+        },
+        {
+          "round": 12,
+          "defense": "RTC",
+          "phase": "active",
+          "asr": 0.626,
+          "source_recall": 0.152,
+          "accuracy": 0.7112,
+          "active_attackers": 2,
+          "malicious_weight": 0.2093971922960489
+        },
+        {
+          "round": 20,
+          "defense": "RTC",
+          "phase": "active",
+          "asr": 0.457,
+          "source_recall": 0.369,
+          "accuracy": 0.7901,
+          "active_attackers": 2,
+          "malicious_weight": 0.2080405991683059
+        },
+        {
+          "round": 30,
+          "defense": "RTC",
+          "phase": "active",
+          "asr": 0.375,
+          "source_recall": 0.454,
+          "accuracy": 0.8285,
+          "active_attackers": 2,
+          "malicious_weight": 0.1847866717736616
+        },
+        {
+          "round": 40,
+          "defense": "RTC",
+          "phase": "active",
+          "asr": 0.41,
+          "source_recall": 0.44,
+          "accuracy": 0.8417,
+          "active_attackers": 2,
+          "malicious_weight": 0.2200052592285656
+        },
+        {
+          "round": 50,
+          "defense": "RTC",
+          "phase": "active",
+          "asr": 0.205,
+          "source_recall": 0.701,
+          "accuracy": 0.8717,
+          "active_attackers": 2,
+          "malicious_weight": 0.1069736310709676
+        },
+        {
+          "round": 55,
+          "defense": "RTC",
+          "phase": "active",
+          "asr": 0.353,
+          "source_recall": 0.534,
+          "accuracy": 0.8621,
+          "active_attackers": 3,
+          "malicious_weight": 0.2045967747684716
+        },
+        {
+          "round": 60,
+          "defense": "RTC",
+          "phase": "active",
+          "asr": 0.441,
+          "source_recall": 0.449,
+          "accuracy": 0.8569,
+          "active_attackers": 3,
+          "malicious_weight": 0.2298625767360942
+        }
+      ],
+      "risk_targeted": [
+        {
+          "cohort": "Benign",
+          "signal": "Magnitude",
+          "score": 0.4509003783608249,
+          "n_observations": 399,
+          "trust": 0.543831269129144,
+          "aggregation_weight_per_observation": 0.0763765240166497,
+          "quarantine_rate": 0.22055137844611528,
+          "clipped_rate": 0.5263157894736842
+        },
+        {
+          "cohort": "Benign",
+          "signal": "Direction",
+          "score": 0.36722284949117373,
+          "n_observations": 399,
+          "trust": 0.543831269129144,
+          "aggregation_weight_per_observation": 0.0763765240166497,
+          "quarantine_rate": 0.22055137844611528,
+          "clipped_rate": 0.5263157894736842
+        },
+        {
+          "cohort": "Benign",
+          "signal": "Frequency-temporal",
+          "score": 0.045112781954887216,
+          "n_observations": 399,
+          "trust": 0.543831269129144,
+          "aggregation_weight_per_observation": 0.0763765240166497,
+          "quarantine_rate": 0.22055137844611528,
+          "clipped_rate": 0.5263157894736842
+        },
+        {
+          "cohort": "Benign",
+          "signal": "Influence",
+          "score": 0.19653243322370428,
+          "n_observations": 399,
+          "trust": 0.543831269129144,
+          "aggregation_weight_per_observation": 0.0763765240166497,
+          "quarantine_rate": 0.22055137844611528,
+          "clipped_rate": 0.5263157894736842
+        },
+        {
+          "cohort": "Benign",
+          "signal": "Total",
+          "score": 0.47734215691315846,
+          "n_observations": 399,
+          "trust": 0.543831269129144,
+          "aggregation_weight_per_observation": 0.0763765240166497,
+          "quarantine_rate": 0.22055137844611528,
+          "clipped_rate": 0.5263157894736842
+        },
+        {
+          "cohort": "Malicious",
+          "signal": "Magnitude",
+          "score": 0.42362554034851085,
+          "n_observations": 101,
+          "trust": 0.5698995403639184,
+          "aggregation_weight_per_observation": 0.08794680420596547,
+          "quarantine_rate": 0.1188118811881188,
+          "clipped_rate": 0.39603960396039606
+        },
+        {
+          "cohort": "Malicious",
+          "signal": "Direction",
+          "score": 0.3396871426548477,
+          "n_observations": 101,
+          "trust": 0.5698995403639184,
+          "aggregation_weight_per_observation": 0.08794680420596547,
+          "quarantine_rate": 0.1188118811881188,
+          "clipped_rate": 0.39603960396039606
+        },
+        {
+          "cohort": "Malicious",
+          "signal": "Frequency-temporal",
+          "score": 0.009900990099009901,
+          "n_observations": 101,
+          "trust": 0.5698995403639184,
+          "aggregation_weight_per_observation": 0.08794680420596547,
+          "quarantine_rate": 0.1188118811881188,
+          "clipped_rate": 0.39603960396039606
+        },
+        {
+          "cohort": "Malicious",
+          "signal": "Influence",
+          "score": 0.14450198740025944,
+          "n_observations": 101,
+          "trust": 0.5698995403639184,
+          "aggregation_weight_per_observation": 0.08794680420596547,
+          "quarantine_rate": 0.1188118811881188,
+          "clipped_rate": 0.39603960396039606
+        },
+        {
+          "cohort": "Malicious",
+          "signal": "Total",
+          "score": 0.44942369568456,
+          "n_observations": 101,
+          "trust": 0.5698995403639184,
+          "aggregation_weight_per_observation": 0.08794680420596547,
+          "quarantine_rate": 0.1188118811881188,
+          "clipped_rate": 0.39603960396039606
+        }
+      ],
+      "summary": [
+        {
+          "sort_order": 1,
+          "scenario": "5→3 targeted",
+          "defense": "FedAvg",
+          "active_accuracy": 0.84382,
+          "final_accuracy": 0.8616,
+          "active_asr": 0.34887999999999997,
+          "active_malicious_weight": 0.20199999999999999,
+          "active_benign_quarantine_rate": 0,
+          "active_malicious_quarantine_rate": 0,
+          "active_zero_update_mass": null,
+          "aggregation_time_seconds": 0.3633379883598536,
+          "poisoned_exposures": 114245,
+          "global_exposure_rate": 0.0203463935886019
+        },
+        {
+          "sort_order": 2,
+          "scenario": "5→3 targeted",
+          "defense": "RTC",
+          "active_accuracy": 0.8246740000000001,
+          "final_accuracy": 0.8569,
+          "active_asr": 0.3865599999999999,
+          "active_malicious_weight": 0.17765254449605025,
+          "active_benign_quarantine_rate": 0.22,
+          "active_malicious_quarantine_rate": 0.0883333333333333,
+          "active_zero_update_mass": 0.2128627938510849,
+          "aggregation_time_seconds": 3.756317665016589,
+          "poisoned_exposures": 114245,
+          "global_exposure_rate": 0.0203463935886019
+        },
+        {
+          "sort_order": 3,
+          "scenario": "All-reverse",
+          "defense": "FedAvg",
+          "active_accuracy": 0.787896,
+          "final_accuracy": 0.3642,
+          "active_asr": null,
+          "active_malicious_weight": 0.20199999999999999,
+          "active_benign_quarantine_rate": 0,
+          "active_malicious_quarantine_rate": 0,
+          "active_zero_update_mass": null,
+          "aggregation_time_seconds": 0.2550206766696646,
+          "poisoned_exposures": 1134230,
+          "global_exposure_rate": 0.202
+        },
+        {
+          "sort_order": 4,
+          "scenario": "All-reverse",
+          "defense": "RTC",
+          "active_accuracy": 0.839644,
+          "final_accuracy": 0.8763,
+          "active_asr": null,
+          "active_malicious_weight": 0.0008,
+          "active_benign_quarantine_rate": 0.22595238095238096,
+          "active_malicious_quarantine_rate": 0.96,
+          "active_zero_update_mass": 0.4004521200845729,
+          "aggregation_time_seconds": 3.059409295010846,
+          "poisoned_exposures": 1134230,
+          "global_exposure_rate": 0.202
+        },
+        {
+          "sort_order": 5,
+          "scenario": "Clean",
+          "defense": "FedAvg",
+          "active_accuracy": 0.8600859999999999,
+          "final_accuracy": 0.9006,
+          "active_asr": null,
+          "active_malicious_weight": 0,
+          "active_benign_quarantine_rate": 0,
+          "active_malicious_quarantine_rate": 0,
+          "active_zero_update_mass": null,
+          "aggregation_time_seconds": 0.2547231066777992,
+          "poisoned_exposures": null,
+          "global_exposure_rate": null
+        },
+        {
+          "sort_order": 6,
+          "scenario": "Clean",
+          "defense": "RTC",
+          "active_accuracy": 0.8444400000000001,
+          "final_accuracy": 0.8891,
+          "active_asr": null,
+          "active_malicious_weight": 0,
+          "active_benign_quarantine_rate": 0.174,
+          "active_malicious_quarantine_rate": 0,
+          "active_zero_update_mass": 0.22623396271875104,
+          "aggregation_time_seconds": 2.873893178343617,
+          "poisoned_exposures": null,
+          "global_exposure_rate": null
+        }
+      ],
+      "validation": [
+        {
+          "gate": "matrix_complete",
+          "passed": true,
+          "observed": "6/6 run files",
+          "required": "6/6"
+        },
+        {
+          "gate": "rounds_complete",
+          "passed": true,
+          "observed": "True",
+          "required": "rounds 1..60 (+ optional round 0)"
+        },
+        {
+          "gate": "critical_metrics_finite",
+          "passed": true,
+          "observed": "True",
+          "required": "all finite"
+        },
+        {
+          "gate": "short_long_schedules_match",
+          "passed": true,
+          "observed": "True",
+          "required": "true"
+        },
+        {
+          "gate": "rtc_weight_cap_violation",
+          "passed": true,
+          "observed": "0.0",
+          "required": "<= 1e-8"
+        },
+        {
+          "gate": "rtc_exposure_budget_violation",
+          "passed": true,
+          "observed": "2.775557561562892e-17",
+          "required": "<= 1e-8"
+        },
+        {
+          "gate": "rtc_subprobability_mass",
+          "passed": true,
+          "observed": "1.0",
+          "required": "<= 1 + 1e-8"
+        },
+        {
+          "gate": "selected_partition_ids_match",
+          "passed": true,
+          "observed": "True",
+          "required": "true"
+        },
+        {
+          "gate": "data_manifest_hash_match",
+          "passed": true,
+          "observed": "{42: 1}",
+          "required": "one hash per seed"
+        }
+      ]
+    }
+  },
+  "sources": [
+    {
+      "id": "src_summary",
+      "label": "实验汇总与配对比较",
+      "path": "logs\\label_flip_continuous_iid\\comparison_runs.csv",
+      "query": {
+        "description": "读取六组运行汇总；active 指标按第 11–60 轮重新聚合，final 取第 60 轮。",
+        "language": "sql",
+        "filters": [
+          "seed=42",
+          "partition=iid",
+          "rounds=60",
+          "attack_start_round=11",
+          "attack_end_round=-1"
+        ],
+        "tables_used": [
+          "logs\\label_flip_continuous_iid\\comparison_runs.csv",
+          "logs\\label_flip_continuous_iid\\rounds\\*.csv"
+        ],
+        "metric_definitions": [
+          "active accuracy = rounds 11–60 server_accuracy arithmetic mean",
+          "final accuracy = round 60 server_accuracy",
+          "active ASR = rounds 11–60 P(pred=3 | true=5) arithmetic mean",
+          "active malicious weight = rounds 11–60 malicious aggregation weight share arithmetic mean"
+        ],
+        "engine": "DuckDB",
+        "executed_at": "2026-07-22T02:46:53.159Z",
+        "sql": "SELECT * FROM read_csv_auto('logs/label_flip_continuous_iid/comparison_runs.csv', header=true);"
+      }
+    },
+    {
+      "id": "src_rounds",
+      "label": "逐轮服务器与聚合指标",
+      "path": "logs\\label_flip_continuous_iid\\rounds",
+      "query": {
+        "description": "读取六个完整 round CSV；图表展示 10 个确定性锚点轮次，均值计算仍使用全部第 11–60 轮。",
+        "language": "sql",
+        "filters": [
+          "round between 1 and 60",
+          "active window = rounds 11–60",
+          "continuous schedule on=1, off=0"
+        ],
+        "tables_used": [
+          "logs\\label_flip_continuous_iid\\rounds\\*.csv"
+        ],
+        "metric_definitions": [
+          "ASR = source class 5 test examples predicted as target class 3 / source class 5 test examples",
+          "zero-update mass = 1 - sum of sub-probability aggregation weights"
+        ],
+        "engine": "DuckDB",
+        "executed_at": "2026-07-22T02:46:53.159Z",
+        "sql": "SELECT * FROM read_csv_auto('logs/label_flip_continuous_iid/rounds/*.csv', header=true, union_by_name=true, filename=true);"
+      }
+    },
+    {
+      "id": "src_clients",
+      "label": "RTC 客户端级风险与状态",
+      "path": "logs\\label_flip_continuous_iid\\raw",
+      "query": {
+        "description": "读取 RTC 的 *_clients.csv，筛选第 11–60 轮后按攻击类型和真实恶意标签分组。",
+        "language": "sql",
+        "filters": [
+          "defense=rtc_full",
+          "round between 11 and 60",
+          "split=client"
+        ],
+        "tables_used": [
+          "logs\\label_flip_continuous_iid\\raw\\*rtc_full*_clients.csv"
+        ],
+        "metric_definitions": [
+          "risk score = selected client observation mean within cohort",
+          "quarantine rate = quarantined selected-client observations / selected-client observations",
+          "trust AUC is computed per round from malicious versus benign client trust"
+        ],
+        "engine": "DuckDB",
+        "executed_at": "2026-07-22T02:46:53.159Z",
+        "sql": "SELECT * FROM read_csv_auto('logs/label_flip_continuous_iid/raw/*rtc_full*_clients.csv', header=true, union_by_name=true, filename=true);"
+      }
+    },
+    {
+      "id": "src_validation",
+      "label": "执行完整性门禁",
+      "path": "logs\\label_flip_continuous_iid\\execution_validation.csv",
+      "query": {
+        "description": "核验规格数、轮次、有限指标、硬约束和数据划分一致性。",
+        "language": "sql",
+        "tables_used": [
+          "logs\\label_flip_continuous_iid\\execution_validation.csv"
+        ],
+        "metric_definitions": [
+          "passed=true means the persisted execution gate accepted the observed value"
+        ],
+        "engine": "DuckDB",
+        "executed_at": "2026-07-22T02:46:53.159Z",
+        "sql": "SELECT * FROM read_csv_auto('logs/label_flip_continuous_iid/execution_validation.csv', header=true);"
+      }
+    },
+    {
+      "id": "src_manifest",
+      "label": "实验配置清单",
+      "path": "logs\\label_flip_continuous_iid\\experiment_manifest.json",
+      "query": {
+        "description": "CIFAR-10、ResNet-18、IID、20 客户端、每轮 10 客户端、5 本地 epoch、seed 42。",
+        "language": "sql",
+        "tables_used": [
+          "logs\\label_flip_continuous_iid\\experiment_manifest.json",
+          "logs\\label_flip_continuous_iid\\raw\\*_config.json"
+        ],
+        "engine": "DuckDB",
+        "executed_at": "2026-07-22T02:46:53.159Z",
+        "sql": "SELECT * FROM read_json_auto('logs/label_flip_continuous_iid/experiment_manifest.json');"
+      }
+    }
+  ]
+}

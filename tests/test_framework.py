@@ -136,6 +136,7 @@ class TestConfigLoading:
         assert cfg.federation.min_available_clients == 20
         assert cfg.ray.client_num_cpus == 1.0
         assert cfg.ray.client_num_gpus == 0.0
+        assert cfg.ray.force_cpu is False
         assert cfg.ray.log_to_driver is False
         assert cfg.ray.include_dashboard is False
         assert cfg.ray.object_store_memory_mb == 0
@@ -145,11 +146,13 @@ class TestConfigLoading:
 
         override_config(cfg, {
             "ray.client_num_gpus": 0.5,
+            "ray.force_cpu": True,
             "ray.log_to_driver": True,
             "ray.object_store_memory_mb": 3072,
             "ray.min_available_memory_mb": 10240,
         })
         assert cfg.ray.client_num_gpus == 0.5
+        assert cfg.ray.force_cpu is True
         assert cfg.ray.log_to_driver is True
         assert cfg.ray.object_store_memory_mb == 3072
         assert cfg.ray.min_available_memory_mb == 10240
@@ -881,7 +884,7 @@ class TestPeriodicAttackExperiment:
         assert len(build_matrix("main")) == 288
         assert len(build_matrix("ablation")) == 300
         assert len(build_matrix("untargeted")) == 216
-        assert len(build_matrix("all")) == 744
+        assert len(build_matrix("all")) == 504
 
     def test_label_flip_specs_carry_protocol_but_not_boost(self):
         from argparse import Namespace
@@ -904,15 +907,11 @@ class TestPeriodicAttackExperiment:
         assert selected[0]["label_flip_poison_fraction"] == pytest.approx(1.0)
         assert "boost_factor" not in selected[0]
 
-    def test_smoke_matrix_contains_all_ablations(self):
+    def test_smoke_matrix_excludes_legacy_rtc_v2_ablations(self):
         from experiments.periodic_attack import build_matrix, clean_baselines
         matrix = build_matrix(smoke=True)
         defenses = {row["defense"] for row in matrix}
-        assert {
-            "rtc_full", "rtc_no_temporal", "rtc_no_direction", "clip_only",
-            "freqfed",
-        } <= defenses
-        assert "rtc_no_influence" not in defenses
+        assert defenses == {"fedavg", "rtc_full", "clip_only", "freqfed"}
         assert len(clean_baselines(matrix, smoke=True)) == 3
 
     def test_round_summary_splits_active_and_residual_asr(self):
@@ -1386,6 +1385,8 @@ class TestServerASR:
             trigger_size=2,
             trigger_value=1.0,
             dba_trigger_num=3,
+            dba_pattern_mode="legacy_blocks",
+            dba_trigger_value_mode="scalar",
             dba_gap=1,
         )
         x = torch.zeros(1, 3, 8, 8)
@@ -1393,7 +1394,7 @@ class TestServerASR:
         stamped = {tuple(coord) for coord in torch.nonzero(triggered[0, 0] == 1.0).tolist()}
         expected = set().union(*[
             set(get_dba_trigger_coords(i, (3, 8, 8), trigger_size=2,
-                                       dba_trigger_num=3, gap=1))
+                                       dba_trigger_num=3, pattern_mode="legacy_blocks", gap=1))
             for i in range(3)
         ])
         assert stamped == expected
@@ -1542,16 +1543,17 @@ class TestAttackDatasets:
         from attacks.attack_client import DBADataset
         base = TensorDataset(torch.zeros(4, 3, 8, 8), torch.ones(4, dtype=torch.long))
         ds = DBADataset(base, target_label=7, fragment_index=0,
-                        poison_fraction=1.0, trigger_size=2, trigger_value=1.0)
+                        poison_fraction=1.0, trigger_size=2, trigger_value=1.0,
+                        pattern_mode="legacy_blocks", trigger_value_mode="scalar")
         _, y = ds[0]
         assert int(y) == 7, "DBA poisoned samples should use target label"
 
     def test_dba_fragment_indices_have_different_positions(self):
         from attacks.attack_client import get_dba_trigger_coords
         coords_0 = set(get_dba_trigger_coords(0, (3, 8, 8), trigger_size=2,
-                                              dba_trigger_num=4, gap=1))
+                                              dba_trigger_num=4, pattern_mode="legacy_blocks", gap=1))
         coords_1 = set(get_dba_trigger_coords(1, (3, 8, 8), trigger_size=2,
-                                              dba_trigger_num=4, gap=1))
+                                              dba_trigger_num=4, pattern_mode="legacy_blocks", gap=1))
         assert coords_0
         assert coords_1
         assert coords_0 != coords_1
@@ -1562,14 +1564,15 @@ class TestAttackDatasets:
         base = TensorDataset(torch.zeros(1, 3, 8, 8), torch.zeros(1, dtype=torch.long))
         ds = DBADataset(base, target_label=3, fragment_index=1,
                         poison_fraction=1.0, trigger_size=2, trigger_value=1.0,
-                        dba_trigger_num=4, gap=1)
+                        dba_trigger_num=4, pattern_mode="legacy_blocks",
+                        trigger_value_mode="scalar", gap=1)
         x, _ = ds[0]
         stamped = {tuple(coord) for coord in torch.nonzero(x[0] == 1.0, as_tuple=False).tolist()}
         own = set(get_dba_trigger_coords(1, tuple(x.shape), trigger_size=2,
-                                         dba_trigger_num=4, gap=1))
+                                         dba_trigger_num=4, pattern_mode="legacy_blocks", gap=1))
         full = set().union(*[
             set(get_dba_trigger_coords(i, tuple(x.shape), trigger_size=2,
-                                       dba_trigger_num=4, gap=1))
+                                       dba_trigger_num=4, pattern_mode="legacy_blocks", gap=1))
             for i in range(4)
         ])
         assert stamped == own
@@ -1664,3 +1667,23 @@ class TestAttackDatasets:
     def test_dba_registered(self):
         from attacks.attack_client import DBAClient, get_attack_client_class
         assert get_attack_client_class("dba") is DBAClient
+
+
+def test_aggregate_update_evidence_has_exact_norm_and_deterministic_sketch():
+    from strategies.fed_strategy import aggregate_update_evidence
+
+    previous = [
+        np.array([1.0, 2.0], dtype=np.float32),
+        np.array(7, dtype=np.int64),
+    ]
+    aggregated = [
+        np.array([4.0, 6.0], dtype=np.float32),
+        np.array(9, dtype=np.int64),
+    ]
+    norm, sketch = aggregate_update_evidence(previous, aggregated)
+    repeated_norm, repeated = aggregate_update_evidence(previous, aggregated)
+    assert norm == pytest.approx(5.0)
+    assert repeated_norm == pytest.approx(norm)
+    assert sketch.shape == (256,)
+    assert np.linalg.norm(sketch) == pytest.approx(1.0)
+    np.testing.assert_array_equal(sketch, repeated)

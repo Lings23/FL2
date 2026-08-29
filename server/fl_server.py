@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -28,14 +29,48 @@ from models.model_factory import (
     get_parameter_names,
     get_parameter_roles,
     get_parameters,
+    get_trainable_parameter_indices,
     set_parameters,
 )
 from strategies.fed_strategy import FedSecStrategy
 from utils.metrics import MetricTracker
 from utils.logger import setup_logging
-from attacks.attack_client import get_dba_trigger_coords
+from attacks.attack_client import get_dba_trigger_coords, stamp_dba_coords_
 
 logger = logging.getLogger(__name__)
+
+
+def _model_state_is_finite(model: nn.Module) -> bool:
+    """Return whether every floating parameter and buffer is finite."""
+    return all(
+        not value.is_floating_point() or bool(torch.isfinite(value).all().item())
+        for value in model.state_dict().values()
+    )
+
+
+def _invalid_asr_metrics(
+    attack_type: str,
+    reason: str,
+    *,
+    dba_trigger_num: int = 0,
+) -> Dict[str, Any]:
+    metrics: Dict[str, Any] = {
+        "asr": math.nan,
+        "asr_total": 0,
+        "asr_valid": False,
+        "asr_invalid_reason": reason,
+        "attack_type": attack_type,
+    }
+    if attack_type == "dba":
+        metrics.update({
+            "dba_full_trigger_asr": math.nan,
+            "dba_local_asr_mean": math.nan,
+            "dba_local_asr_min": math.nan,
+            "dba_local_asr_max": math.nan,
+        })
+        for fragment_index in range(max(1, int(dba_trigger_num))):
+            metrics[f"dba_local_asr_fragment_{fragment_index}"] = math.nan
+    return metrics
 
 
 def stamp_backdoor_trigger(x: torch.Tensor, attack_cfg: AttackConfig) -> torch.Tensor:
@@ -56,12 +91,42 @@ def stamp_dba_full_trigger(x: torch.Tensor, attack_cfg: AttackConfig) -> torch.T
             image_shape=image_shape,
             trigger_size=attack_cfg.trigger_size,
             dba_trigger_num=attack_cfg.dba_trigger_num,
+            pattern_mode=attack_cfg.dba_pattern_mode,
             gap=attack_cfg.dba_gap,
             base_row=attack_cfg.dba_base_row,
             base_col=attack_cfg.dba_base_col,
         )
-        for row, col in coords:
-            triggered[..., row, col] = float(attack_cfg.trigger_value)
+        stamp_dba_coords_(
+            triggered,
+            coords,
+            trigger_value=attack_cfg.trigger_value,
+            value_mode=attack_cfg.dba_trigger_value_mode,
+        )
+    return triggered
+
+
+def stamp_dba_local_trigger(
+    x: torch.Tensor, attack_cfg: AttackConfig, fragment_index: int
+) -> torch.Tensor:
+    """Return a copy of x stamped with exactly one DBA local fragment."""
+    triggered = x.clone()
+    image_shape = tuple(triggered.shape[1:]) if triggered.dim() >= 3 else tuple(triggered.shape)
+    coords = get_dba_trigger_coords(
+        fragment_index=fragment_index,
+        image_shape=image_shape,
+        trigger_size=attack_cfg.trigger_size,
+        dba_trigger_num=attack_cfg.dba_trigger_num,
+        pattern_mode=attack_cfg.dba_pattern_mode,
+        gap=attack_cfg.dba_gap,
+        base_row=attack_cfg.dba_base_row,
+        base_col=attack_cfg.dba_base_col,
+    )
+    stamp_dba_coords_(
+        triggered,
+        coords,
+        trigger_value=attack_cfg.trigger_value,
+        value_mode=attack_cfg.dba_trigger_value_mode,
+    )
     return triggered
 
 
@@ -70,15 +135,49 @@ def evaluate_targeted_asr(
     test_loader: DataLoader,
     device: torch.device,
     attack_cfg: AttackConfig,
+    *,
+    server_loss: float | None = None,
+    model_state_valid: bool | None = None,
+    clean_logits_valid: bool | None = None,
 ) -> Optional[Dict[str, Any]]:
     """Evaluate targeted ASR on non-target-label test samples."""
     attack_type = attack_cfg.type.lower()
-    if not attack_cfg.enabled or attack_type not in {"backdoor", "dba", "model_replacement"}:
+    if not attack_cfg.enabled or attack_type not in {
+        "backdoor",
+        "dba",
+        "model_replacement",
+        "scaling_backdoor",
+    }:
         return None
 
     target_label = int(attack_cfg.backdoor_target_label)
+    state_valid = (
+        _model_state_is_finite(model)
+        if model_state_valid is None
+        else bool(model_state_valid)
+    )
+    if not state_valid:
+        return _invalid_asr_metrics(
+            attack_type,
+            "nonfinite_model_state",
+            dba_trigger_num=attack_cfg.dba_trigger_num,
+        )
+    if clean_logits_valid is False:
+        return _invalid_asr_metrics(
+            attack_type,
+            "nonfinite_clean_logits",
+            dba_trigger_num=attack_cfg.dba_trigger_num,
+        )
+    if server_loss is not None and not math.isfinite(float(server_loss)):
+        return _invalid_asr_metrics(
+            attack_type,
+            "nonfinite_server_loss",
+            dba_trigger_num=attack_cfg.dba_trigger_num,
+        )
+
     success = 0
     total = 0
+    local_success = [0 for _ in range(max(1, int(attack_cfg.dba_trigger_num)))]
 
     model.eval()
     with torch.no_grad():
@@ -93,13 +192,57 @@ def evaluate_targeted_asr(
             else:
                 triggered_x = stamp_backdoor_trigger(x, attack_cfg)
 
+            if not bool(torch.isfinite(triggered_x).all().item()):
+                return _invalid_asr_metrics(
+                    attack_type,
+                    "nonfinite_triggered_input",
+                    dba_trigger_num=attack_cfg.dba_trigger_num,
+                )
+
             logits = model(triggered_x)
+            if not bool(torch.isfinite(logits).all().item()):
+                return _invalid_asr_metrics(
+                    attack_type,
+                    "nonfinite_logits",
+                    dba_trigger_num=attack_cfg.dba_trigger_num,
+                )
             preds = logits.argmax(1)
             success += (preds[mask] == target_label).sum().item()
             total += mask.sum().item()
 
+            if attack_type == "dba":
+                for fragment_index in range(len(local_success)):
+                    local_logits = model(
+                        stamp_dba_local_trigger(x, attack_cfg, fragment_index)
+                    )
+                    if not bool(torch.isfinite(local_logits).all().item()):
+                        return _invalid_asr_metrics(
+                            attack_type,
+                            f"nonfinite_local_logits_fragment_{fragment_index}",
+                            dba_trigger_num=attack_cfg.dba_trigger_num,
+                        )
+                    local_preds = local_logits.argmax(1)
+                    local_success[fragment_index] += (
+                        local_preds[mask] == target_label
+                    ).sum().item()
+
     asr = success / total if total else 0.0
-    return {"asr": asr, "asr_total": total, "attack_type": attack_type}
+    result: Dict[str, Any] = {
+        "asr": asr,
+        "asr_total": total,
+        "asr_valid": True,
+        "asr_invalid_reason": "",
+        "attack_type": attack_type,
+    }
+    if attack_type == "dba":
+        local_asr = [value / total if total else 0.0 for value in local_success]
+        result["dba_full_trigger_asr"] = asr
+        result["dba_local_asr_mean"] = float(np.mean(local_asr))
+        result["dba_local_asr_min"] = float(np.min(local_asr))
+        result["dba_local_asr_max"] = float(np.max(local_asr))
+        for fragment_index, value in enumerate(local_asr):
+            result[f"dba_local_asr_fragment_{fragment_index}"] = float(value)
+    return result
 
 
 def label_flip_metrics_from_confusion(
@@ -211,35 +354,77 @@ class ServerEvaluator:
         set_parameters(self.model, parameters)
         self.model.to(self.device)
         self.model.eval()
+        model_state_valid = _model_state_is_finite(self.model)
 
         criterion = nn.CrossEntropyLoss()
         loss_sum = 0.0
         correct = 0
         total = 0
         confusion = np.zeros((self.num_classes, self.num_classes), dtype=np.int64)
+        clean_logits_valid = True
 
-        with torch.no_grad():
-            for x, y in self.test_loader:
-                x, y = x.to(self.device), y.to(self.device)
-                logits = self.model(x)
-                loss_sum += criterion(logits, y).item() * x.size(0)
-                correct += (logits.argmax(1) == y).sum().item()
-                preds = logits.argmax(1)
-                encoded = (y * self.num_classes + preds).detach().cpu().numpy()
-                confusion += np.bincount(
-                    encoded, minlength=self.num_classes * self.num_classes
-                ).reshape(self.num_classes, self.num_classes)
-                total += x.size(0)
+        if model_state_valid:
+            with torch.no_grad():
+                for x, y in self.test_loader:
+                    x, y = x.to(self.device), y.to(self.device)
+                    logits = self.model(x)
+                    if not bool(torch.isfinite(logits).all().item()):
+                        clean_logits_valid = False
+                        continue
+                    batch_loss = float(criterion(logits, y).item())
+                    if not math.isfinite(batch_loss):
+                        clean_logits_valid = False
+                        continue
+                    preds = logits.argmax(1)
+                    loss_sum += batch_loss * x.size(0)
+                    correct += (preds == y).sum().item()
+                    encoded = (y * self.num_classes + preds).detach().cpu().numpy()
+                    confusion += np.bincount(
+                        encoded, minlength=self.num_classes * self.num_classes
+                    ).reshape(self.num_classes, self.num_classes)
+                    total += x.size(0)
+        else:
+            clean_logits_valid = False
 
-        loss = loss_sum / total
-        acc = correct / total
-        metrics: Dict[str, Any] = {"accuracy": acc, "server_round": server_round}
+        evaluation_valid = bool(model_state_valid and clean_logits_valid and total > 0)
+        loss = loss_sum / total if evaluation_valid else math.nan
+        acc = correct / total if evaluation_valid else math.nan
+        supports = confusion.sum(axis=1)
+        class_recalls = np.divide(
+            np.diag(confusion),
+            supports,
+            out=np.full(self.num_classes, math.nan, dtype=np.float64),
+            where=supports > 0,
+        )
+        supported = class_recalls[np.isfinite(class_recalls)]
+        metrics: Dict[str, Any] = {
+            "accuracy": acc,
+            "server_round": server_round,
+            "loss_valid": math.isfinite(float(loss)),
+            "logits_valid": clean_logits_valid,
+            "model_state_valid": model_state_valid,
+            "macro_recall": (
+                float(supported.mean()) if evaluation_valid and supported.size else math.nan
+            ),
+            "confusion_matrix_json": (
+                json.dumps(confusion.tolist(), separators=(",", ":"))
+                if evaluation_valid
+                else ""
+            ),
+        }
+        for label, recall in enumerate(class_recalls):
+            metrics[f"class_recall_{label}"] = (
+                float(recall) if evaluation_valid and math.isfinite(float(recall)) else math.nan
+            )
 
         asr_metrics = evaluate_targeted_asr(
             self.model,
             self.test_loader,
             self.device,
             self.attack_cfg,
+            server_loss=loss,
+            model_state_valid=model_state_valid,
+            clean_logits_valid=clean_logits_valid,
         )
         if asr_metrics:
             metrics.update(asr_metrics)
@@ -252,11 +437,25 @@ class ServerEvaluator:
                 asr_metrics["attack_type"],
             )
         else:
-            label_flip_metrics = label_flip_metrics_from_confusion(
-                confusion, self.attack_cfg
-            )
-            if label_flip_metrics:
-                metrics.update(label_flip_metrics)
+            attack_type = str(self.attack_cfg.type).lower()
+            if evaluation_valid:
+                label_flip_metrics = label_flip_metrics_from_confusion(
+                    confusion, self.attack_cfg
+                )
+                if label_flip_metrics:
+                    metrics.update(label_flip_metrics)
+                    metrics["asr_valid"] = True
+                    metrics["asr_invalid_reason"] = ""
+            elif self.attack_cfg.enabled and attack_type in {
+                "label_flip_targeted", "label_flip_all_reverse"
+            }:
+                reason = (
+                    "nonfinite_model_state"
+                    if not model_state_valid
+                    else "nonfinite_clean_logits_or_loss"
+                )
+                metrics.update(_invalid_asr_metrics(attack_type, reason))
+                metrics["source_recall"] = math.nan
             logger.info("Server eval | round=%d loss=%.4f acc=%.4f", server_round, loss, acc)
 
         if acc > self.best_accuracy:
@@ -422,6 +621,8 @@ def build_server(
         trial_plan=trial_plan,
         parameter_roles=get_parameter_roles(global_model),
         parameter_names=get_parameter_names(global_model),
+        scalable_parameter_indices=get_trainable_parameter_indices(global_model),
+        attack_cfg=cfg.security.attack,
     )
     state_provider = getattr(strategy.defense, "state_dict", None)
     if callable(state_provider):

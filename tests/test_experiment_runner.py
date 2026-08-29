@@ -11,7 +11,13 @@ from experiments import run
 
 
 def test_registered_profiles_cover_existing_execution_families():
-    assert set(run.PROFILES) == {"periodic", "rtc-fedavg", "sweep"}
+    assert set(run.PROFILES) == {
+        "periodic",
+        "rtc-fedavg",
+        "rtc-byzantine",
+        "rtc-byzantine-screen",
+        "sweep",
+    }
 
 
 def test_profile_is_required_unless_listing_profiles():
@@ -101,6 +107,7 @@ def test_matrix_runner_defaults_to_guarded_ray_resources():
     assert args.participation_rate == pytest.approx(0.5)
     assert args.ray_client_num_cpus == pytest.approx(1.0)
     assert args.ray_client_num_gpus == pytest.approx(0.0)
+    assert args.force_cpu is False
     assert args.ray_object_store_memory_mb == 3072
     assert args.ray_min_available_memory_mb == 10240
     assert args.ray_memory_wait_seconds == pytest.approx(120.0)
@@ -159,6 +166,110 @@ def test_matrix_spec_config_consumes_optimized_execution_defaults(tmp_path):
     assert cfg.federation.clients_per_round == 10
     assert cfg.federation.min_fit_clients == 10
     assert cfg.ray.client_num_cpus == pytest.approx(1.0)
+    assert cfg.ray.client_num_gpus == pytest.approx(0.0)
+    assert cfg.ray.force_cpu is False
+    assert cfg.security.attack.mpaf_lambda == pytest.approx(1.0)
+
+
+def test_matrix_spec_config_uses_explicit_boost_for_mpaf(tmp_path):
+    args = run.parse_args(["--profile", "rtc-fedavg", "--rounds", "1"])
+    spec = {
+        "custom_params": {},
+        "defense_type": "none",
+        "seed": 42,
+        "partition": "iid",
+        "dirichlet_alpha": 0.5,
+        "participation_rate": 0.5,
+        "attack": "mpaf",
+        "malicious_fraction": 0.2,
+        "attack_start_round": 1,
+        "attack_end_round": -1,
+        "on_rounds": 1,
+        "off_rounds": 0,
+        "boost_factor": 7.5,
+    }
+
+    cfg = run.periodic_attack._build_spec_config(spec, args, tmp_path)
+
+    assert cfg.security.attack.mpaf_lambda == pytest.approx(7.5)
+
+
+def test_generate_plots_separates_strengths_and_writes_timelines(tmp_path):
+    rounds_dir = tmp_path / "rounds"
+    plots_dir = tmp_path / "plots"
+    rounds_dir.mkdir()
+    rows = []
+    for strength, auc, accuracy in (
+        ("weak", 0.2, 0.84),
+        ("medium", 0.6, 0.83),
+        ("strong", 0.9, 0.75),
+    ):
+        run_id = f"attack-{strength}"
+        rows.append({
+            "run_id": run_id,
+            "attack": "scaling_backdoor",
+            "defense": "fedavg",
+            "strength_level": strength,
+            "active_asr_auc_normalized": auc,
+            "final_accuracy": accuracy,
+            "attack_start_round": 2,
+        })
+        pd.DataFrame({
+            "round": [0, 1, 2, 3],
+            "attack": ["scaling_backdoor"] * 4,
+            "strength_level": [strength] * 4,
+            "server_asr": [0.0, 0.0, auc / 2.0, auc],
+            "server_accuracy": [0.1, 0.7, accuracy, accuracy],
+        }).to_csv(rounds_dir / f"{run_id}.csv", index=False)
+    rows.append({
+        "run_id": "clean",
+        "attack": "none",
+        "defense": "fedavg",
+        "strength_level": "weak",
+        "active_asr_auc_normalized": float("nan"),
+        "final_accuracy": 0.845,
+        "attack_start_round": 2,
+    })
+    pd.DataFrame({
+        "round": [0, 1, 2, 3],
+        "attack": ["none"] * 4,
+        "strength_level": ["weak"] * 4,
+        "server_asr": [float("nan")] * 4,
+        "server_accuracy": [0.1, 0.7, 0.84, 0.845],
+    }).to_csv(rounds_dir / "clean.csv", index=False)
+
+    run.periodic_attack.generate_plots(pd.DataFrame(rows), rounds_dir, plots_dir)
+
+    assert {path.name for path in plots_dir.glob("*.png")} == {
+        "active_asr_auc.png",
+        "security_utility_tradeoff.png",
+        "timeline_server_accuracy.png",
+        "timeline_server_asr.png",
+    }
+
+
+def test_matrix_spec_config_propagates_explicit_force_cpu(tmp_path):
+    args = run.parse_args([
+        "--profile", "rtc-fedavg", "--rounds", "1", "--force-cpu",
+    ])
+    spec = {
+        "custom_params": {},
+        "defense_type": "none",
+        "seed": 42,
+        "partition": "iid",
+        "dirichlet_alpha": 0.5,
+        "participation_rate": 0.5,
+        "attack": "none",
+        "malicious_fraction": 0.0,
+        "attack_start_round": 1,
+        "attack_end_round": -1,
+        "on_rounds": 1,
+        "off_rounds": 0,
+    }
+
+    cfg = run.periodic_attack._build_spec_config(spec, args, tmp_path)
+
+    assert cfg.ray.force_cpu is True
     assert cfg.ray.client_num_gpus == pytest.approx(0.0)
 
 

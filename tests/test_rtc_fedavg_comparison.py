@@ -61,6 +61,59 @@ def test_execution_validation_recovers_legacy_all_reverse_asr(tmp_path):
     assert finite["passed"] is True
 
 
+def test_semantic_ablation_is_validated_as_rtc_v3(tmp_path, monkeypatch):
+    rounds_dir = tmp_path / "rounds"
+    raw_dir = tmp_path / "raw"
+    rounds_dir.mkdir()
+    raw_dir.mkdir()
+    manifest_path = tmp_path / "manifest.json"
+    payload = build_manifest(
+        params=[np.zeros(1, dtype=np.float32)],
+        schema_version="rtc_v3.calibration.v1",
+    )
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    spec = {
+        "attack": "label_flip_targeted",
+        "attack_group": "targeted",
+        "period": "continuous_1_0",
+        "on_rounds": 1,
+        "off_rounds": 0,
+        "attack_start_round": 1,
+        "attack_end_round": -1,
+        "malicious_fraction": 0.2,
+        "seed": 42,
+        "defense": "semantic_observe",
+        "partition": "iid",
+        "participation_rate": 0.5,
+        "label_flip_poison_fraction": 1.0,
+        "label_flip_source_label": 5,
+        "label_flip_target_label": 3,
+        "custom_params": {"calibration_path": str(manifest_path)},
+    }
+    pd.DataFrame(
+        {
+            "round": [0, 1],
+            "server_accuracy": [0.1, 0.2],
+            "server_asr": [0.0, 0.5],
+            "planned_attack_active": [0, 1],
+            "fit_rtc_v3_calibration_hash": [np.nan, "wrong-hash"],
+            "fit_rtc_v3_max_constraint_violation": [np.nan, 0.0],
+            "fit_rtc_v3_weight_sum": [np.nan, 1.0],
+        }
+    ).to_csv(rounds_dir / f"{run_id(spec)}.csv", index=False)
+    monkeypatch.setattr(
+        "experiments.rtc_fedavg_comparison.validate_sampling_manifests",
+        lambda *args, **kwargs: [],
+    )
+
+    gates = validate_execution([spec], rounds_dir, raw_dir, expected_rounds=1)
+
+    manifest_gate = next(
+        row for row in gates if row["gate"] == "rtc_v3_manifest_hash_match"
+    )
+    assert manifest_gate["passed"] is False
+
+
 def test_default_matrix_covers_both_attack_groups_and_periods():
     matrix = build_comparison_matrix()
 
@@ -174,13 +227,15 @@ def test_rtc_v3_matrix_uses_frozen_manifest_and_identity_principals(tmp_path):
     assert rtc["custom_params"]["principal_first_sampling_verified"] is False
 
 
-def test_rtc_v3_rejects_missing_manifest_and_incomplete_principal_map(tmp_path):
-    with pytest.raises(ValueError, match="rtc-v3-manifest"):
-        build_rtc_v3_custom_params(
-            manifest_path="",
-            implementation_phase=6,
-            num_clients=2,
-        )
+def test_rtc_v3_defaults_to_promoted_manifest_and_rejects_incomplete_principal_map(tmp_path):
+    defaults = build_rtc_v3_custom_params(
+        manifest_path="",
+        implementation_phase=6,
+        num_clients=2,
+    )
+    assert defaults["calibration_path"].endswith(
+        "rtc_v3_manifest_formal_iid_semantic.json"
+    )
 
     manifest_path = tmp_path / "rtc_v3_manifest.json"
     manifest_path.write_text(
@@ -197,11 +252,15 @@ def test_rtc_v3_rejects_missing_manifest_and_incomplete_principal_map(tmp_path):
             principal_map_path=principal_path,
         )
 
-    with pytest.raises(ValueError, match="rtc_v3_custom_params"):
-        build_comparison_matrix(
-            attacks=("label_flip_targeted",),
-            defenses=("fedavg", "rtc_v3"),
-        )
+    matrix = build_comparison_matrix(
+        attacks=("label_flip_targeted",),
+        defenses=("fedavg", "rtc_v3"),
+        num_clients=2,
+    )
+    rtc = next(row for row in matrix if row["defense"] == "rtc_v3")
+    assert rtc["custom_params"]["calibration_path"].endswith(
+        "rtc_v3_manifest_formal_iid_semantic.json"
+    )
 
 
 def test_rtc_v3_dry_run_writes_executable_candidate_specs(tmp_path):

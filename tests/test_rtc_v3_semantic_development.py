@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 
 from defenses.rtc.calibration import CalibrationManifest
-from experiments.rtc_v3_semantic_development import _write_freeze_sidecars
+from experiments.rtc_v3_semantic_development import _write_freeze_sidecars, main
+import pytest
 
 
 def test_freeze_sidecars_are_hash_bound_and_not_an_attestation(tmp_path: Path) -> None:
@@ -65,3 +66,17 @@ def test_freeze_sidecars_are_hash_bound_and_not_an_attestation(tmp_path: Path) -
     assert validation["content_hash"] == "frozen"
     assert validation["promotion_ready"] is False
     assert provenance["promotion_attestation_generated"] is False
+
+
+def test_development_evidence_input_and_rebuild_roots_are_mutually_exclusive() -> None:
+    with pytest.raises(ValueError, match="either --development-root"):
+        main(
+            [
+                "--source-manifest",
+                "source.json",
+                "--development-root",
+                "run",
+                "--development-evidence",
+                "evidence.json",
+            ]
+        )

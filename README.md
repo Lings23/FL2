@@ -15,6 +15,21 @@ A highly modular and extensible federated learning research framework built on [
 - **Differential Privacy (DP):** Integrated DP-SGD wrapper for local client training, allowing custom noise multipliers and gradient clipping.
 - **Experiment Sweeps:** Comprehensive scripts for automated grid sweeps across multiple attacks, defenses, and configurations.
 
+### Attack semantics used by the Byzantine benchmark
+
+- `gaussian_noise` is a generic additive-noise baseline,
+  `delta_mal = delta_local + Normal(mean, std)`; it is not labeled as the
+  Fang Gaussian model-distribution attack.
+- `random_noise` is a norm-matched Rademacher generic Byzantine baseline.
+- `sign_flip` with `scale=1` is the formal sign-flip baseline; scales above
+  one are amplified stress tests and a collapsed model is never a success.
+- `scaling_backdoor` is the paper-inspired train-and-scale variant with exact
+  compensation for the malicious clients' observed FedAvg sample-weight
+  share. The legacy fixed-boost implementation remains named
+  `model_replacement` for compatibility.
+- `lie`, `min_max`, and `min_sum` are coordinated model-delta attacks. Their
+  robust-aggregation reproduction is reported separately from RTC screening.
+
 ---
 
 ## 📁 Project Structure
@@ -97,15 +112,13 @@ python main.py \
   --experiment label_flip_targeted_vs_krum
 ```
 
-Launch the S1-S7 time-consistency defense, which maintains per-client temporal
-trust histories and combines soft trust weighting with hard impact constraints:
+Launch the promoted RTC-V3 semantic-time-exposure defense through its public
+`rtc_full` alias. Formal use requires the promoted manifest and a strict trial
+plan; the `rtc-fedavg` profile supplies both automatically:
 
 ```bash
-python main.py \
-  --override security.defense.enabled=true \
-  --override security.defense.type=time_consistency \
-  --override security.defense.custom_params.enable_delta_clipping=true \
-  --experiment time_consistency_baseline
+python -m experiments.core.run --profile rtc-fedavg \
+  --defenses fedavg,rtc_full --rounds 60
 ```
 
 Delayed and intermittent attacks can be configured without changing attack code:
@@ -143,13 +156,13 @@ Run the dedicated periodic-attack benchmark and its FFT/direction ablations:
 # Six-round pipeline check
 python experiments/run.py --profile periodic --smoke
 
-# Full preregistered matrix; completed round files are resumed automatically
-python experiments/run.py --profile periodic --mode all --output logs/periodic_attack_v2
+# Current V3 matrix; historical V2 ablations are excluded
+python -m experiments.core.run --profile periodic --mode all --output logs/periodic_attack_v3
 
 # Focused single-seed RTC/FedAvg continuous-attack comparison
 python experiments/run.py --profile rtc-fedavg --attack-groups all --rounds 60
 
-# Label-flip temporal ablations (short/long are not the main attack protocol)
+# Historical RTC-V2 ablations (explicit reproduction only)
 python experiments/run.py --profile periodic --mode ablation \
   --attacks label_flip_targeted,label_flip_all_reverse \
   --periods short_1_1,long_3_3 --rounds 60
@@ -205,7 +218,7 @@ security:
     label_flip_poison_fraction: 1.0
   defense:
     enabled: true
-    type: krum           # krum | trimmed_mean | median | fltrust | foolsgold | time_consistency | none
+    type: rtc_full       # promoted V3; rtc_v2_legacy is historical only
 ```
 
 *(You can override ANY key directly from the CLI via `--override key.subkey=value`)*

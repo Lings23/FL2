@@ -72,16 +72,33 @@ security:
     trigger_size: 3
     trigger_value: 1.0
     dba_trigger_num: 4
+    dba_pattern_mode: paper_cifar_1x6_2x2  # official CIFAR 4-fragment geometry
+    dba_trigger_value_mode: cifar10_normalized_white  # raw white after Normalize
     dba_gap: 3
     dba_base_row: 0
     dba_base_col: 0
+    dba_fragment_index: -1       # assigned by malicious-client rank at runtime
     dba_scale_update: true
     dba_boost_factor: 10.0
     model_replacement_boost_factor: 10.0
+    aggregation_aware_scaling: false # exact FedAvg-weight compensation for DBA/train-and-scale
+    replacement_gain: 1.0            # aggregate malicious-delta gain; 1.0 targets replacement
     mpaf_lambda: 1.0
     mpaf_base_scale: 0.0
     mpaf_max_update_norm: 0.0
     gaussian_noise_std: 0.1
+    gaussian_noise_mean: 0.0
+    random_noise_scale: 1.0
+    random_noise_distribution: "rademacher"
+    sign_flip_scale: 1.0
+    lie_z: 0.0                   # <=0 derives the paper value from selected n,m
+    coordinated_attack_knowledge: "all_updates" # all_updates | malicious_only
+    optimization_perturbation: "inverse_sign"   # inverse_sign | inverse_std | inverse_unit
+    optimization_gamma_init: 0.001
+    optimization_tolerance: 1e-6
+    optimization_max_iterations: 64
+    optimization_gamma_fraction: 1.0
+    optimization_gamma_max: 1000000.0
     attack_start_round: 1
     attack_end_round: -1          # -1 means no end round
     attack_on_rounds: 1
@@ -94,7 +111,7 @@ security:
   # Defense settings
   defense:
     enabled: false
-    type: "none"                # none | krum | trimmed_mean | median | fltrust | foolsgold | freqfed | time_consistency | your_defense
+    type: "none"                # rtc_full/rtc_v3 = promoted V3; rtc_v2_legacy = historical V2
     # Krum
     krum_num_to_select: 1
     krum_num_malicious: 1
@@ -113,45 +130,11 @@ security:
     #           min_cluster_size: 3, min_samples: 2,
     #           min_selected_clients: 2, projection_dim: 0,
     #           fallback: median, seed: 42}
-    # Extension point: add your defense parameters here.
-    # Example for time_consistency / RTC-v2:
-    # custom_params:
-    #   version: rtc_v2
-    #   projection_dim: 2048
-    #   max_history: 30
-    #   offline_reset_rounds: 10
-    #   min_history_for_self_score: 5
-    #   min_temporal_points: 8
-    #   high_risk_window: 6
-    #   risk_weights: {magnitude: 0.30, direction: 0.25, temporal: 0.30, influence: 0.15}
-      #   peak_risk_weight: 0.75
-      #   watch_threshold: 0.55
-      #   restricted_threshold: 0.70
-      #   quarantine_threshold: 0.80
-      #   immediate_quarantine_threshold: 0.95
-      #   quarantine_window: 4
-      #   quarantine_strikes: 2
-      #   recovery_threshold: 0.35
-      #   recovery_observations: 3
-    #   high_risk_threshold: 0.70
-    #   medium_risk_threshold: 0.40
-    #   trust_beta: 0.75
-    #   min_trust: 0.05
-      #   state_weight_cap_multipliers: {normal: 2.0, watch: 1.0, restricted: 0.1, quarantined: 0.0}
-    #   enable_soft_trust_weighting: true
-    #   enable_delta_clipping: true
-    #   clip_multiplier: 1.0
-    #   enable_trust_caps: true
-      #   enable_exposure_budgets: true
-      #   exposure_window: 4
-      #   client_exposure_budget_multiplier: 4.0
-      #   direction_exposure_budget_multiplier: 4.0
-    #   min_effective_clients: 3
-    #   fallback_strategy: skip_update
-    #   log_client_weights: true
-    #   enable_temporal_features: true
-    #   enable_direction_features: true
-    #   enable_influence_features: true
+    # rtc-fedavg injects the promoted manifest, principal map, and verified
+    # TrialPlan automatically. Direct rtc_full runs must supply the same
+    # manifest-bound contract and use strict principal-uniform pairing.
+    # custom_params: {calibration_path: config/rtc_v3_manifest_formal_iid_semantic.json,
+    #                 implementation_phase: 6}
     custom_params: {}
 
 # ── Evaluation ───────────────────────────────────────────────

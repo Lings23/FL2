@@ -22,6 +22,8 @@ docs/
 .DS_Store
 .idea/
 .vscode/
+.matplotlib/
 
 # Ray runtime
-/tmp/ray/
+tmp/
+

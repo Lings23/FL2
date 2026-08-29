@@ -388,6 +388,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> Path:
     args = parse_args(argv)
+    if args.development_root and args.development_evidence:
+        raise ValueError(
+            "use either --development-root (rebuild evidence) or "
+            "--development-evidence (reuse evidence), not both"
+        )
     evidence = args.development_evidence
     if args.development_root:
         evidence = str(

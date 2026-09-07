@@ -1,0 +1,14 @@
+{
+  "schema_version": "RTCByzantineAttackFreezeV1",
+  "implementation_source_sha256": "94dcc85bb73ffa027c001391fdb76eff2967700d99f8e7b40bf427ec9ac1a865",
+  "selection_policy": "V1 robustness validation: LIE weak sensitivity point fixed at z=0.25; malicious fraction, seeds and defenses are controlled by the experiment runner.",
+  "attacks": {
+    "lie": {
+      "strength_level": "weak_z0.25",
+      "parameters": {
+        "lie_z": 0.25,
+        "coordinated_attack_knowledge": "all_updates"
+      }
+    }
+  }
+}

@@ -37,7 +37,7 @@ ROBUST_AGR_REPRODUCTION_DEFENSES = (
 )
 BACKDOOR_SCREEN_ATTACK_START = 11
 
-SUPPORTED_ATTACKS = (*CANONICAL_ATTACKS, "alie")
+SUPPORTED_ATTACKS = ("none", *CANONICAL_ATTACKS, "alie")
 DEFAULT_DEFENSES = (
     "fedavg",
     "rtc_full",
@@ -45,17 +45,36 @@ DEFAULT_DEFENSES = (
     "trimmed_mean",
     "median",
     "foolsgold",
+    "rfa",
     "freqfed",
+    "fltrust",
 )
 
 DEFENSES: Mapping[str, tuple[str, Mapping[str, Any]]] = {
     "fedavg": ("none", {}),
     "rtc_full": ("rtc_full", {}),
+    "rtc_anchor_recycle": ("rtc_full", {}),
+    "rtc_semantic_observe": ("rtc_full", {}),
+    "rtc_semantic_risk_gated": ("rtc_full", {}),
+    "rtc_semantic_restricted_only": ("rtc_full", {}),
+    "rtc_cumulative_q_cap": ("rtc_full", {}),
+    "rtc_cumulative_q_cap_anchor": ("rtc_full", {}),
+    "rtc_cumulative_q_cap_accepted_anchor": ("rtc_full", {}),
+    "rtc_b4_residual_rank_cap": ("rtc_full", {}),
+    "rtc_b5_clip_mad_225": ("rtc_full", {}),
     "krum": ("krum", {}),
     "multi_krum": ("krum", {}),
     "trimmed_mean": ("trimmed_mean", {}),
     "median": ("median", {}),
     "foolsgold": ("foolsgold", {}),
+    "rfa": (
+        "rfa",
+        {
+            "num_iterations": 3,
+            "smoothing": 1e-6,
+            "use_num_examples": True,
+        },
+    ),
     "freqfed": (
         "freqfed",
         {
@@ -65,9 +84,11 @@ DEFENSES: Mapping[str, tuple[str, Mapping[str, Any]]] = {
             "allow_single_cluster": True,
         },
     ),
+    "fltrust": ("fltrust", {}),
 }
 
 ATTACK_PARAMETERS: Mapping[str, Mapping[str, Any]] = {
+    "none": {},
     "gaussian_noise": {"gaussian_noise_mean": 0.0, "gaussian_noise_std": 0.1},
     "random_noise": {
         "random_noise_scale": 10.0,
@@ -274,7 +295,7 @@ def build_matrix(args) -> list[dict[str, Any]]:
     freeze_path = str(getattr(args, "byzantine_attack_freeze", "") or "").strip()
     frozen = _load_attack_freeze(freeze_path) if freeze_path else None
     if frozen is not None:
-        missing_frozen = set(attacks).difference(frozen)
+        missing_frozen = set(attacks).difference({"none"}).difference(frozen)
         if missing_frozen:
             raise ValueError(
                 f"Attack freeze is missing attacks: {sorted(missing_frozen)}"
@@ -323,14 +344,63 @@ def build_matrix(args) -> list[dict[str, Any]]:
             )
             contract = attack_contract_payload(attack, vars(runtime_config))
             group = (
-                "targeted"
+                "clean"
+                if attack == "none"
+                else "targeted"
                 if attack_spec.objective == "targeted_integrity"
                 else "untargeted"
             )
             for defense in defenses:
                 defense_type, custom = DEFENSES[defense]
-                if defense == "rtc_full":
-                    custom = rtc_custom
+                if defense in {
+                    "rtc_full",
+                    "rtc_anchor_recycle",
+                    "rtc_semantic_observe",
+                    "rtc_semantic_risk_gated",
+                    "rtc_semantic_restricted_only",
+                    "rtc_cumulative_q_cap",
+                    "rtc_cumulative_q_cap_anchor",
+                    "rtc_cumulative_q_cap_accepted_anchor",
+                    "rtc_b4_residual_rank_cap",
+                    "rtc_b5_clip_mad_225",
+                }:
+                    custom = dict(rtc_custom)
+                if defense == "rtc_anchor_recycle":
+                    custom["anchor_recycle_fraction"] = float(
+                        getattr(args, "rtc_v3_anchor_recycle_fraction", 1.0)
+                    )
+                if defense == "rtc_semantic_observe":
+                    custom["semantic_ablation"] = "observe"
+                if defense == "rtc_semantic_risk_gated":
+                    custom["semantic_intervention_risk_floor"] = 0.10
+                if defense == "rtc_semantic_restricted_only":
+                    custom["semantic_intervention_risk_floor"] = 0.50
+                if defense == "rtc_cumulative_q_cap":
+                    custom["semantic_intervention_risk_floor"] = 0.50
+                    custom["cumulative_q_cap_power"] = 1
+                if defense in {
+                    "rtc_cumulative_q_cap_anchor",
+                    "rtc_cumulative_q_cap_accepted_anchor",
+                    "rtc_b4_residual_rank_cap",
+                    "rtc_b5_clip_mad_225",
+                }:
+                    custom["semantic_intervention_risk_floor"] = 0.50
+                    custom["cumulative_q_cap_power"] = 1
+                    custom["anchor_recycle_fraction"] = float(
+                        getattr(args, "rtc_v3_anchor_recycle_fraction", 1.0)
+                    )
+                if defense in {
+                    "rtc_cumulative_q_cap_accepted_anchor",
+                    "rtc_b4_residual_rank_cap",
+                    "rtc_b5_clip_mad_225",
+                }:
+                    custom["anchor_recycle_weighting"] = "accepted"
+                if defense == "rtc_b4_residual_rank_cap":
+                    custom["residual_rank_cap_top_k"] = 2
+                    custom["residual_rank_cap_factor"] = 0.5
+                    custom["residual_rank_recycle_fraction"] = 1.0
+                if defense == "rtc_b5_clip_mad_225":
+                    custom["norm_clip_mad_k"] = 2.25
                 row: dict[str, Any] = {
                     "benchmark_version": 4,
                     "attack_group": group,
@@ -339,10 +409,16 @@ def build_matrix(args) -> list[dict[str, Any]]:
                     "attack_contract_hash": contract["contract_hash"],
                     "attack_implementation_hash": contract["implementation_hash"],
                     "strength_level": str(
-                        frozen_entry.get("strength_level", "provisional")
+                        "not_applicable"
+                        if attack == "none"
+                        else frozen_entry.get("strength_level", "provisional")
                     ),
                     "attack_parameter_status": (
-                        "frozen" if frozen is not None else "provisional"
+                        "not_applicable"
+                        if attack == "none"
+                        else "frozen"
+                        if frozen is not None
+                        else "provisional"
                     ),
                     "period": "continuous_1_0",
                     "on_rounds": 1,
@@ -554,16 +630,59 @@ def validate_attack_execution(
                 active_clients = pd.to_numeric(
                     active["fit_dba_active_clients"], errors="coerce"
                 )
-                fragments = pd.to_numeric(
-                    active["fit_dba_unique_fragments"], errors="coerce"
-                )
                 scaled = pd.to_numeric(
                     active["fit_dba_scaled_clients"], errors="coerce"
                 )
-                if active_clients.isna().any() or not (
-                    fragments == active_clients.clip(upper=4)
-                ).all():
-                    raise ValueError("DBA fragment assignment is incomplete")
+                selected_attackers = pd.to_numeric(
+                    active["fit_selected_active_attackers"], errors="coerce"
+                )
+                plan_path = Path(str(spec.get("trial_plan_path", "")))
+                if not plan_path.is_file():
+                    raise ValueError("DBA validation requires a trial plan")
+                plan = json.loads(plan_path.read_text(encoding="utf-8"))
+                malicious_ids = sorted(
+                    int(value) for value in plan.get("malicious_partition_ids", ())
+                )
+                if not malicious_ids:
+                    raise ValueError("DBA trial plan has no malicious identities")
+                fragment_count = max(1, int(spec.get("dba_trigger_num", 4)))
+                fragment_by_client = {
+                    client_id: rank % fragment_count
+                    for rank, client_id in enumerate(malicious_ids)
+                }
+                if active_clients.isna().any() or selected_attackers.isna().any():
+                    raise ValueError("DBA active-client evidence is incomplete")
+                for row_index, row in active.iterrows():
+                    try:
+                        selected_ids = [
+                            int(value)
+                            for value in json.loads(
+                                str(row["fit_planned_partition_ids_json"])
+                            )
+                        ]
+                        observed_fragments = sorted(
+                            int(value)
+                            for value in json.loads(
+                                str(row["fit_dba_fragment_indices_json"])
+                            )
+                        )
+                    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                        raise ValueError(
+                            "DBA fragment assignment evidence is malformed"
+                        ) from exc
+                    expected_fragments = sorted(
+                        fragment_by_client[client_id]
+                        for client_id in selected_ids
+                        if client_id in fragment_by_client
+                    )
+                    expected_count = int(round(float(selected_attackers.loc[row_index])))
+                    if (
+                        int(round(float(active_clients.loc[row_index])))
+                        != expected_count
+                        or len(observed_fragments) != expected_count
+                        or observed_fragments != expected_fragments
+                    ):
+                        raise ValueError("DBA fragment assignment is incomplete")
                 if bool(spec.get("dba_scale_update", True)) and not (
                     scaled == active_clients
                 ).all():

@@ -1,0 +1,14 @@
+{
+  "schema_version": "RTCByzantineAttackFreezeV1",
+  "implementation_source_sha256": "498522d474c467277bcf346d723df991bf471a8302c61f5e668e07b1d98010cb",
+  "selection_policy": "Custom LIE rerun: only lie_z is overridden from 1.0 to 0.5; all other seed-42, malicious-fraction-0.3 experiment settings are unchanged.",
+  "attacks": {
+    "lie": {
+      "strength_level": "custom_z0.5",
+      "parameters": {
+        "lie_z": 0.5,
+        "coordinated_attack_knowledge": "all_updates"
+      }
+    }
+  }
+}

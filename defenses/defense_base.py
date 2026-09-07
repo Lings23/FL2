@@ -10,6 +10,7 @@ Implemented defenses
 • median         — Coordinate-wise median
 • fltrust        — FLTrust server-side cosine re-weighting (Cao et al. 2020)
 • foolsgold      — FoolsGold contribution similarity penalisation (Fung et al. 2018)
+• rfa            — Robust Federated Aggregation / geometric median
 • fedavg         — Standard FedAvg (no defense, baseline)
 
 Extension interface
@@ -496,6 +497,7 @@ class FoolsGoldDefense(BaseDefense):
 from defenses.fltrust_defense import FLTrustDefense as FLTrustDefense
 from defenses.foolsgold_defense import FoolsGoldDefense as FoolsGoldDefense
 from defenses.freqfed_defense import FreqFedDefense as FreqFedDefense
+from defenses.rfa_defense import RFADefense as RFADefense
 
 
 DEFENSE_REGISTRY: Dict[str, Any] = {
@@ -507,6 +509,7 @@ DEFENSE_REGISTRY: Dict[str, Any] = {
     "fltrust":       FLTrustDefense,
     "foolsgold":     FoolsGoldDefense,
     "freqfed":       FreqFedDefense,
+    "rfa":           RFADefense,
     # RTC-v2 is retained only for historical reproduction.  All public RTC
     # aliases resolve to the promoted semantic-temporal-exposure V3 pipeline.
     "time_consistency": "TimeConsistencyDefense",

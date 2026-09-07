@@ -714,6 +714,7 @@ class FedSecStrategy(Strategy):
         semantic_batch = getattr(self.defense, "_last_semantic_batch", None)
         semantic_risks = getattr(self.defense, "_last_semantic_risks", ())
         semantic_q_values = getattr(self.defense, "_last_semantic_q", ())
+        client_q_cap_values = getattr(self.defense, "_last_client_q_cap", ())
         semantic_wide_export = bool(
             getattr(self.defense, "_export_sketches", False)
         )
@@ -803,6 +804,11 @@ class FedSecStrategy(Strategy):
                 "rtc_v3_direction_q_full": (
                     direction_q.get("full", ())[idx]
                     if idx < len(direction_q.get("full", ()))
+                    else None
+                ),
+                "rtc_v3_client_q_cap": (
+                    client_q_cap_values[idx]
+                    if idx < len(client_q_cap_values)
                     else None
                 ),
                 "trust": trust_map.get(cid),
@@ -900,6 +906,20 @@ class FedSecStrategy(Strategy):
         metrics["selected_active_attackers"] = len(active_malicious)
         metrics["selected_benign_clients"] = len(benign)
         metrics["attack_active"] = float(bool(active_malicious))
+        total_examples = sum(max(0, int(record["num_examples"])) for record in records)
+        malicious_examples = sum(
+            max(0, int(record["num_examples"])) for record in malicious
+        )
+        active_malicious_examples = sum(
+            max(0, int(record["num_examples"])) for record in active_malicious
+        )
+        metrics["selected_examples"] = total_examples
+        metrics["selected_malicious_example_share"] = (
+            malicious_examples / total_examples if total_examples else 0.0
+        )
+        metrics["selected_active_attacker_example_share"] = (
+            active_malicious_examples / total_examples if total_examples else 0.0
+        )
 
         label_flip_records = [
             record for record in records

@@ -342,6 +342,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Optional JSON parameter-index-to-role mapping",
     )
     parser.add_argument(
+        "--rtc-v3-anchor-recycle-fraction",
+        type=float,
+        default=1.0,
+        help=(
+            "Coordinate-median anchor fraction used only by the "
+            "rtc_anchor_recycle, rtc_cumulative_q_cap_anchor, or "
+            "rtc_cumulative_q_cap_accepted_anchor / "
+            "rtc_b4_residual_rank_cap / rtc_b5_clip_mad_225 defense cell"
+        ),
+    )
+    parser.add_argument(
         "--byzantine-attack-freeze",
         default="",
         help="Frozen RTCByzantineAttackFreezeV1 JSON for formal rtc-byzantine runs",
@@ -418,6 +429,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--ray-memory-wait-seconds must be non-negative")
     if args.max_spec_retries < 0:
         parser.error("--max-spec-retries must be non-negative")
+    if not 0.0 <= args.rtc_v3_anchor_recycle_fraction <= 1.0:
+        parser.error("--rtc-v3-anchor-recycle-fraction must be in [0, 1]")
     if not 0.0 <= args.label_flip_poison_fraction <= 1.0:
         parser.error("--label-flip-poison-fraction must be in [0, 1]")
     if not args.list_profiles and not args.profile:

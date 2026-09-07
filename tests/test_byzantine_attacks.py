@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -455,6 +457,17 @@ def test_byzantine_matrix_is_defense_paired_and_excludes_alias_by_default():
     assert {row["attack"] for row in rows} == set(
         byzantine_experiment.CANONICAL_ATTACKS
     )
+    assert set(byzantine_experiment.DEFAULT_DEFENSES) == {
+        "fedavg",
+        "rtc_full",
+        "krum",
+        "trimmed_mean",
+        "median",
+        "foolsgold",
+        "rfa",
+        "freqfed",
+        "fltrust",
+    }
     for attack in byzantine_experiment.CANONICAL_ATTACKS:
         group = [row for row in rows if row["attack"] == attack]
         assert len({row["attack_contract_hash"] for row in group}) == 1
@@ -805,6 +818,188 @@ def test_multi_krum_row_selects_more_than_one_candidate():
     assert row["krum_num_to_select"] > 1
 
 
+def test_v1_clean_matrix_keeps_defense_pair_and_assumed_byzantine_budget(tmp_path):
+    freeze = tmp_path / "freeze.json"
+    freeze.write_text(
+        json.dumps(
+            {
+                "schema_version": "RTCByzantineAttackFreezeV1",
+                "implementation_source_sha256": byzantine_experiment.attack_source_hash(),
+                "attacks": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = experiment_run.parse_args([
+        "--profile", "rtc-byzantine", "--attacks", "none",
+        "--defenses", "rtc_cumulative_q_cap_accepted_anchor,multi_krum",
+        "--rtc-v3-anchor-recycle-fraction", "0.51",
+        "--byzantine-attack-freeze", str(freeze),
+        "--seeds", "42", "--malicious-fractions", "0.3", "--dry-run",
+    ])
+    args.malicious_fraction = 0.3
+
+    rtc, multi_krum = byzantine_experiment.build_matrix(args)
+
+    assert rtc["attack"] == multi_krum["attack"] == "none"
+    assert rtc["attack_group"] == multi_krum["attack_group"] == "clean"
+    assert rtc["attack_parameter_status"] == "not_applicable"
+    assert rtc["custom_params"]["anchor_recycle_fraction"] == pytest.approx(0.51)
+    assert rtc["custom_params"]["anchor_recycle_weighting"] == "accepted"
+    assert multi_krum["krum_num_malicious"] == 3
+    assert multi_krum["krum_num_to_select"] == 5
+
+
+def test_semantic_observe_candidate_only_changes_semantic_ablation():
+    args = experiment_run.parse_args([
+        "--profile", "rtc-byzantine", "--attacks", "lie",
+        "--defenses", "rtc_full,rtc_semantic_observe", "--seeds", "42",
+        "--malicious-fractions", "0.3", "--dry-run",
+    ])
+    args.malicious_fraction = 0.3
+    baseline, candidate = byzantine_experiment.build_matrix(args)
+
+    baseline_custom = dict(baseline["custom_params"])
+    candidate_custom = dict(candidate["custom_params"])
+    assert candidate_custom.pop("semantic_ablation") == "observe"
+    assert candidate_custom == baseline_custom
+    assert candidate["defense_type"] == baseline["defense_type"] == "rtc_full"
+
+
+def test_semantic_risk_gated_candidate_only_adds_watch_floor():
+    args = experiment_run.parse_args([
+        "--profile", "rtc-byzantine", "--attacks", "lie",
+        "--defenses", "rtc_full,rtc_semantic_risk_gated", "--seeds", "42",
+        "--malicious-fractions", "0.3", "--dry-run",
+    ])
+    args.malicious_fraction = 0.3
+    baseline, candidate = byzantine_experiment.build_matrix(args)
+
+    baseline_custom = dict(baseline["custom_params"])
+    candidate_custom = dict(candidate["custom_params"])
+    assert candidate_custom.pop("semantic_intervention_risk_floor") == 0.10
+    assert candidate_custom == baseline_custom
+    assert candidate["defense_type"] == baseline["defense_type"] == "rtc_full"
+
+
+def test_semantic_restricted_only_candidate_only_adds_restricted_floor():
+    args = experiment_run.parse_args([
+        "--profile", "rtc-byzantine", "--attacks", "lie",
+        "--defenses", "rtc_full,rtc_semantic_restricted_only", "--seeds", "42",
+        "--malicious-fractions", "0.3", "--dry-run",
+    ])
+    args.malicious_fraction = 0.3
+    baseline, candidate = byzantine_experiment.build_matrix(args)
+
+    baseline_custom = dict(baseline["custom_params"])
+    candidate_custom = dict(candidate["custom_params"])
+    assert candidate_custom.pop("semantic_intervention_risk_floor") == 0.50
+    assert candidate_custom == baseline_custom
+
+
+def test_cumulative_q_cap_candidate_only_adds_linear_cap_and_restricted_floor():
+    args = experiment_run.parse_args([
+        "--profile", "rtc-byzantine", "--attacks", "lie",
+        "--defenses", "rtc_semantic_restricted_only,rtc_cumulative_q_cap",
+        "--seeds", "42", "--malicious-fractions", "0.3", "--dry-run",
+    ])
+    args.malicious_fraction = 0.3
+    baseline, candidate = byzantine_experiment.build_matrix(args)
+    baseline_custom = dict(baseline["custom_params"])
+    candidate_custom = dict(candidate["custom_params"])
+
+    assert candidate_custom.pop("cumulative_q_cap_power") == 1
+    assert candidate_custom == baseline_custom
+    assert candidate["defense_type"] == baseline["defense_type"] == "rtc_full"
+
+
+def test_b3_anchor_candidate_only_adds_anchor_recycle_to_linear_cap():
+    args = experiment_run.parse_args([
+        "--profile", "rtc-byzantine", "--attacks", "dba",
+        "--defenses", "rtc_cumulative_q_cap,rtc_cumulative_q_cap_anchor",
+        "--rtc-v3-anchor-recycle-fraction", "1.0",
+        "--seeds", "42", "--malicious-fractions", "0.3", "--dry-run",
+    ])
+    args.malicious_fraction = 0.3
+    baseline, candidate = byzantine_experiment.build_matrix(args)
+    baseline_custom = dict(baseline["custom_params"])
+    candidate_custom = dict(candidate["custom_params"])
+
+    assert candidate_custom.pop("anchor_recycle_fraction") == 1.0
+    assert candidate_custom == baseline_custom
+    assert candidate_custom["semantic_intervention_risk_floor"] == 0.50
+    assert candidate_custom["cumulative_q_cap_power"] == 1
+    assert candidate["defense_type"] == baseline["defense_type"] == "rtc_full"
+
+
+def test_b3r_accepted_anchor_only_changes_recycle_weighting_from_b3():
+    args = experiment_run.parse_args([
+        "--profile", "rtc-byzantine", "--attacks", "dba",
+        "--defenses",
+        "rtc_cumulative_q_cap_anchor,rtc_cumulative_q_cap_accepted_anchor",
+        "--rtc-v3-anchor-recycle-fraction", "1.0",
+        "--seeds", "42", "--malicious-fractions", "0.3", "--dry-run",
+    ])
+    args.malicious_fraction = 0.3
+    baseline, candidate = byzantine_experiment.build_matrix(args)
+    baseline_custom = dict(baseline["custom_params"])
+    candidate_custom = dict(candidate["custom_params"])
+
+    assert candidate_custom.pop("anchor_recycle_weighting") == "accepted"
+    assert candidate_custom == baseline_custom
+    assert baseline_custom["anchor_recycle_fraction"] == 1.0
+    assert baseline_custom["semantic_intervention_risk_floor"] == 0.50
+    assert baseline_custom["cumulative_q_cap_power"] == 1
+    assert candidate["defense_type"] == baseline["defense_type"] == "rtc_full"
+
+
+def test_b4_candidate_only_adds_residual_rank_cap_to_frozen_b3r_f051():
+    args = experiment_run.parse_args([
+        "--profile", "rtc-byzantine", "--attacks", "lie",
+        "--defenses",
+        "rtc_cumulative_q_cap_accepted_anchor,rtc_b4_residual_rank_cap",
+        "--rtc-v3-anchor-recycle-fraction", "0.51",
+        "--seeds", "42", "--malicious-fractions", "0.3", "--dry-run",
+    ])
+    args.malicious_fraction = 0.3
+    baseline, candidate = byzantine_experiment.build_matrix(args)
+    baseline_custom = dict(baseline["custom_params"])
+    candidate_custom = dict(candidate["custom_params"])
+
+    assert candidate_custom.pop("residual_rank_cap_top_k") == 2
+    assert candidate_custom.pop("residual_rank_cap_factor") == 0.5
+    assert candidate_custom.pop("residual_rank_recycle_fraction") == 1.0
+    assert candidate_custom == baseline_custom
+    assert baseline_custom["anchor_recycle_fraction"] == 0.51
+    assert baseline_custom["anchor_recycle_weighting"] == "accepted"
+    assert baseline_custom["semantic_intervention_risk_floor"] == 0.50
+    assert baseline_custom["cumulative_q_cap_power"] == 1
+    assert candidate["defense_type"] == baseline["defense_type"] == "rtc_full"
+
+
+def test_b5_candidate_only_changes_clip_mad_k_from_frozen_b3r_f051():
+    args = experiment_run.parse_args([
+        "--profile", "rtc-byzantine", "--attacks", "lie",
+        "--defenses",
+        "rtc_cumulative_q_cap_accepted_anchor,rtc_b5_clip_mad_225",
+        "--rtc-v3-anchor-recycle-fraction", "0.51",
+        "--seeds", "42", "--malicious-fractions", "0.3", "--dry-run",
+    ])
+    args.malicious_fraction = 0.3
+    baseline, candidate = byzantine_experiment.build_matrix(args)
+    baseline_custom = dict(baseline["custom_params"])
+    candidate_custom = dict(candidate["custom_params"])
+
+    assert candidate_custom.pop("norm_clip_mad_k") == pytest.approx(2.25)
+    assert candidate_custom == baseline_custom
+    assert baseline_custom["anchor_recycle_fraction"] == pytest.approx(0.51)
+    assert baseline_custom["anchor_recycle_weighting"] == "accepted"
+    assert baseline_custom["semantic_intervention_risk_floor"] == pytest.approx(0.50)
+    assert baseline_custom["cumulative_q_cap_power"] == 1
+    assert "residual_rank_cap_top_k" not in candidate_custom
+    assert candidate["defense_type"] == baseline["defense_type"] == "rtc_full"
+
+
 def test_robust_agr_report_requires_complete_matrix_and_marks_collapse(tmp_path):
     rows = []
     for attack in byzantine_experiment.ROBUST_AGR_REPRODUCTION_ATTACKS:
@@ -964,6 +1159,32 @@ def test_byzantine_analysis_complete_matrix_rejects_missing_defense():
         )
 
 
+def test_byzantine_analysis_complete_matrix_accepts_all_nine_defenses():
+    rows = [
+        {
+            "attack": "sign_flip",
+            "defense": defense,
+            "seed": 42,
+            "trial_plan_hash": "plan",
+        }
+        for defense in byzantine_experiment.DEFAULT_DEFENSES
+    ]
+    rows.append(
+        {
+            "attack": "none",
+            "defense": "fedavg",
+            "seed": 42,
+            "trial_plan_hash": "plan",
+        }
+    )
+    gates = byzantine_analysis.validate_complete_matrix(
+        pd.DataFrame(rows),
+        attacks=("sign_flip",),
+        seeds=(42,),
+    )
+    assert bool(gates["passed"].all())
+
+
 def test_random_attack_provenance_uses_the_verified_primary_paper_slug():
     for attack in ("gaussian_noise", "random_noise"):
         assert get_attack_spec(attack).source_url.endswith("/huang24u.html")
@@ -1059,6 +1280,130 @@ def test_defense_assumption_audit_counts_variable_malicious_participation(tmp_pa
     assert audit.iloc[0]["violating_rounds"] == 1
     assert audit.iloc[0]["violation_rate"] == pytest.approx(1 / 3)
     assert audit.iloc[0]["max_selected_malicious"] == 3
+
+
+def test_dba_execution_gate_accepts_reused_fragments_from_global_mapping(tmp_path):
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        '{"malicious_partition_ids":["0","1","2","3","4","5"]}',
+        encoding="utf-8",
+    )
+    spec = {
+        "attack": "dba",
+        "period": "continuous_1_0",
+        "malicious_fraction": 0.3,
+        "seed": 42,
+        "defense": "rtc_full",
+        "partition": "iid",
+        "participation_rate": 0.5,
+        "aggregation_aware_scaling": True,
+        "replacement_gain": 1.0,
+        "dba_scale_update": True,
+        "dba_trigger_num": 4,
+        "trial_plan_path": str(plan_path),
+    }
+    pd.DataFrame(
+        {
+            "planned_attack_active": [1, 1],
+            "fit_selected_active_attackers": [2, 5],
+            "fit_dba_active_clients": [2, 5],
+            "fit_dba_unique_fragments": [1, 4],
+            "fit_dba_fragment_indices_json": ["[0,0]", "[0,0,1,2,3]"],
+            "fit_dba_scaled_clients": [2, 5],
+            "fit_planned_partition_ids_json": [
+                '["0","4","8"]',
+                '["0","1","2","3","4","8"]',
+            ],
+            "server_dba_full_trigger_asr": [0.1, 0.2],
+            "server_dba_local_asr_mean": [0.1, 0.2],
+            "server_dba_local_asr_min": [0.1, 0.2],
+            "server_dba_local_asr_max": [0.1, 0.2],
+        }
+    ).to_csv(tmp_path / f"{periodic_attack.run_id(spec)}.csv", index=False)
+
+    gates = byzantine_experiment.validate_attack_execution([spec], tmp_path)
+
+    assert gates == [
+        {
+            "gate": f"attack_execution:{periodic_attack.run_id(spec)}",
+            "passed": True,
+            "observed": "complete",
+            "required": "complete",
+        }
+    ]
+
+
+def test_dba_execution_gate_rejects_fragment_mapping_mismatch(tmp_path):
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        '{"malicious_partition_ids":["0","1","2","3","4","5"]}',
+        encoding="utf-8",
+    )
+    spec = {
+        "attack": "dba",
+        "period": "continuous_1_0",
+        "malicious_fraction": 0.3,
+        "seed": 42,
+        "defense": "rtc_full",
+        "partition": "iid",
+        "participation_rate": 0.5,
+        "aggregation_aware_scaling": True,
+        "replacement_gain": 1.0,
+        "dba_scale_update": True,
+        "dba_trigger_num": 4,
+        "trial_plan_path": str(plan_path),
+    }
+    pd.DataFrame(
+        {
+            "planned_attack_active": [1],
+            "fit_selected_active_attackers": [2],
+            "fit_dba_active_clients": [2],
+            "fit_dba_unique_fragments": [2],
+            "fit_dba_fragment_indices_json": ["[0,1]"],
+            "fit_dba_scaled_clients": [2],
+            "fit_planned_partition_ids_json": ['["0","4","8"]'],
+            "server_dba_full_trigger_asr": [0.1],
+            "server_dba_local_asr_mean": [0.1],
+            "server_dba_local_asr_min": [0.1],
+            "server_dba_local_asr_max": [0.1],
+        }
+    ).to_csv(tmp_path / f"{periodic_attack.run_id(spec)}.csv", index=False)
+
+    gate = byzantine_experiment.validate_attack_execution([spec], tmp_path)[0]
+
+    assert gate["passed"] is False
+    assert gate["observed"] == "DBA fragment assignment is incomplete"
+
+
+def test_rfa_assumption_audit_uses_malicious_input_sample_weight(tmp_path):
+    round_file = tmp_path / "rfa-run.csv"
+    pd.DataFrame(
+        {
+            "round": [0, 1, 2, 3],
+            "fit_selected_malicious_clients": [np.nan, 2, 2, 2],
+            "fit_selected_benign_clients": [np.nan, 8, 8, 8],
+            "fit_selected_malicious_example_share": [np.nan, 0.2, 0.5, 0.6],
+        }
+    ).to_csv(round_file, index=False)
+    summary = pd.DataFrame(
+        [
+            {
+                "run_id": "rfa-run",
+                "attack": "sign_flip",
+                "seed": 42,
+                "defense": "rfa",
+                "krum_num_malicious": 2,
+                "trim_fraction": 0.2,
+            }
+        ]
+    )
+
+    audit = byzantine_analysis.defense_assumption_audit(
+        summary, {"rfa-run": round_file}
+    )
+    assert audit.iloc[0]["violating_rounds"] == 2
+    assert audit.iloc[0]["violation_rate"] == pytest.approx(2 / 3)
+    assert audit.iloc[0]["max_malicious_input_weight_share"] == pytest.approx(0.6)
 
 
 def test_rtc_mechanism_summary_uses_attack_active_rounds_only(tmp_path):

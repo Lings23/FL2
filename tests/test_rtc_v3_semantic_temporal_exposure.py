@@ -14,6 +14,7 @@ from defenses.rtc.calibration import (
 from defenses.rtc.semantic import (
     ClassifierHeadLayout,
     extract_semantic_batch,
+    gate_semantic_interventions,
     hard_exposure_coefficients,
     ordered_class_pairs,
     select_top_pair_indices,
@@ -135,7 +136,12 @@ def _manifest(*, frozen_cones: bool = False):
     )
 
 
-def _defense(*, frozen_cones: bool = False, semantic_ablation: str = "exposure"):
+def _defense(
+    *,
+    frozen_cones: bool = False,
+    semantic_ablation: str = "exposure",
+    semantic_intervention_risk_floor: float = 0.0,
+):
     cfg = DefenseConfig(
         enabled=True,
         type="rtc_v3_candidate",
@@ -144,6 +150,7 @@ def _defense(*, frozen_cones: bool = False, semantic_ablation: str = "exposure")
             "implementation_phase": 3 if frozen_cones else 1,
             "parameter_roles": ROLES,
             "semantic_ablation": semantic_ablation,
+            "semantic_intervention_risk_floor": semantic_intervention_risk_floor,
         },
     )
     return RTCv3Defense(cfg, num_clients=3)
@@ -193,6 +200,59 @@ def test_hard_exposure_floor_ignores_sub_watch_jitter_only():
     np.testing.assert_allclose(coefficients, [0.0, 0.0, 0.0, 3.2])
     # Continuous soft controls are intentionally not modified by the floor.
     np.testing.assert_allclose(np.maximum(0.3, 1.0 - risks), [1.0, 0.9975, 0.9, 0.3])
+
+
+def test_semantic_intervention_gate_keeps_observation_but_removes_sub_watch_controls():
+    risks = np.asarray([0.0, 0.059, 0.10, 0.93])
+    q_values = np.asarray([1.0, 0.941, 0.90, 0.30])
+
+    optimization_risk, optimization_q, active = gate_semantic_interventions(
+        risks, q_values, 0.10
+    )
+
+    np.testing.assert_allclose(optimization_risk, [0.0, 0.0, 0.0, 0.93])
+    np.testing.assert_allclose(optimization_q, [1.0, 1.0, 1.0, 0.30])
+    np.testing.assert_array_equal(active, [False, False, False, True])
+
+
+def test_zero_semantic_intervention_floor_is_backward_compatible():
+    risks = np.asarray([0.0, 0.059, 0.93])
+    q_values = np.asarray([1.0, 0.941, 0.30])
+
+    optimization_risk, optimization_q, _ = gate_semantic_interventions(
+        risks, q_values, 0.0
+    )
+
+    np.testing.assert_allclose(optimization_risk, risks)
+    np.testing.assert_allclose(optimization_q, q_values)
+
+
+def test_intervention_floor_also_controls_hard_exposure_coefficients():
+    params = _params()
+    updates = []
+    for client in range(3):
+        local = [value.copy() for value in params]
+        if client == 2:
+            local[1][1, 0] = 1.0
+        updates.append((local, 1))
+
+    influence = {}
+    for floor in (0.10, 0.50):
+        defense = _defense(semantic_intervention_risk_floor=floor)
+        defense.set_context(
+            1,
+            ["a", "b", "c"],
+            params,
+            parameter_names=NAMES,
+            server_optimizer="fedavg",
+        )
+        defense.aggregate(updates)
+        influence[floor] = defense._last_records[-1].influence_risk
+        assert defense.last_round_metrics[
+            "rtc_v3_semantic_hard_exposure_risk_floor"
+        ] == pytest.approx(floor)
+
+    assert influence[0.50] < influence[0.10]
 
 
 def test_semantic_features_are_vectorized_for_unknown_source_target():

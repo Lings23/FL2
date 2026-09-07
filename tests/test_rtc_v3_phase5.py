@@ -56,7 +56,7 @@ def _manifest(*, cumulative_enabled):
     )
 
 
-def _defense(*, cumulative_enabled, phase=5):
+def _defense(*, cumulative_enabled, phase=5, cumulative_q_cap_power=0):
     return RTCv3Defense(
         DefenseConfig(
             enabled=True,
@@ -68,6 +68,7 @@ def _defense(*, cumulative_enabled, phase=5):
                 "implementation_phase": phase,
                 "principal_map": MAPPING,
                 "principal_first_sampling_verified": True,
+                "cumulative_q_cap_power": cumulative_q_cap_power,
             },
         )
     )
@@ -107,6 +108,39 @@ def test_cumulative_evidence_adds_restriction_beyond_phase4_window():
     assert phase5.last_client_aggregation_weights["attacker"] < 1.0 / 3.0
     assert phase5.last_round_metrics["rtc_v3_cumulative_q_min"] < 1.0
     assert value5 < value4
+
+
+def test_linear_cumulative_q_client_cap_is_applied_without_renormalization():
+    baseline = _defense(cumulative_enabled=True)
+    capped = _defense(cumulative_enabled=True, cumulative_q_cap_power=1)
+    baseline_value = capped_value = 0.0
+    for server_round in (1, 2, 3):
+        baseline_value = _round(baseline, server_round, baseline_value, 0.8)
+        capped_value = _round(capped, server_round, capped_value, 0.8)
+
+    q = capped._last_client_q_cap[0]
+    assert q < 1.0
+    assert capped._last_client_q_cap[0] == pytest.approx(q)
+    assert capped.last_client_aggregation_weights["attacker"] <= (
+        (1.0 / 3.0) * q + 1e-8
+    )
+    assert capped.last_round_metrics["rtc_v3_cumulative_q_cap_power"] == 1.0
+    assert capped.last_round_metrics["rtc_v3_client_q_cap_active_count"] >= 1.0
+    assert capped_value <= baseline_value
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, 3, float("nan")])
+def test_cumulative_q_cap_power_is_validated(value):
+    with pytest.raises((ValueError, OverflowError), match="cumulative_q_cap_power"):
+        _defense(
+            cumulative_enabled=True,
+            cumulative_q_cap_power=value,
+        )
+
+
+def test_cumulative_q_cap_requires_enabled_cumulative_evidence():
+    with pytest.raises(ValueError, match="requires cumulative evidence"):
+        _defense(cumulative_enabled=False, cumulative_q_cap_power=1)
 
 
 def test_one_ordinary_tail_observation_does_not_jump_to_q_min():

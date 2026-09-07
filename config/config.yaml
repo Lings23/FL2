@@ -126,6 +126,8 @@ security:
     #           use_num_examples: false, zero_trust_fallback: server_update}
     # FoolsGold: {history_decay: 1.0, history_max_idle_rounds: 50,
     #             use_num_examples: true, logit_offset: 0.5}
+    # RFA/geometric median: {num_iterations: 3, smoothing: 1.0e-6,
+    #                        use_num_examples: true}
     # FreqFed: {low_frequency_ratio: 0.5, low_frequency_shape: triangular,
     #           min_cluster_size: 3, min_samples: 2,
     #           min_selected_clients: 2, projection_dim: 0,

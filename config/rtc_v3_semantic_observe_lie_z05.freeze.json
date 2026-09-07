@@ -1,0 +1,14 @@
+{
+  "schema_version": "RTCByzantineAttackFreezeV1",
+  "implementation_source_sha256": "87c5c9549bcbd50b8bf484f4cc6259df691e1bbfe76d24b9d9da51e6f60f74b1",
+  "selection_policy": "LIE semantic-observe ablation: fix lie_z at 0.5; all other seed-42, malicious-fraction-0.3 settings remain paired.",
+  "attacks": {
+    "lie": {
+      "strength_level": "custom_z0.5",
+      "parameters": {
+        "lie_z": 0.5,
+        "coordinated_attack_knowledge": "all_updates"
+      }
+    }
+  }
+}

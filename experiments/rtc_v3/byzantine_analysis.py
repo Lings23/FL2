@@ -52,7 +52,9 @@ DEFENSE_LABELS = {
     "trimmed_mean": "Trimmed mean",
     "median": "Median",
     "foolsgold": "FoolsGold",
+    "rfa": "RFA / geometric median",
     "freqfed": "FreqFed",
+    "fltrust": "FLTrust (trusted root)",
 }
 DEFENSE_COLORS = {
     "fedavg": "#8A8F98",
@@ -61,7 +63,9 @@ DEFENSE_COLORS = {
     "trimmed_mean": "#7A8F35",
     "median": "#A65D8F",
     "foolsgold": "#4F759B",
+    "rfa": "#6A4C93",
     "freqfed": "#B56B45",
+    "fltrust": "#2A9D8F",
 }
 TARGETED = {"scaling_backdoor", "label_flip_targeted", "dba"}
 REQUIRED_GLOBAL_GATES = {
@@ -329,7 +333,7 @@ def defense_assumption_audit(
     rows: list[dict[str, object]] = []
     selected = summary.loc[
         (summary["attack"].astype(str) != "none")
-        & summary["defense"].astype(str).isin(["krum", "trimmed_mean"])
+        & summary["defense"].astype(str).isin(["krum", "trimmed_mean", "rfa"])
     ]
     for _, spec in selected.iterrows():
         run_id = str(spec["run_id"])
@@ -339,15 +343,28 @@ def defense_assumption_audit(
         benign = pd.to_numeric(frame["fit_selected_benign_clients"], errors="coerce")
         if malicious.isna().any() or benign.isna().any():
             raise ValueError(f"missing selected-client evidence for {run_id}")
-        if str(spec["defense"]) == "krum":
+        defense = str(spec["defense"])
+        max_malicious_input_weight_share = math.nan
+        if defense == "krum":
             bound = float(spec["krum_num_malicious"])
             violation = malicious > bound
             assumption = f"selected malicious <= nominal f={int(bound)}"
-        else:
+        elif defense == "trimmed_mean":
             fraction = malicious / (malicious + benign).clip(lower=1)
             bound = float(spec["trim_fraction"])
             violation = fraction > bound + 1e-12
             assumption = f"selected malicious fraction <= trim={bound:.3f}"
+        else:
+            column = "fit_selected_malicious_example_share"
+            if column not in frame:
+                raise ValueError(f"missing RFA input-weight evidence for {run_id}")
+            fraction = pd.to_numeric(frame[column], errors="coerce")
+            if fraction.isna().any():
+                raise ValueError(f"missing RFA input-weight evidence for {run_id}")
+            bound = 0.5
+            violation = fraction >= bound - 1e-12
+            assumption = "malicious input sample weight share < 0.500"
+            max_malicious_input_weight_share = float(fraction.max())
         rows.append(
             {
                 "run_id": run_id,
@@ -359,6 +376,7 @@ def defense_assumption_audit(
                 "violating_rounds": int(violation.sum()),
                 "violation_rate": float(violation.mean()),
                 "max_selected_malicious": int(malicious.max()),
+                "max_malicious_input_weight_share": max_malicious_input_weight_share,
             }
         )
     return pd.DataFrame(rows)

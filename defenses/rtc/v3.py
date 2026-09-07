@@ -41,6 +41,7 @@ from defenses.rtc.semantic import (
     ClassifierHeadLayout,
     SemanticBatch,
     extract_semantic_batch,
+    gate_semantic_interventions,
     hard_exposure_coefficients,
     select_top_pair_indices,
 )
@@ -73,9 +74,17 @@ _ALLOWED_CUSTOM_PARAMS = {
     "client_mass_caps",
     "principal_mass_caps",
     "coordinate_median_block_size",
+    "anchor_recycle_fraction",
+    "anchor_recycle_weighting",
     "sketch_algorithm_version",
     "export_sketches",
     "semantic_ablation",
+    "semantic_intervention_risk_floor",
+    "cumulative_q_cap_power",
+    "norm_clip_mad_k",
+    "residual_rank_cap_top_k",
+    "residual_rank_cap_factor",
+    "residual_rank_recycle_fraction",
 }
 
 
@@ -189,6 +198,69 @@ class RTCv3Defense(BaseDefense):
             raise ValueError(
                 "RTC-v3 cumulative evidence can only be enabled in Phase 5+"
             )
+        raw_cumulative_q_cap_power = float(
+            params.get("cumulative_q_cap_power", 0)
+        )
+        if (
+            not np.isfinite(raw_cumulative_q_cap_power)
+            or raw_cumulative_q_cap_power not in {0.0, 1.0, 2.0}
+        ):
+            raise ValueError("cumulative_q_cap_power must be 0, 1, or 2")
+        self.cumulative_q_cap_power = int(raw_cumulative_q_cap_power)
+        if self.cumulative_q_cap_power and not self._cumulative.enabled:
+            raise ValueError(
+                "cumulative_q_cap_power requires cumulative evidence"
+            )
+        self.norm_clip_mad_k = float(params.get("norm_clip_mad_k", 2.5))
+        if not np.isfinite(self.norm_clip_mad_k) or self.norm_clip_mad_k <= 0.0:
+            raise ValueError("norm_clip_mad_k must be finite and positive")
+        raw_residual_rank_cap_top_k = float(
+            params.get("residual_rank_cap_top_k", 0)
+        )
+        if (
+            not np.isfinite(raw_residual_rank_cap_top_k)
+            or raw_residual_rank_cap_top_k < 0.0
+            or not raw_residual_rank_cap_top_k.is_integer()
+        ):
+            raise ValueError(
+                "residual_rank_cap_top_k must be a finite non-negative integer"
+            )
+        self.residual_rank_cap_top_k = int(raw_residual_rank_cap_top_k)
+        self.residual_rank_cap_factor = float(
+            params.get("residual_rank_cap_factor", 1.0)
+        )
+        if (
+            not np.isfinite(self.residual_rank_cap_factor)
+            or not 0.0 <= self.residual_rank_cap_factor <= 1.0
+        ):
+            raise ValueError(
+                "residual_rank_cap_factor must be finite and in [0, 1]"
+            )
+        self.residual_rank_recycle_fraction = float(
+            params.get("residual_rank_recycle_fraction", 0.0)
+        )
+        if (
+            not np.isfinite(self.residual_rank_recycle_fraction)
+            or not 0.0 <= self.residual_rank_recycle_fraction <= 1.0
+        ):
+            raise ValueError(
+                "residual_rank_recycle_fraction must be finite and in [0, 1]"
+            )
+        if self.residual_rank_cap_top_k > 0:
+            if self.residual_rank_cap_factor >= 1.0:
+                raise ValueError(
+                    "residual_rank_cap_factor must be below 1 when rank cap is enabled"
+                )
+            if self.residual_rank_recycle_fraction > 0.0 and str(
+                params.get("anchor_recycle_weighting", "nominal")
+            ).lower() != "accepted":
+                raise ValueError(
+                    "residual rank recycle requires anchor_recycle_weighting='accepted'"
+                )
+        elif self.residual_rank_recycle_fraction > 0.0:
+            raise ValueError(
+                "residual_rank_recycle_fraction requires residual rank cap"
+            )
         cone_config = self.manifest.payload.get("stable_cones", {})
         if isinstance(cone_config, bool):
             cone_config = {"enabled": cone_config}
@@ -212,6 +284,21 @@ class RTCv3Defense(BaseDefense):
         )
         if self.coordinate_median_block_size <= 0:
             raise ValueError("coordinate_median_block_size must be positive")
+        self.anchor_recycle_fraction = float(
+            params.get("anchor_recycle_fraction", 0.0)
+        )
+        if (
+            not np.isfinite(self.anchor_recycle_fraction)
+            or not 0.0 <= self.anchor_recycle_fraction <= 1.0
+        ):
+            raise ValueError("anchor_recycle_fraction must be finite and in [0, 1]")
+        self.anchor_recycle_weighting = str(
+            params.get("anchor_recycle_weighting", "nominal")
+        ).lower()
+        if self.anchor_recycle_weighting not in {"nominal", "accepted"}:
+            raise ValueError(
+                "anchor_recycle_weighting must be 'nominal' or 'accepted'"
+            )
         manifest_sketch_algorithm = str(
             self._cone_config.get("sketch_algorithm_version", LEGACY_BLAKE2B_V1)
         )
@@ -267,6 +354,27 @@ class RTCv3Defense(BaseDefense):
             )
         if not self._semantic_enabled and self._semantic_ablation != "exposure":
             raise ValueError("semantic ablations require a schema V3 semantic manifest")
+        self._semantic_intervention_risk_floor = float(
+            params.get("semantic_intervention_risk_floor", 0.0)
+        )
+        if (
+            not np.isfinite(self._semantic_intervention_risk_floor)
+            or not 0.0 <= self._semantic_intervention_risk_floor <= 1.0
+        ):
+            raise ValueError(
+                "semantic_intervention_risk_floor must be finite and in [0, 1]"
+            )
+        if (
+            not self._semantic_enabled
+            and self._semantic_intervention_risk_floor > 0.0
+        ):
+            raise ValueError(
+                "semantic intervention gating requires a schema V3 semantic manifest"
+            )
+        self._semantic_hard_exposure_risk_floor = max(
+            float(self._semantic_config.get("hard_exposure_risk_floor", 0.0)),
+            self._semantic_intervention_risk_floor,
+        )
         self.requires_parameter_roles = self._semantic_enabled
         self._semantic_layout: ClassifierHeadLayout | None = None
         self._semantic_temporal: SemanticTemporalEvidence | None = None
@@ -291,6 +399,7 @@ class RTCv3Defense(BaseDefense):
         self._last_semantic_batch: SemanticBatch | None = None
         self._last_semantic_risks: tuple[float, ...] = ()
         self._last_semantic_q: tuple[float, ...] = ()
+        self._last_client_q_cap: tuple[float, ...] = ()
         self._last_clip_norm = float("inf")
         self.last_round_metrics = {
             "time_consistency_version": self.version,
@@ -598,7 +707,7 @@ class RTCv3Defense(BaseDefense):
         if positive_count < 3 or mad <= np.finfo(np.float64).eps:
             clip_norm = clip_lower
         else:
-            clip_norm = median + 2.5 * 1.4826 * mad
+            clip_norm = median + self.norm_clip_mad_k * 1.4826 * mad
         clip_norm = float(np.clip(clip_norm, clip_lower, clip_upper))
         factors = np.ones(len(updates), dtype=np.float64)
         nonzero_norm = norms > 0.0
@@ -684,6 +793,9 @@ class RTCv3Defense(BaseDefense):
         semantic_transition: SemanticTemporalTransition | None = None
         semantic_risks = np.zeros(len(updates), dtype=np.float64)
         semantic_q = np.ones(len(updates), dtype=np.float64)
+        semantic_optimization_risks = np.zeros(len(updates), dtype=np.float64)
+        semantic_optimization_q = np.ones(len(updates), dtype=np.float64)
+        semantic_intervention_active = np.zeros(len(updates), dtype=bool)
         semantic_coefficients = np.zeros(len(updates), dtype=np.float64)
         if self._semantic_enabled:
             if self._semantic_layout is None or self._semantic_temporal is None:
@@ -718,13 +830,19 @@ class RTCv3Defense(BaseDefense):
             semantic_temporal_seconds = time.perf_counter() - temporal_started
             semantic_risks = semantic_transition.client_risks
             semantic_q = semantic_transition.client_q
-            hard_exposure_risk_floor = float(
-                self._semantic_config.get("hard_exposure_risk_floor", 0.0)
+            (
+                semantic_optimization_risks,
+                semantic_optimization_q,
+                semantic_intervention_active,
+            ) = gate_semantic_interventions(
+                semantic_risks,
+                semantic_q,
+                self._semantic_intervention_risk_floor,
             )
             semantic_coefficients = hard_exposure_coefficients(
                 semantic_risks,
                 semantic_batch.normalized_head_norms,
-                hard_exposure_risk_floor,
+                self._semantic_hard_exposure_risk_floor,
             )
         semantic_seconds = time.perf_counter() - semantic_started
 
@@ -1209,25 +1327,109 @@ class RTCv3Defense(BaseDefense):
                         )
         ledger_seconds = time.perf_counter() - ledger_started
 
+        semantic_client_q = (
+            semantic_optimization_q
+            if self._semantic_ablation in {"temporal", "exposure"}
+            else np.ones(len(updates), dtype=np.float64)
+        )
+        client_q_cap = np.asarray(semantic_client_q, dtype=np.float64).copy()
+        if self.cumulative_q_cap_power:
+            if "full" not in enabled_resolutions:
+                raise ValueError(
+                    "cumulative q client cap requires the full resolution"
+                )
+            cumulative_full = np.asarray(
+                [
+                    float(
+                        cumulative_transition.observations.get(
+                            (principal, "full")
+                        ).q
+                    )
+                    if cumulative_transition.observations.get(
+                        (principal, "full")
+                    ) is not None
+                    else 1.0
+                    for principal in self._principal_ids
+                ],
+                dtype=np.float64,
+            )
+            direction_full = np.asarray(
+                [
+                    float(direction_q_values.get((principal, "full"), 1.0))
+                    for principal in self._principal_ids
+                ],
+                dtype=np.float64,
+            )
+            client_q_cap = np.minimum.reduce(
+                (
+                    client_q_cap,
+                    np.power(cumulative_full, self.cumulative_q_cap_power),
+                    direction_full,
+                )
+            )
+        reference_client_q_cap = client_q_cap.copy()
+        residual_rank_cap_multiplier = np.ones(len(updates), dtype=np.float64)
+        residual_rank_cap_indices: tuple[int, ...] = ()
+        if self.residual_rank_cap_top_k > 0:
+            ranked_positive = sorted(
+                (int(index) for index in np.flatnonzero(positive)),
+                key=lambda index: (
+                    -float(gamma_residuals["full"][index]),
+                    str(self._principal_ids[index]),
+                    str(self._client_ids[index]),
+                    index,
+                ),
+            )
+            residual_rank_cap_indices = tuple(
+                ranked_positive[: self.residual_rank_cap_top_k]
+            )
+            residual_rank_cap_multiplier[
+                list(residual_rank_cap_indices)
+            ] = self.residual_rank_cap_factor
+            client_q_cap = np.minimum(
+                client_q_cap, residual_rank_cap_multiplier
+            )
+        reference_upper_bounds = nominal * reference_client_q_cap
+        upper_bounds = nominal * client_q_cap
+
         solver_started = time.perf_counter()
+        solver_risk = (
+            semantic_optimization_risks[positive]
+            if self._semantic_ablation in {"soft", "temporal", "exposure"}
+            else np.zeros(int(np.count_nonzero(positive)), dtype=np.float64)
+        )
+        solver_risk_lambda = (
+            float(self._semantic_config.get("risk_lambda", 0.0))
+            if self._semantic_ablation in {"soft", "temporal", "exposure"}
+            else 0.0
+        )
+        reference_solution = None
+        residual_rank_reference_valid = True
+        if self.residual_rank_cap_top_k > 0:
+            reference_solution = solve_subprobability_qp(
+                nominal[positive],
+                reference_upper_bounds[positive],
+                budgets,
+                risk=solver_risk,
+                risk_lambda=solver_risk_lambda,
+                tolerance=1e-8,
+                ftol=1e-10,
+                maxiter=100,
+            )
+            residual_rank_reference_valid = (
+                max_violation(
+                    reference_solution.weights,
+                    reference_upper_bounds[positive],
+                    budgets,
+                )
+                <= 1e-8
+            )
         solution = solve_subprobability_qp(
             nominal[positive],
-            (
-                nominal * semantic_q
-                if self._semantic_ablation in {"temporal", "exposure"}
-                else nominal
-            )[positive],
+            upper_bounds[positive],
             budgets,
-            risk=(
-                semantic_risks[positive]
-                if self._semantic_ablation in {"soft", "temporal", "exposure"}
-                else np.zeros(int(np.count_nonzero(positive)), dtype=np.float64)
-            ),
-            risk_lambda=(
-                float(self._semantic_config.get("risk_lambda", 0.0))
-                if self._semantic_ablation in {"soft", "temporal", "exposure"}
-                else 0.0
-            ),
+            risk=solver_risk,
+            risk_lambda=solver_risk_lambda,
             tolerance=1e-8,
             ftol=1e-10,
             maxiter=100,
@@ -1236,11 +1438,7 @@ class RTCv3Defense(BaseDefense):
         weights[positive] = solution.weights
         verified_violation = max_violation(
             weights,
-            (
-                nominal * semantic_q
-                if self._semantic_ablation in {"temporal", "exposure"}
-                else nominal
-            ),
+            upper_bounds,
             verification_budgets,
         )
         if verified_violation > 1e-8:
@@ -1248,16 +1446,123 @@ class RTCv3Defense(BaseDefense):
             solver_status = "zero_fallback"
             verified_violation = max_violation(
                 weights,
-                (
-                    nominal * semantic_q
-                    if self._semantic_ablation in {"temporal", "exposure"}
-                    else nominal
-                ),
+                upper_bounds,
                 verification_budgets,
             )
         else:
             solver_status = solution.status
         solver_seconds = time.perf_counter() - solver_started
+
+        weight_sum = float(weights.sum(dtype=np.float64))
+        reference_weight_sum = weight_sum
+        if reference_solution is not None and residual_rank_reference_valid:
+            reference_weight_sum = float(
+                np.asarray(reference_solution.weights, dtype=np.float64).sum(
+                    dtype=np.float64
+                )
+            )
+        residual_rank_removed_mass = (
+            max(0.0, reference_weight_sum - weight_sum)
+            if residual_rank_reference_valid
+            else 0.0
+        )
+        anchor_recycle_base_target_mass = self.anchor_recycle_fraction * max(
+            0.0, 1.0 - reference_weight_sum
+        )
+        residual_rank_recycle_target_mass = (
+            self.residual_rank_recycle_fraction * residual_rank_removed_mass
+        )
+        anchor_recycle_target_mass = min(
+            max(0.0, 1.0 - weight_sum),
+            anchor_recycle_base_target_mass
+            + residual_rank_recycle_target_mass,
+        )
+        anchor_recycle_mass = 0.0
+        recycle_anchors = anchors
+        recycle_gamma_anchors = gamma_anchors
+        anchor_recycle_source_available = True
+        if (
+            anchor_recycle_target_mass > np.finfo(np.float64).eps
+            and self.anchor_recycle_weighting == "accepted"
+        ):
+            anchor_recycle_source_available = (
+                weight_sum > np.finfo(np.float64).eps
+            )
+            if anchor_recycle_source_available:
+                accepted_anchor_started = time.perf_counter()
+                recycle_anchors = []
+                for tensor_index in range(len(floating_indices)):
+                    recycle_anchors.append(
+                        weighted_coordinate_median(
+                            [
+                                client_deltas[tensor_index]
+                                for client_deltas in clipped
+                            ],
+                            weights,
+                            principal_ids=self._principal_ids,
+                            client_ids=self._client_ids,
+                            block_size=self.coordinate_median_block_size,
+                        )
+                    )
+                recycle_gamma_anchors = {}
+                for resolution in enabled_resolutions:
+                    scale = self._profile_scalar(
+                        self.manifest.payload["residual_scales"][resolution],
+                        profile=current_profile,
+                    )
+                    recycle_gamma_anchors[resolution] = (
+                        np.sqrt(
+                            squared_norm(
+                                recycle_anchors, positions[resolution]
+                            )
+                        )
+                        / scale
+                    )
+                anchor_seconds += time.perf_counter() - accepted_anchor_started
+        if (
+            anchor_recycle_target_mass > np.finfo(np.float64).eps
+            and not str(solver_status).startswith("zero_")
+            and anchor_recycle_source_available
+        ):
+            recycle_limits = [anchor_recycle_target_mass]
+            for resolution in enabled_resolutions:
+                anchor_coefficient = float(recycle_gamma_anchors[resolution])
+                if anchor_coefficient <= np.finfo(np.float64).eps:
+                    continue
+                for exposure_type in ("anchor", "total"):
+                    current_exposure = float(
+                        np.dot(coefficients[resolution][exposure_type], weights)
+                    )
+                    for window in enabled_windows:
+                        remaining = (
+                            float(budget_values[(resolution, exposure_type, window)])
+                            - float(histories[(resolution, exposure_type, window)])
+                            - current_exposure
+                        )
+                        recycle_limits.append(
+                            max(0.0, remaining) / anchor_coefficient
+                        )
+            anchor_recycle_mass = max(0.0, min(recycle_limits))
+            # The recycled coordinate median is server-owned: it has anchor
+            # exposure but no client/principal residual or semantic exposure.
+            # Recheck the affected hard budgets after adding that exposure.
+            for resolution in enabled_resolutions:
+                anchor_coefficient = float(recycle_gamma_anchors[resolution])
+                recycled_exposure = anchor_coefficient * anchor_recycle_mass
+                for exposure_type in ("anchor", "total"):
+                    current_exposure = float(
+                        np.dot(coefficients[resolution][exposure_type], weights)
+                    )
+                    for window in enabled_windows:
+                        verified_violation = max(
+                            verified_violation,
+                            float(histories[(resolution, exposure_type, window)])
+                            + current_exposure
+                            + recycled_exposure
+                            - float(
+                                budget_values[(resolution, exposure_type, window)]
+                            ),
+                        )
 
         aggregation_started = time.perf_counter()
         result: list[np.ndarray] = []
@@ -1269,11 +1574,20 @@ class RTCv3Defense(BaseDefense):
                 )
                 for weight, client_deltas in zip(weights, clipped):
                     aggregate_delta += weight * client_deltas[floating_position]
+                if anchor_recycle_mass > 0.0:
+                    aggregate_delta += (
+                        anchor_recycle_mass * recycle_anchors[floating_position]
+                    )
                 value = (
                     np.asarray(global_parameter, dtype=np.float64) + aggregate_delta
                 )
                 if not np.all(np.isfinite(value)):
                     weights.fill(0.0)
+                    anchor_recycle_mass = 0.0
+                    anchor_recycle_target_mass = 0.0
+                    anchor_recycle_base_target_mass = 0.0
+                    residual_rank_recycle_target_mass = 0.0
+                    residual_rank_removed_mass = 0.0
                     result = [
                         np.asarray(parameter).copy()
                         for parameter in self._global_params or []
@@ -1293,6 +1607,12 @@ class RTCv3Defense(BaseDefense):
             }
             for resolution, typed_coefficients in coefficients.items()
         }
+        for resolution in enabled_resolutions:
+            recycled_anchor_exposure = (
+                float(recycle_gamma_anchors[resolution]) * anchor_recycle_mass
+            )
+            exposures[resolution]["anchor"] += recycled_anchor_exposure
+            exposures[resolution]["total"] += recycled_anchor_exposure
         for (resolution, cone_id), coefficient in cone_coefficients.items():
             exposures[resolution][f"cone:{cone_id}"] = float(
                 np.dot(coefficient, weights)
@@ -1412,6 +1732,7 @@ class RTCv3Defense(BaseDefense):
         self._last_semantic_batch = semantic_batch
         self._last_semantic_risks = tuple(float(value) for value in semantic_risks)
         self._last_semantic_q = tuple(float(value) for value in semantic_q)
+        self._last_client_q_cap = tuple(float(value) for value in client_q_cap)
         self._record_round(
             nominal=nominal,
             validated=validated,
@@ -1426,6 +1747,14 @@ class RTCv3Defense(BaseDefense):
             clip_norm=clip_norm,
             solver_status=solver_status,
             max_constraint_violation=verified_violation,
+            anchor_recycle_mass=anchor_recycle_mass,
+            anchor_recycle_target_mass=anchor_recycle_target_mass,
+            anchor_recycle_base_target_mass=anchor_recycle_base_target_mass,
+            residual_rank_cap_multiplier=residual_rank_cap_multiplier,
+            residual_rank_reference_weight_sum=reference_weight_sum,
+            residual_rank_reference_valid=residual_rank_reference_valid,
+            residual_rank_removed_mass=residual_rank_removed_mass,
+            residual_rank_recycle_target_mass=residual_rank_recycle_target_mass,
             exposures=exposures,
             histories=histories,
             budgets=budget_values,
@@ -1441,6 +1770,8 @@ class RTCv3Defense(BaseDefense):
             semantic_transition=semantic_transition,
             semantic_risks=semantic_risks,
             semantic_q=semantic_q,
+            client_q_cap=client_q_cap,
+            semantic_intervention_active=semantic_intervention_active,
             semantic_coefficients=semantic_coefficients,
             timings={
                 "scoring_seconds": scoring_seconds,
@@ -1718,6 +2049,14 @@ class RTCv3Defense(BaseDefense):
             ),
             solver_status=status,
             max_constraint_violation=0.0,
+            anchor_recycle_mass=0.0,
+            anchor_recycle_target_mass=0.0,
+            anchor_recycle_base_target_mass=0.0,
+            residual_rank_cap_multiplier=np.ones(count, dtype=np.float64),
+            residual_rank_reference_weight_sum=0.0,
+            residual_rank_reference_valid=True,
+            residual_rank_removed_mass=0.0,
+            residual_rank_recycle_target_mass=0.0,
             exposures=zero_exposures,
             histories=zero_histories,
             budgets=zero_histories,
@@ -1735,6 +2074,8 @@ class RTCv3Defense(BaseDefense):
             semantic_transition=None,
             semantic_risks=np.zeros(count, dtype=np.float64),
             semantic_q=np.ones(count, dtype=np.float64),
+            client_q_cap=np.ones(count, dtype=np.float64),
+            semantic_intervention_active=np.zeros(count, dtype=bool),
             semantic_coefficients=np.zeros(count, dtype=np.float64),
             timings={"total_defense_seconds": time.perf_counter() - started},
         )
@@ -1753,6 +2094,14 @@ class RTCv3Defense(BaseDefense):
         clip_norm: float,
         solver_status: str,
         max_constraint_violation: float,
+        anchor_recycle_mass: float,
+        anchor_recycle_target_mass: float,
+        anchor_recycle_base_target_mass: float,
+        residual_rank_cap_multiplier: np.ndarray,
+        residual_rank_reference_weight_sum: float,
+        residual_rank_reference_valid: bool,
+        residual_rank_removed_mass: float,
+        residual_rank_recycle_target_mass: float,
         exposures: Mapping[str, Mapping[str, float]],
         histories: Mapping[tuple[str, str, int], float],
         budgets: Mapping[tuple[str, str, int], float],
@@ -1770,6 +2119,8 @@ class RTCv3Defense(BaseDefense):
         semantic_transition: SemanticTemporalTransition | None,
         semantic_risks: np.ndarray,
         semantic_q: np.ndarray,
+        client_q_cap: np.ndarray,
+        semantic_intervention_active: np.ndarray,
         semantic_coefficients: np.ndarray,
         timings: Mapping[str, float],
     ) -> None:
@@ -1880,14 +2231,33 @@ class RTCv3Defense(BaseDefense):
             )
         ]
         weight_sum = float(weights.sum(dtype=np.float64))
+        effective_update_mass = min(1.0, weight_sum + float(anchor_recycle_mass))
         metrics: dict[str, Any] = {
             "time_consistency_version": self.version,
             "rtc_v3_phase": float(self.implementation_phase),
             "rtc_v3_calibration_hash": self.manifest.hash,
             "rtc_v3_sketch_algorithm_version": self.sketch_algorithm_version,
             "rtc_v3_weight_sum": weight_sum,
-            "rtc_v3_zero_update_mass": 1.0 - weight_sum,
+            "rtc_v3_anchor_recycle_fraction": self.anchor_recycle_fraction,
+            "rtc_v3_anchor_recycle_weighting": self.anchor_recycle_weighting,
+            "rtc_v3_anchor_recycle_source_available": float(
+                self.anchor_recycle_weighting == "nominal"
+                or weight_sum > np.finfo(np.float64).eps
+            ),
+            "rtc_v3_anchor_recycle_target_mass": float(
+                anchor_recycle_target_mass
+            ),
+            "rtc_v3_anchor_recycle_base_target_mass": float(
+                anchor_recycle_base_target_mass
+            ),
+            "rtc_v3_anchor_recycle_mass": float(anchor_recycle_mass),
+            "rtc_v3_anchor_recycle_budget_limited": float(
+                anchor_recycle_mass < anchor_recycle_target_mass - 1e-10
+            ),
+            "rtc_v3_effective_update_mass": effective_update_mass,
+            "rtc_v3_zero_update_mass": max(0.0, 1.0 - effective_update_mass),
             "rtc_v3_clip_norm": float(clip_norm),
+            "rtc_v3_norm_clip_mad_k": self.norm_clip_mad_k,
             "rtc_v3_clipping_rate": float(np.mean(clipped_mask)),
             "rtc_v3_solver_status": solver_status,
             "rtc_v3_solver_fallback": float(solver_status != "optimized"),
@@ -1896,6 +2266,59 @@ class RTCv3Defense(BaseDefense):
             "rtc_v3_cone_profile": str(self._active_cone_profile or "legacy"),
             "rtc_v3_cone_mode": self._cone_mode,
             "rtc_v3_semantic_ablation": self._semantic_ablation,
+            "rtc_v3_semantic_intervention_risk_floor": (
+                self._semantic_intervention_risk_floor
+            ),
+            "rtc_v3_semantic_hard_exposure_risk_floor": (
+                self._semantic_hard_exposure_risk_floor
+            ),
+            "rtc_v3_cumulative_q_cap_power": float(
+                self.cumulative_q_cap_power
+            ),
+            "rtc_v3_residual_rank_cap_top_k": float(
+                self.residual_rank_cap_top_k
+            ),
+            "rtc_v3_residual_rank_cap_factor": float(
+                self.residual_rank_cap_factor
+            ),
+            "rtc_v3_residual_rank_recycle_fraction": float(
+                self.residual_rank_recycle_fraction
+            ),
+            "rtc_v3_residual_rank_cap_active_count": float(
+                np.count_nonzero(
+                    np.asarray(residual_rank_cap_multiplier, dtype=np.float64)
+                    < 1.0 - 1e-12
+                )
+            ),
+            "rtc_v3_residual_rank_cap_client_ids": "|".join(
+                str(client_id)
+                for client_id, multiplier in zip(
+                    self._client_ids,
+                    np.asarray(residual_rank_cap_multiplier, dtype=np.float64),
+                )
+                if float(multiplier) < 1.0 - 1e-12
+            ),
+            "rtc_v3_residual_rank_reference_weight_sum": float(
+                residual_rank_reference_weight_sum
+            ),
+            "rtc_v3_residual_rank_reference_valid": float(
+                residual_rank_reference_valid
+            ),
+            "rtc_v3_residual_rank_removed_mass": float(
+                residual_rank_removed_mass
+            ),
+            "rtc_v3_residual_rank_recycle_target_mass": float(
+                residual_rank_recycle_target_mass
+            ),
+            "rtc_v3_client_q_cap_min": float(
+                np.min(client_q_cap) if len(client_q_cap) else 1.0
+            ),
+            "rtc_v3_client_q_cap_active_count": float(
+                np.count_nonzero(client_q_cap < 1.0 - 1e-12)
+            ),
+            "rtc_v3_semantic_intervention_active_count": float(
+                np.count_nonzero(semantic_intervention_active)
+            ),
             "rtc_v3_cone_online_updates_enabled": float(
                 self._cone_online_updates_enabled
             ),

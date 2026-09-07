@@ -1,0 +1,25 @@
+{
+  "schema_version": "RTCByzantineAttackFreezeV1",
+  "implementation_source_sha256": "87c5c9549bcbd50b8bf484f4cc6259df691e1bbfe76d24b9d9da51e6f60f74b1",
+  "selection_policy": "Anchor-recycle paired ablation; strong parameters copied from rtc_v3_byzantine_strong_seed42_mf03.freeze.json and rebound to the current attack implementation hash.",
+  "attacks": {
+    "lie": {
+      "strength_level": "strong",
+      "parameters": {
+        "lie_z": 1.0,
+        "coordinated_attack_knowledge": "all_updates"
+      }
+    },
+    "dba": {
+      "strength_level": "strong",
+      "parameters": {
+        "aggregation_aware_scaling": true,
+        "replacement_gain": 1.0,
+        "poison_fraction": 0.3,
+        "dba_scale_update": true,
+        "dba_pattern_mode": "paper_cifar_1x6_2x2",
+        "dba_trigger_value_mode": "cifar10_normalized_white"
+      }
+    }
+  }
+}

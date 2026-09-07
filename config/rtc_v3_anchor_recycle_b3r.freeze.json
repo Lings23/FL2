@@ -1,0 +1,26 @@
+{
+  "schema_version": "RTCByzantineAttackFreezeV1",
+  "implementation_source_sha256": "94dcc85bb73ffa027c001391fdb76eff2967700d99f8e7b40bf427ec9ac1a865",
+  "selection_policy": "B3R accepted-weight anchor screen: reuse the frozen B3 B2 baselines and run only the accepted-weight recycle candidate under strong DBA and scaling backdoor.",
+  "attacks": {
+    "dba": {
+      "strength_level": "strong",
+      "parameters": {
+        "aggregation_aware_scaling": true,
+        "replacement_gain": 1.0,
+        "poison_fraction": 0.3,
+        "dba_scale_update": true,
+        "dba_pattern_mode": "paper_cifar_1x6_2x2",
+        "dba_trigger_value_mode": "cifar10_normalized_white"
+      }
+    },
+    "scaling_backdoor": {
+      "strength_level": "strong",
+      "parameters": {
+        "aggregation_aware_scaling": true,
+        "replacement_gain": 1.0,
+        "poison_fraction": 0.3
+      }
+    }
+  }
+}

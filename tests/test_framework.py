@@ -273,6 +273,144 @@ class TestDefenses:
         assert agg[0].mean() > 0, "FLTrust should upweight aligned updates"
         assert d.last_client_aggregation_weights["bad"] == pytest.approx(0.0)
 
+    def test_rfa_is_registered_and_finds_known_geometric_median(self):
+        from config.config_loader import DefenseConfig
+        from defenses.defense_base import RFADefense, get_defense
+
+        defense = get_defense(DefenseConfig(type="rfa"))
+        assert isinstance(defense, RFADefense)
+        defense.set_context(
+            1,
+            ["left", "middle", "right"],
+            [np.zeros(2, dtype=np.float32)],
+        )
+        result = defense.aggregate(_make_updates([
+            np.array([-1.0, 0.0], dtype=np.float32),
+            np.array([0.0, 0.0], dtype=np.float32),
+            np.array([1.0, 0.0], dtype=np.float32),
+        ]))
+
+        np.testing.assert_allclose(result[0], np.zeros(2), atol=1e-7)
+        assert defense.last_round_metrics["rfa_iterations"] == 3.0
+        assert sum(defense.last_client_aggregation_weights.values()) == pytest.approx(1.0)
+
+    def test_rfa_suppresses_outlier_and_is_deterministic(self):
+        from config.config_loader import DefenseConfig
+        from defenses.defense_base import RFADefense
+
+        updates = _make_updates([
+            np.array([0.0], dtype=np.float32),
+            np.array([0.1], dtype=np.float32),
+            np.array([100.0], dtype=np.float32),
+        ])
+        outputs = []
+        for _ in range(2):
+            defense = RFADefense(DefenseConfig())
+            defense.set_context(1, ["a", "b", "outlier"], [np.zeros(1, dtype=np.float32)])
+            outputs.append(defense.aggregate(updates)[0])
+            assert defense.last_client_aggregation_weights["outlier"] < 0.1
+
+        np.testing.assert_array_equal(outputs[0], outputs[1])
+        assert float(outputs[0][0]) < float(np.mean([0.0, 0.1, 100.0]))
+
+    def test_rfa_handles_finite_high_magnitude_outlier_without_norm_overflow(self):
+        from config.config_loader import DefenseConfig
+        from defenses.defense_base import RFADefense
+
+        defense = RFADefense(DefenseConfig())
+        defense.set_context(
+            1, ["a", "b", "outlier"], [np.zeros(2, dtype=np.float32)]
+        )
+        result = defense.aggregate(_make_updates([
+            np.zeros(2, dtype=np.float32),
+            np.ones(2, dtype=np.float32),
+            np.full(2, 1e30, dtype=np.float32),
+        ]))
+
+        assert np.all(np.isfinite(result[0]))
+        assert np.isfinite(defense.last_round_metrics["rfa_objective"])
+        assert defense.last_client_aggregation_weights["outlier"] < 1e-20
+
+    def test_rfa_supports_sample_and_client_uniform_weights(self):
+        from config.config_loader import DefenseConfig
+        from defenses.defense_base import RFADefense
+
+        updates = [
+            ([np.array([0.0], dtype=np.float32)], 8),
+            ([np.array([1.0], dtype=np.float32)], 1),
+            ([np.array([10.0], dtype=np.float32)], 1),
+        ]
+        weighted = RFADefense(DefenseConfig())
+        weighted.set_context(1, ["a", "b", "c"], [np.zeros(1, dtype=np.float32)])
+        weighted_result = float(weighted.aggregate(updates)[0][0])
+
+        uniform = RFADefense(DefenseConfig(custom_params={"use_num_examples": False}))
+        uniform.set_context(1, ["a", "b", "c"], [np.zeros(1, dtype=np.float32)])
+        uniform_result = float(uniform.aggregate(updates)[0][0])
+
+        assert weighted_result < uniform_result
+        assert weighted.last_client_aggregation_weights["a"] > 0.5
+
+    def test_rfa_preserves_global_nonfloating_buffers_and_final_weights(self):
+        from config.config_loader import DefenseConfig
+        from defenses.defense_base import RFADefense
+
+        defense = RFADefense(DefenseConfig(custom_params={"num_iterations": 1}))
+        global_params = [
+            np.array([1.0, 2.0], dtype=np.float32),
+            np.array(7, dtype=np.int64),
+        ]
+        defense.set_context(1, ["a", "b"], global_params)
+        updates = [
+            ([np.array([2.0, 2.0], dtype=np.float32), np.array(99, dtype=np.int64)], 1),
+            ([np.array([1.0, 4.0], dtype=np.float32), np.array(-4, dtype=np.int64)], 3),
+        ]
+        result = defense.aggregate(updates)
+
+        initial = np.array([0.25, 1.5], dtype=np.float32)
+        vectors = np.array([[1.0, 0.0], [0.0, 2.0]], dtype=np.float32)
+        alpha = np.array([0.25, 0.75], dtype=np.float64)
+        distances = np.linalg.norm(vectors - initial, axis=1)
+        expected_weights = alpha / np.maximum(distances, 1e-6)
+        expected_weights /= expected_weights.sum()
+        np.testing.assert_allclose(
+            [defense.last_client_aggregation_weights["a"],
+             defense.last_client_aggregation_weights["b"]],
+            expected_weights,
+            rtol=1e-6,
+        )
+        assert result[1].dtype == np.int64
+        assert result[1].item() == 7
+
+    @pytest.mark.parametrize(
+        "custom, message",
+        [
+            ({"num_iterations": 0}, "num_iterations"),
+            ({"smoothing": 0.0}, "smoothing"),
+            ({"smoothing": float("nan")}, "smoothing"),
+        ],
+    )
+    def test_rfa_rejects_invalid_configuration(self, custom, message):
+        from config.config_loader import DefenseConfig
+        from defenses.defense_base import RFADefense
+
+        with pytest.raises(ValueError, match=message):
+            RFADefense(DefenseConfig(custom_params=custom))
+
+    def test_rfa_rejects_missing_context_nonfinite_and_invalid_weights(self):
+        from config.config_loader import DefenseConfig
+        from defenses.defense_base import RFADefense
+
+        defense = RFADefense(DefenseConfig())
+        with pytest.raises(RuntimeError, match="global model context"):
+            defense.aggregate(_make_updates([np.zeros(1, dtype=np.float32)]))
+
+        defense.set_context(1, ["bad"], [np.zeros(1, dtype=np.float32)])
+        with pytest.raises(ValueError, match="NaN or Inf"):
+            defense.aggregate(_make_updates([np.array([np.nan], dtype=np.float32)]))
+        with pytest.raises(ValueError, match="sample weights"):
+            defense.aggregate([([np.zeros(1, dtype=np.float32)], 0)])
+
     def test_krum_rejects_invalid_byzantine_bound(self):
         from defenses.defense_base import KrumDefense
         from config.config_loader import DefenseConfig

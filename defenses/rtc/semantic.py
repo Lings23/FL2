@@ -243,6 +243,41 @@ def hard_exposure_coefficients(
     return np.maximum(0.0, risk_values - floor) * head_values
 
 
+def gate_semantic_interventions(
+    risks: Sequence[float],
+    q_values: Sequence[float],
+    risk_floor: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Disable soft and temporal intervention for sub-floor semantic jitter.
+
+    The raw risk and temporal state remain observable and continue to evolve;
+    only the QP risk penalty and per-client q cap are gated.  A zero floor is
+    backward compatible with the original continuous controls.
+    """
+
+    risk_array = np.asarray(risks, dtype=np.float64)
+    q_array = np.asarray(q_values, dtype=np.float64)
+    floor = float(risk_floor)
+    if (
+        risk_array.shape != q_array.shape
+        or not np.all(np.isfinite(risk_array))
+        or not np.all(np.isfinite(q_array))
+        or np.any(risk_array < 0.0)
+        or np.any(risk_array > 1.0)
+        or np.any(q_array < 0.0)
+        or np.any(q_array > 1.0)
+        or not np.isfinite(floor)
+        or not 0.0 <= floor <= 1.0
+    ):
+        raise ValueError("invalid semantic intervention-gate inputs")
+    active = risk_array > floor
+    return (
+        np.where(active, risk_array, 0.0),
+        np.where(active, q_array, 1.0),
+        active,
+    )
+
+
 def extract_semantic_batch(
     *,
     layout: ClassifierHeadLayout,

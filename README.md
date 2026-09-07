@@ -9,7 +9,7 @@ A highly modular and extensible federated learning research framework built on [
 ## ✨ Key Features
 
 - **Extensive Attack Models:** Simulates malicious clients with Data Poisoning (Label Flip, Backdoor, DBA) and Model Poisoning (Byzantine, Gaussian Noise, Model Replacement).
-- **Robust Defenses:** Built-in aggregation mechanisms to defend against attacks, including Krum, Trimmed Mean, Median, FLTrust, FoolsGold, FreqFed, and Time Consistency.
+- **Robust Defenses:** Built-in aggregation mechanisms to defend against attacks, including Krum, Trimmed Mean, Median, RFA (geometric median), FLTrust, FoolsGold, FreqFed, and Time Consistency.
 - **Advanced FL Strategies:** Out-of-the-box support for `FedAvg`, `FedProx` (with proximal regularization), `FedYogi`, and `FedAdam` (server-side adaptive optimizers).
 - **Data Partitioning:** Supports various distribution setups like IID, non-IID (sharded), and Dirichlet (LDA) heterogeneous data splitting.
 - **Differential Privacy (DP):** Integrated DP-SGD wrapper for local client training, allowing custom noise multipliers and gradient clipping.

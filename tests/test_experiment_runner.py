@@ -296,6 +296,7 @@ def test_matrix_runner_accepts_rtc_v3_contract_arguments():
         "--rtc-v3-phase", "5",
         "--rtc-v3-principal-map", "principals.json",
         "--rtc-v3-parameter-roles", "roles.json",
+        "--rtc-v3-anchor-recycle-fraction", "0.5",
     ])
 
     assert args.defenses == "fedavg,rtc_v3"
@@ -303,3 +304,12 @@ def test_matrix_runner_accepts_rtc_v3_contract_arguments():
     assert args.rtc_v3_phase == 5
     assert args.rtc_v3_principal_map == "principals.json"
     assert args.rtc_v3_parameter_roles == "roles.json"
+    assert args.rtc_v3_anchor_recycle_fraction == pytest.approx(0.5)
+
+
+def test_matrix_runner_rejects_invalid_anchor_recycle_fraction():
+    with pytest.raises(SystemExit):
+        run.parse_args([
+            "--profile", "rtc-byzantine",
+            "--rtc-v3-anchor-recycle-fraction", "1.1",
+        ])

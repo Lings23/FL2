@@ -59,9 +59,9 @@ ATTACK_SPECS: dict[str, AttackSpec] = {
         implementation_class="generic_byzantine_baseline",
     ),
     "random_noise": AttackSpec(
-        "random_noise", "random_noise.rademacher_norm_matched.v1", "random_outlier",
+        "random_noise", "random_noise.trainable_rademacher_norm_matched.v2", "random_outlier",
         "untargeted_availability", "model_delta", "black_box",
-        "delta_mal = scale * ||delta_local||_2 * rademacher / sqrt(d)", _RANDOM_BASELINE_SOURCE,
+        "trainable delta_mal = scale * ||trainable delta_local||_2 * rademacher / sqrt(d_trainable); preserve model buffers", _RANDOM_BASELINE_SOURCE,
         implementation_class="generic_byzantine_baseline",
     ),
     "byzantine": AttackSpec(
@@ -71,9 +71,9 @@ ATTACK_SPECS: dict[str, AttackSpec] = {
         implementation_class="stress_test_variant",
     ),
     "sign_flip": AttackSpec(
-        "sign_flip", "sign_flip.delta.v1", "direction_destruction",
+        "sign_flip", "sign_flip.trainable_delta.v2", "direction_destruction",
         "untargeted_availability", "model_delta", "local_update",
-        "delta_mal = -scale * delta_local", _SIGN_FLIP_SOURCE,
+        "trainable delta_mal = -scale * delta_local; preserve model buffers", _SIGN_FLIP_SOURCE,
         implementation_class="paper_baseline_at_scale_1",
     ),
     "lie": AttackSpec(
@@ -170,6 +170,7 @@ def attack_source_hash() -> str:
         repository / "client" / "fl_client.py",
         repository / "strategies" / "fed_strategy.py",
         repository / "server" / "fl_server.py",
+        repository / "utils" / "numerical_failure.py",
     )
     for path in sources:
         if path.is_file():

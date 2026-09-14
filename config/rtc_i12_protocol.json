@@ -1,0 +1,72 @@
+{
+  "schema": "RTCI12ProtocolV1",
+  "stage": "I12",
+  "seeds": [
+    44,
+    45
+  ],
+  "training_units": 40,
+  "reused_training_units": 0,
+  "parent": "rtc_i12_direction",
+  "candidate": "rtc_i12_combined",
+  "question": "Fixed R2 raw-norm safety module added to accepted R1c direction parent; paired safety benefit plus utility noninferiority, not retrospective relaxation of the original R2 +0.2pp gate.",
+  "acceptance_scope": "IID clean, Sign-flip scale1, Gaussian std0.1, LIE z0.5 seeds44/45; engineering screen only. Both seeds and every gate required; no optional stopping, seed substitution or parameter search.",
+  "pending_scope": [
+    "DBA/scaling transfer before targeted stage",
+    "Random-v2",
+    "LIE .25",
+    "Min-Max",
+    "Min-Sum",
+    "label reversal",
+    "final independent seeds/non-IID"
+  ],
+  "gates": {
+    "accuracy_noninferiority_min": -0.002,
+    "benign_union_flag_rate_max": 0.01,
+    "sign_active_gain_min": 0.01,
+    "gaussian_weight_ratio_max": 0.5,
+    "malicious_weight_tolerance": 0.001,
+    "malicious_weight_zero_tolerance": 1e-08,
+    "budget_violation_max": 1e-08,
+    "reconstruction_relative_error_max": 0.0001,
+    "cumulative_replay_error_max": 1e-09
+  },
+  "gate_rationale": "ACC -0.2 percentage-point tolerance follows prior clean engineering guardrail and is applied separately to each condition/seed, active and final; retain original Sign-flip >=1pp active benefit and nondecreasing final vs B0; <=1% union benign flags; Gaussian at least half malicious weight. If direction already removes Gaussian malicious weight, combined must preserve zero. Challengers are reported, not claimed beaten by passing these parent-relative gates.",
+  "windows": {
+    "none": [
+      1,
+      60
+    ],
+    "attacks": [
+      11,
+      60
+    ],
+    "final_round": 60
+  },
+  "failure_policy": "Any integration gate failure keeps the accepted parent in its previously validated scope. Analyze component/interaction evidence; no automatic next experiment. Standalone N results are separate from combination acceptance. Historical R2 remains failed on its own preregistered endpoint.",
+  "execution": "40 newly frozen units; no cross-batch or cross-platform cache reuse; completed same-batch cells may be skipped after runner validation. Failed/incomplete/orphan runs require manual review. No round-level checkpoint continuation.",
+  "attacks": {
+    "sign_flip": {
+      "strength_level": "weak",
+      "parameters": {
+        "sign_flip_scale": 1.0
+      }
+    },
+    "gaussian_noise": {
+      "strength_level": "strong",
+      "parameters": {
+        "gaussian_noise_mean": 0.0,
+        "gaussian_noise_std": 0.1
+      }
+    },
+    "lie": {
+      "strength_level": "medium",
+      "parameters": {
+        "lie_z": 0.5,
+        "coordinated_attack_knowledge": "all_updates"
+      }
+    }
+  },
+  "direction_calibration_canonical_sha256": "c6445c68f295078b14466c361c20af4e5c5fbcb996ae7638077d830721f1b972",
+  "raw_calibration_canonical_sha256": "e4cddcf7699a051c0cde776f146196adb1a4c38c2476c05c286f77f56a489d12"
+}

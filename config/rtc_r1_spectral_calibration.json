@@ -1,0 +1,14 @@
+{
+  "version": "rtc_r1_spectral_loo.v1",
+  "f": 3,
+  "minimum_gap": 0.4335502709580384,
+  "cosine_threshold": -0.002367746579735744,
+  "cap_multiplier": 0.0,
+  "provenance": {
+    "calibration": "R0b clean seed101 rounds1-60 only; lower1% order statistics",
+    "protocol_sha256": "1dc2c50ec9d9f97f4d8b02a6968109b9c6ec2bf071dbac45ad94f72555b79c71",
+    "offline_reference_source_sha256": "511fec4c811469da67524e9193c6c64444071c46a2b57f727d6bd2f8f9524615",
+    "selection": "R0c one fixed offline reference; sign_flip seed42 diagnostic, no threshold tuning",
+    "cap": "R1 first closed-loop candidate: zero only high-confidence opposing clients; no cap sweep"
+  }
+}

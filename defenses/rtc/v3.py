@@ -85,6 +85,12 @@ _ALLOWED_CUSTOM_PARAMS = {
     "residual_rank_cap_top_k",
     "residual_rank_cap_factor",
     "residual_rank_recycle_fraction",
+    "direction_observe_only",
+    "direction_observe_reference",
+    "spectral_direction_mode",
+    "spectral_direction_calibration",
+    "raw_norm_mode",
+    "raw_norm_calibration",
 }
 
 
@@ -119,6 +125,37 @@ class RTCv3Defense(BaseDefense):
     def __init__(self, cfg: DefenseConfig, num_clients: int = 100):
         super().__init__(cfg)
         params = dict(cfg.custom_params or {})
+        self.spectral_direction_mode = params.get('spectral_direction_mode', 'off')
+        if self.spectral_direction_mode not in ('off', 'observe', 'cap'):
+            raise ValueError('invalid spectral_direction_mode')
+        self._spectral_calibration = None
+        self._last_spectral_rows = []
+        self._spectral_trainable_indices = None
+        self.raw_norm_mode = params.get('raw_norm_mode', 'off')
+        self._raw_norm_calibration = None
+        self._last_raw_norm_rows = []
+        if self.raw_norm_mode not in ('off', 'observe', 'cap'):
+            raise ValueError('invalid raw_norm_mode')
+        if self.raw_norm_mode != 'off':
+            from defenses.rtc.raw_norm import load_calibration as load_raw_calibration
+            if 'raw_norm_calibration' not in params:
+                raise ValueError('raw norm requires calibration')
+            self._raw_norm_calibration = load_raw_calibration(params['raw_norm_calibration'])
+        elif 'raw_norm_calibration' in params:
+            raise ValueError('raw norm calibration requires enabled mode')
+        if self.spectral_direction_mode != 'off':
+            from defenses.rtc.spectral_direction import load_calibration
+            if 'spectral_direction_calibration' not in params:
+                raise ValueError('spectral direction requires calibration')
+            self._spectral_calibration = load_calibration(params['spectral_direction_calibration'])
+        elif 'spectral_direction_calibration' in params:
+            raise ValueError('spectral calibration requires an enabled mode')
+        if "direction_observe_only" in params and type(params["direction_observe_only"]) is not bool:
+            raise ValueError("direction_observe_only must be boolean")
+        if params.get("direction_observe_reference", "multi_krum") not in ("multi_krum", "geometric_median"):
+            raise ValueError("invalid direction_observe_reference")
+        if "direction_observe_reference" in params and not params.get("direction_observe_only", False):
+            raise ValueError("direction_observe_reference requires observation-only mode")
         unknown_params = sorted(set(params).difference(_ALLOWED_CUSTOM_PARAMS))
         if unknown_params:
             raise ValueError(
@@ -418,12 +455,21 @@ class RTCv3Defense(BaseDefense):
         server_optimizer: str | None = None,
         parameter_roles: Mapping[int | str, str] | None = None,
         parameter_names: Mapping[int | str, str] | None = None,
+        trainable_parameter_indices: Sequence[int] | None = None,
         **_: Any,
     ) -> None:
         self._server_round = int(server_round)
         self._client_ids = [str(value) for value in client_ids]
         # Read-only views: RTC-v3 never mutates the arrays held by the strategy.
         self._global_params = [np.asarray(value) for value in global_params]
+        if self.spectral_direction_mode != 'off' or self.raw_norm_mode != 'off':
+            indices = list(trainable_parameter_indices) if trainable_parameter_indices is not None else []
+            if (not indices or len(set(indices)) != len(indices) or
+                    any(type(i) is not int or i < 0 or i >= len(global_params) or
+                        not np.issubdtype(np.asarray(global_params[i]).dtype, np.floating) for i in indices)):
+                raise ValueError('spectral direction requires explicit trainable metadata')
+            self._spectral_trainable_indices = sorted(indices)
+            self._spectral_names = [str((parameter_names or {}).get(str(i), (parameter_names or {}).get(i, i))) for i in sorted(indices)]
         if principal_ids is None:
             self._principal_ids = [
                 self.principal_map.get(client_id, client_id)
@@ -490,6 +536,8 @@ class RTCv3Defense(BaseDefense):
         self._runtime_validated = True
 
     def aggregate(self, updates: UpdateList) -> list[np.ndarray]:
+        self._last_spectral_rows = []
+        self._last_raw_norm_rows = []
         if not self._runtime_validated or self._global_params is None:
             raise RuntimeError(
                 "RTC-v3 requires a validated runtime context before aggregation"
@@ -1367,6 +1415,32 @@ class RTCv3Defense(BaseDefense):
                     direction_full,
                 )
             )
+        spectral = None
+        spectral_started = time.perf_counter()
+        if self.spectral_direction_mode != 'off':
+            from defenses.rtc.spectral_direction import measure
+            if self._spectral_trainable_indices is None:
+                raise ValueError('missing spectral trainable metadata')
+            spectral = measure(clipped, [floating_indices.index(i) for i in self._spectral_trainable_indices],
+                               self._spectral_calibration, self.spectral_direction_mode)
+            spectral['existing_q'] = client_q_cap.copy()
+            client_q_cap = np.minimum(client_q_cap, [r['q'] for r in spectral['rows']])
+        spectral_seconds = time.perf_counter() - spectral_started
+        raw_rows = []
+        raw_started = time.perf_counter()
+        if self.raw_norm_mode != 'off':
+            from defenses.rtc.raw_norm import score, trainable_norms
+            if self._spectral_trainable_indices is None:
+                raise ValueError('missing raw norm trainable metadata')
+            raw_rows = score(trainable_norms(deltas, [floating_indices.index(i) for i in self._spectral_trainable_indices]),
+                             self._raw_norm_calibration, self.raw_norm_mode)
+            for i, row in enumerate(raw_rows):
+                row['rtc_r2_clip_factor'] = float(factors[i])
+                row['rtc_r2_existing_q'] = float(client_q_cap[i])
+                row['rtc_r2_applied'] = bool(row['rtc_r2_q'] < client_q_cap[i])
+                row['rtc_r2_nominal_mass'] = float(nominal[i])
+            client_q_cap = np.minimum(client_q_cap, [r['rtc_r2_q'] for r in raw_rows])
+        raw_seconds = time.perf_counter() - raw_started
         reference_client_q_cap = client_q_cap.copy()
         residual_rank_cap_multiplier = np.ones(len(updates), dtype=np.float64)
         residual_rank_cap_indices: tuple[int, ...] = ()
@@ -1820,6 +1894,24 @@ class RTCv3Defense(BaseDefense):
                 "total_defense_seconds": time.perf_counter() - started,
             },
         )
+        self._last_spectral_rows = []
+        if spectral is not None:
+            from defenses.rtc.spectral_direction import diagnostics
+            observation_started = time.perf_counter()
+            actual_deltas = [np.asarray(result[i], dtype=np.float64) - self._global_params[i] for i in floating_indices]
+            self._last_spectral_rows, summary = diagnostics(spectral, clipped, recycle_anchors,
+                actual_deltas, weights, anchor_recycle_mass, self._client_ids, self._spectral_names)
+            for i, row in enumerate(self._last_spectral_rows):
+                row['rtc_r1_existing_q'] = float(spectral['existing_q'][i])
+                row['rtc_r1_applied'] = bool(row['rtc_r1_q'] < spectral['existing_q'][i])
+                row['rtc_r1_nominal_mass'] = float(nominal[i])
+            summary['rtc_r1_scoring_seconds'] = spectral_seconds
+            summary['rtc_r1_observation_seconds'] = time.perf_counter() - observation_started
+            self.last_round_metrics.update(summary)
+        self._last_raw_norm_rows = raw_rows
+        if raw_rows:
+            from defenses.rtc.raw_norm import summary as raw_summary
+            self.last_round_metrics.update(raw_summary(self._raw_norm_calibration, self.raw_norm_mode, raw_seconds))
         self._runtime_validated = False
         return result
 

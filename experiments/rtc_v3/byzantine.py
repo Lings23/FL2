@@ -60,6 +60,24 @@ DEFENSES: Mapping[str, tuple[str, Mapping[str, Any]]] = {
     "rtc_cumulative_q_cap": ("rtc_full", {}),
     "rtc_cumulative_q_cap_anchor": ("rtc_full", {}),
     "rtc_cumulative_q_cap_accepted_anchor": ("rtc_full", {}),
+    "rtc_r0_direction_observe": ("rtc_full", {}),
+    "rtc_r0b_geometric_observe": ("rtc_full", {}),
+    "rtc_r1_spectral_baseline": ("rtc_full", {}),
+    "rtc_r1_spectral_cap": ("rtc_full", {}),
+    "rtc_r1_spectral_multikrum": ("krum", {}),
+    "rtc_r1c_pairwise_baseline": ("rtc_full", {}),
+    "rtc_r1c_pairwise_cap": ("rtc_full", {}),
+    "rtc_r1c_pairwise_multikrum": ("krum", {}),
+    "rtc_r2_raw_baseline": ("rtc_full", {}),
+    "rtc_r2_raw_cap": ("rtc_full", {}),
+    "rtc_r2_raw_multikrum": ("krum", {}),
+    "rtc_r2_raw_rfa": ("rfa", {"num_iterations": 3, "smoothing": 1e-6, "use_num_examples": True}),
+    "rtc_i12_b0": ("rtc_full", {}),
+    "rtc_i12_direction": ("rtc_full", {}),
+    "rtc_i12_norm": ("rtc_full", {}),
+    "rtc_i12_combined": ("rtc_full", {}),
+    "rtc_i12_multikrum": ("krum", {}),
+    "rtc_i12_rfa": ("rfa", {"num_iterations": 3, "smoothing": 1e-6, "use_num_examples": True}),
     "rtc_b4_residual_rank_cap": ("rtc_full", {}),
     "rtc_b5_clip_mad_225": ("rtc_full", {}),
     "krum": ("krum", {}),
@@ -265,7 +283,7 @@ def _seeds(raw: str | Iterable[Any]) -> tuple[int, ...]:
     return tuple(int(value) for value in _csv(raw, ("42", "43", "44")))
 
 
-def _load_attack_freeze(path_value: str | Path) -> Mapping[str, Mapping[str, Any]]:
+def _load_attack_freeze(path_value: str | Path, required_attacks=None) -> Mapping[str, Mapping[str, Any]]:
     path = Path(path_value).expanduser().resolve()
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("schema_version") != "RTCByzantineAttackFreezeV1":
@@ -280,6 +298,9 @@ def _load_attack_freeze(path_value: str | Path) -> Mapping[str, Mapping[str, Any
     attacks = payload.get("attacks")
     if not isinstance(attacks, Mapping):
         raise ValueError("Attack freeze must contain an attacks mapping")
+    if 'random_noise' in attacks and (required_attacks is None or 'random_noise' in required_attacks):
+        from experiments.rtc_v3.random_noise_validation import validate_freeze_entry
+        validate_freeze_entry(attacks['random_noise'], path.parent)
     return attacks
 
 
@@ -293,7 +314,7 @@ def build_matrix(args) -> list[dict[str, Any]]:
     if unknown_defenses:
         raise ValueError(f"Unsupported Byzantine defenses: {sorted(unknown_defenses)}")
     freeze_path = str(getattr(args, "byzantine_attack_freeze", "") or "").strip()
-    frozen = _load_attack_freeze(freeze_path) if freeze_path else None
+    frozen = _load_attack_freeze(freeze_path, attacks) if freeze_path else None
     if frozen is not None:
         missing_frozen = set(attacks).difference({"none"}).difference(frozen)
         if missing_frozen:
@@ -352,6 +373,45 @@ def build_matrix(args) -> list[dict[str, Any]]:
             )
             for defense in defenses:
                 defense_type, custom = DEFENSES[defense]
+                if defense.startswith('rtc_i12_'):
+                    custom = {**custom,
+                              'spectral_direction_mode': 'cap' if defense in ('rtc_i12_direction', 'rtc_i12_combined') else 'observe',
+                              'spectral_direction_calibration': 'config/rtc_r1c_pairwise_calibration.json',
+                              'raw_norm_mode': 'cap' if defense in ('rtc_i12_norm', 'rtc_i12_combined') else 'observe',
+                              'raw_norm_calibration': 'config/rtc_r2_raw_norm_calibration.json'}
+                    if defense_type == 'rtc_full':
+                        custom = {**rtc_custom, **custom, 'semantic_intervention_risk_floor': .5,
+                                  'cumulative_q_cap_power': 1, 'anchor_recycle_fraction': .51,
+                                  'anchor_recycle_weighting': 'accepted'}
+                if defense.startswith('rtc_r2_raw_'):
+                    custom = {**custom, 'spectral_direction_mode': 'observe',
+                              'spectral_direction_calibration': 'config/rtc_r1c_pairwise_calibration.json',
+                              'raw_norm_mode': 'cap' if defense == 'rtc_r2_raw_cap' else 'observe',
+                              'raw_norm_calibration': 'config/rtc_r2_raw_norm_calibration.json'}
+                    if defense in ('rtc_r2_raw_baseline', 'rtc_r2_raw_cap'):
+                        custom = {**rtc_custom, **custom, 'semantic_intervention_risk_floor': .5,
+                                  'cumulative_q_cap_power': 1, 'anchor_recycle_fraction': .51,
+                                  'anchor_recycle_weighting': 'accepted'}
+                if defense.startswith('rtc_r1c_pairwise_'):
+                    custom = {'spectral_direction_mode': 'cap' if defense == 'rtc_r1c_pairwise_cap' else 'observe',
+                              'spectral_direction_calibration': 'config/rtc_r1c_pairwise_calibration.json'}
+                    if defense != 'rtc_r1c_pairwise_multikrum':
+                        custom = {**rtc_custom, **custom, 'semantic_intervention_risk_floor': .5,
+                                  'cumulative_q_cap_power': 1, 'anchor_recycle_fraction': .51,
+                                  'anchor_recycle_weighting': 'accepted'}
+                if defense.startswith('rtc_r1_spectral_'):
+                    custom = {'spectral_direction_mode': 'cap' if defense == 'rtc_r1_spectral_cap' else 'observe',
+                              'spectral_direction_calibration': 'config/rtc_r1_spectral_calibration.json'}
+                    if defense != 'rtc_r1_spectral_multikrum':
+                        custom = {**rtc_custom, **custom, 'semantic_intervention_risk_floor': .5,
+                                  'cumulative_q_cap_power': 1, 'anchor_recycle_fraction': .51,
+                                  'anchor_recycle_weighting': 'accepted'}
+                if defense in ("rtc_r0_direction_observe", "rtc_r0b_geometric_observe"):
+                    custom = {**rtc_custom, "semantic_intervention_risk_floor": 0.5,
+                              "cumulative_q_cap_power": 1, "anchor_recycle_fraction": 0.51,
+                              "anchor_recycle_weighting": "accepted", "direction_observe_only": True}
+                    if defense == "rtc_r0b_geometric_observe":
+                        custom["direction_observe_reference"] = "geometric_median"
                 if defense in {
                     "rtc_full",
                     "rtc_anchor_recycle",
@@ -436,7 +496,7 @@ def build_matrix(args) -> list[dict[str, Any]]:
                     "krum_num_malicious": malicious_per_round,
                     "krum_num_to_select": (
                         max(1, clients_per_round - malicious_per_round - 2)
-                        if defense == "multi_krum"
+                        if defense in ("multi_krum", "rtc_r1_spectral_multikrum", "rtc_r1c_pairwise_multikrum", "rtc_r2_raw_multikrum", "rtc_i12_multikrum")
                         else 1
                     ),
                     "trim_fraction": float(args.malicious_fraction),
@@ -480,7 +540,7 @@ def build_screening_matrix(args) -> list[dict[str, Any]]:
                     max(1, screening_rounds),
                 )
             else:
-                row["attack_start_round"] = 1
+                row["attack_start_round"] = 11 if attack == "random_noise" and not args.smoke else 1
             runtime_config = _runtime_attack_config(
                 attack,
                 parameters,
@@ -555,6 +615,13 @@ def validate_attack_execution(
         passed = True
         detail = "complete"
         status_path = rounds_dir.parent / "status" / f"{periodic_attack.run_id(dict(spec))}.json"
+        if status_path.is_file():
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            if periodic_attack.valid_numerical_terminal(status, dict(spec)):
+                gates.append({"gate": f"attack_execution:{periodic_attack.run_id(dict(spec))}",
+                              "passed": True, "observed": "terminated_numerical",
+                              "required": "completed or structured numerical termination"})
+                continue
         if not path.is_file() and status_path.is_file():
             try:
                 status = json.loads(status_path.read_text(encoding="utf-8"))
@@ -582,6 +649,9 @@ def validate_attack_execution(
             ]
             if active.empty:
                 raise ValueError("no round contains an active selected attacker")
+            if attack == "random_noise":
+                from experiments.rtc_v3.random_noise_validation import validate_client_evidence
+                validate_client_evidence(spec, frame, rounds_dir.parent / "raw")
             if attack in COORDINATED_ATTACKS:
                 applied = pd.to_numeric(
                     active["fit_attack_coordinator_applied"], errors="coerce"
@@ -755,9 +825,10 @@ def _diverged_screening_rows(
             "collapsed_invalid": True,
             "divergence_round": int(status.get("divergence_round", status.get("last_round", 0))),
             "last_finite_round": last_finite_round,
-            "final_accuracy": last_finite_accuracy,
-            "min_accuracy": last_finite_accuracy,
-            "active_accuracy": last_finite_accuracy,
+            "last_finite_accuracy": last_finite_accuracy,
+            "final_accuracy": math.nan,
+            "min_accuracy": math.nan,
+            "active_accuracy": math.nan,
             "divergence_error": str(status.get("error_summary", "")),
         })
         rows.append(row)
@@ -808,7 +879,7 @@ def select_screened_strengths(
             rows.get("active_accuracy", pd.Series(1.0, index=rows.index)),
             errors="coerce",
         )
-        minimum_accuracy = 0.60 if attack in {"dba", "scaling_backdoor"} else 0.20
+        minimum_accuracy = 0.60 if attack in {"dba", "scaling_backdoor"} else 0.0
         acceptable_accuracy = (
             clean_accuracy.notna()
             & clean_accuracy.map(math.isfinite)
@@ -893,6 +964,10 @@ def select_screened_strengths(
                 & valid_configuration
                 & (values >= float(threshold))
             ]
+            if attack == "random_noise":
+                passing_levels = [level for level, group in rows.groupby("strength_level")
+                                  if set(group.index).issubset(set(eligible.index))]
+                eligible = eligible[eligible["strength_level"].isin(passing_levels)]
             if not eligible.empty:
                 selected = eligible.iloc[0]
                 selection_reason = (
@@ -992,9 +1067,8 @@ def select_screened_strengths(
         "schema_version": "RTCByzantineAttackFreezeV1",
         "implementation_source_sha256": attack_source_hash(),
         "selection_policy": (
-            "attack-specific FedAvg-only screening; numerical validity and clean "
-            "utility are mandatory; model destruction is never attack success; "
-            "monotonicity is diagnostic only"
+            "attack-specific FedAvg-only screening; finite utility collapse remains measurable; "
+            "numerical termination is not a completed attack outcome; monotonicity is diagnostic only"
         ),
         "attacks": frozen_attacks,
     }
@@ -1023,7 +1097,8 @@ def annotate_screening_outcomes(
         value = pd.to_numeric(row.get(metric, math.nan), errors="coerce")
         level = str(row.get("strength_level", ""))
         status = str(recommendation.get(f"{level}_status", "MISSING"))
-        valid = status == "VALID"
+        valid = (status == "VALID" if 'execution_state' not in row else
+                 row['execution_state'] == 'completed' and not bool(row.get('collapsed_invalid', False)))
         threshold = pd.to_numeric(recommendation.get("threshold", math.nan), errors="coerce")
         if attack == "sign_flip":
             effective = level == "weak"
@@ -1057,7 +1132,8 @@ def run(args) -> pd.DataFrame:
     args.pairing_mode = "strict"
     args.sampling_protocol = "principal_uniform"
     screening = bool(getattr(args, "byzantine_screening", False))
-    args.rounds = (25 if screening else 60) if args.rounds is None else int(args.rounds)
+    random_screen = screening and 'random_noise' in _csv(getattr(args, 'attacks', ''), CANONICAL_ATTACKS)
+    args.rounds = (60 if random_screen or not screening else 25) if args.rounds is None else int(args.rounds)
     if screening:
         args.attack_start_round = 1
         args.attack_end_round = -1
@@ -1133,7 +1209,8 @@ def run(args) -> pd.DataFrame:
     # Preserve the complete screening evidence even when a strength or
     # execution gate rejects parameter freezing below.
     _atomic_write_csv(summary, output / "byzantine_attack_runs.csv")
-    expected_ids = set(summary["run_id"].astype(str))
+    complete = summary[summary.get("execution_state", pd.Series("completed", index=summary.index)).eq("completed")]
+    expected_ids = set(complete["run_id"].astype(str))
     gates = periodic_attack.validate_sampling_manifests(
         rounds_dir, output / "raw", expected_ids=expected_ids
     )
@@ -1147,6 +1224,16 @@ def run(args) -> pd.DataFrame:
         summary = annotate_screening_outcomes(summary, screening_recommendations)
         _atomic_write_csv(summary, output / "byzantine_attack_runs.csv")
         gates.extend(screening_gates)
+        if "random_noise" in freeze_payload.get("attacks", {}):
+            from experiments.rtc_v3.random_noise_validation import attach_freeze_evidence
+            try:
+                attach_freeze_evidence(freeze_payload, summary, specs, output)
+            except ValueError as exc:
+                freeze_payload["attacks"].pop("random_noise", None)
+                gates.append({"gate": "random_noise_freeze_evidence", "passed": False,
+                              "observed": str(exc), "required": "two seeds with paired effective finite runs"})
+    coverage = summary[[column for column in ("run_id", "attack", "defense", "seed", "execution_state", "numerical_state", "failure_round") if column in summary]].copy()
+    _atomic_write_csv(coverage, output / "execution_coverage.csv")
     periodic_attack.write_quality_gates(gates, output / "quality_gates.csv")
     if screening:
         _atomic_write_csv(

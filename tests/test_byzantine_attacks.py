@@ -49,11 +49,40 @@ def test_sign_flip_operates_on_delta_and_preserves_integer_buffers():
     np.testing.assert_array_equal(attacked[1], local[1])
 
 
+def test_sign_flip_preserves_batchnorm_float_buffers_for_real_client_layout():
+    model = torch.nn.BatchNorm1d(2)
+    global_params = [
+        np.ones(2, np.float32),
+        np.zeros(2, np.float32),
+        np.zeros(2, np.float32),
+        np.ones(2, np.float32),
+        np.array(0, np.int64),
+    ]
+    local = [
+        np.full(2, 2.0, np.float32),
+        np.ones(2, np.float32),
+        np.full(2, 0.5, np.float32),
+        np.full(2, 2.0, np.float32),
+        np.array(1, np.int64),
+    ]
+    client = _bare_client(SignFlipClient, AttackConfig(sign_flip_scale=1.0), global_params)
+    client.model = model
+    attacked = client.on_after_fit(local, {})
+
+    np.testing.assert_allclose(attacked[0], np.zeros(2, np.float32))
+    np.testing.assert_allclose(attacked[1], -np.ones(2, np.float32))
+    np.testing.assert_array_equal(attacked[2], local[2])
+    np.testing.assert_array_equal(attacked[3], local[3])
+    np.testing.assert_array_equal(attacked[4], local[4])
+
+
 def test_random_noise_is_norm_matched_for_rademacher():
     global_params = [np.zeros(4, np.float32)]
     local = [np.array([1.0, 2.0, 2.0, 1.0], np.float32)]
     config = AttackConfig(random_noise_scale=1.5, random_noise_distribution="rademacher")
     client = _bare_client(RandomNoiseClient, config, global_params)
+    client.model = torch.nn.Module()
+    client.model.register_parameter("weight", torch.nn.Parameter(torch.zeros(4)))
     np.random.seed(123)
     attacked = client.on_after_fit(local, {})
     assert np.linalg.norm(attacked[0]) == pytest.approx(
@@ -708,7 +737,7 @@ def test_screening_matrix_has_three_fedavg_strengths_per_attack():
         }
         assert levels == {"weak", "medium", "strong"}
     for row in rows:
-        expected_start = 11 if row["attack"] in {"dba", "scaling_backdoor"} else 1
+        expected_start = 11 if row["attack"] in {"dba", "scaling_backdoor", "random_noise"} else 1
         assert row["attack_start_round"] == expected_start
 
 

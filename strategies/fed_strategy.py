@@ -39,6 +39,7 @@ from flwr.server.client_proxy import ClientProxy
 from flwr.server.strategy import Strategy
 
 from config.config_loader import AttackConfig, StrategyConfig, DefenseConfig
+from utils.numerical_failure import NumericalFailure, numerical_evidence
 from attacks.coordinator import AttackCoordinator
 from attacks.spec import attack_contract_payload
 from defenses.defense_base import BaseDefense, get_defense, UpdateList
@@ -127,7 +128,7 @@ def _weighted_avg_metrics(results: List[Tuple[int, Dict]]) -> Dict:
             ):
                 continue
             if not np.isfinite(float(v)):
-                raise FloatingPointError(f"Non-finite client metric: {k}={v!r}")
+                raise NumericalFailure("nonfinite_client_metric", "client_metric", f"Non-finite client metric: {k}={v!r}")
             agg[k] = agg.get(k, 0.0) + (n / total) * float(v)
     return agg
 
@@ -420,6 +421,10 @@ class FedSecStrategy(Strategy):
         results: List[Tuple[ClientProxy, FitRes]],
         failures: List[Union[Tuple[ClientProxy, FitRes], BaseException]],
     ) -> Tuple[Optional[Parameters], Dict[str, Scalar]]:
+        for failure in failures:
+            evidence = numerical_evidence(failure)
+            if evidence:
+                raise NumericalFailure(evidence["numerical_state"], evidence["stage"], evidence["detail"], server_round)
         if self.pairing_mode == "strict" and failures:
             raise TrialPlanError(
                 f"Round {server_round} has {len(failures)} client failure(s); the whole run is invalid"
@@ -463,7 +468,7 @@ class FedSecStrategy(Strategy):
             _ndarrays_are_finite(parameters) for parameters, _ in updates
         )
         if not received_updates_finite:
-            raise FloatingPointError("Received non-finite client model update")
+            raise NumericalFailure("nonfinite_update", "received_update", "Received non-finite client model update", server_round)
         selected_partition_ids = [
             self._server_partition_id(client, fit_res)
             for client, fit_res in results
@@ -503,20 +508,25 @@ class FedSecStrategy(Strategy):
                 )
 
         attack_coordination_started = time.perf_counter()
-        coordinated = self.attack_coordinator.transform(
-            server_round=server_round,
-            updates=updates,
-            global_params=self.global_params,
-            client_ids=client_ids,
-            malicious=malicious_labels,
-            attack_active=attack_active_labels,
-        )
+        try:
+            coordinated = self.attack_coordinator.transform(
+                server_round=server_round,
+                updates=updates,
+                global_params=self.global_params,
+                client_ids=client_ids,
+                malicious=malicious_labels,
+                attack_active=attack_active_labels,
+            )
+        except NumericalFailure:
+            raise
+        except FloatingPointError as exc:
+            raise NumericalFailure('nonfinite_update', 'attack_coordination', str(exc), server_round) from exc
         updates = list(coordinated.updates)
         coordinated_updates_finite = all(
             _ndarrays_are_finite(parameters) for parameters, _ in updates
         )
         if not coordinated_updates_finite:
-            raise FloatingPointError("Attack coordination produced a non-finite update")
+            raise NumericalFailure("nonfinite_update", "coordinated_update", "Attack coordination produced a non-finite update", server_round)
         attack_coordinator_metrics = dict(coordinated.metrics)
         attack_coordination_time = time.perf_counter() - attack_coordination_started
 
@@ -547,9 +557,11 @@ class FedSecStrategy(Strategy):
             ),
             parameter_names=(
                 self.parameter_names
-                if bool(getattr(self.defense, "requires_parameter_roles", False))
+                if (bool(getattr(self.defense, "requires_parameter_roles", False))
+                    or (self.defense.cfg.custom_params or {}).get('spectral_direction_mode') in ('observe', 'cap'))
                 else None
             ),
+            trainable_parameter_indices=self.scalable_parameter_indices,
         )
         if getattr(self.defense, "requires_server_update", False):
             if self.server_update_fn is None:
@@ -568,6 +580,10 @@ class FedSecStrategy(Strategy):
         try:
             np.random.seed(defense_seed)
             aggregated = self.defense.aggregate(updates)
+        except NumericalFailure:
+            raise
+        except FloatingPointError as exc:
+            raise NumericalFailure('nonfinite_update', 'defense_aggregation', str(exc), server_round) from exc
         finally:
             np.random.set_state(numpy_state)
         aggregation_time = time.perf_counter() - aggregation_started
@@ -580,6 +596,71 @@ class FedSecStrategy(Strategy):
             client_fit_metrics,
         )
 
+        direction_observation_metrics = {}
+        spectral_rows = getattr(self.defense, '_last_spectral_rows', [])
+        if spectral_rows:
+            if len(spectral_rows) != len(self.last_client_records):
+                raise ValueError('incomplete spectral records')
+            for record, observation in zip(self.last_client_records, spectral_rows):
+                record.update(observation)
+        elif (not hasattr(self.defense, 'spectral_direction_mode') and
+              (self.defense.cfg.custom_params or {}).get('spectral_direction_mode') == 'observe'):
+            # Standard Multi-Krum challenger: diagnostics only after aggregation.
+            from defenses.rtc.spectral_direction import load_calibration, measure, diagnostics
+            observation_started = time.perf_counter()
+            custom = self.defense.cfg.custom_params
+            indices = sorted(self.scalable_parameter_indices)
+            delta = [[np.asarray(p[i], dtype=np.float64) - self.global_params[i] for i in indices] for p, _ in updates]
+            calibration = load_calibration(custom['spectral_direction_calibration'])
+            measured = measure(delta, list(range(len(indices))), calibration, 'observe')
+            actual = [np.asarray(aggregated[i], dtype=np.float64) - self.global_params[i] for i in indices]
+            weights = [float(r['aggregation_weight']) for r in self.last_client_records]
+            observation_rows, direction_observation_metrics = diagnostics(measured, delta,
+                [np.zeros_like(a) for a in actual], actual, weights, 0., client_ids,
+                [self.parameter_names[str(i)] for i in indices])
+            for record, observation in zip(self.last_client_records, observation_rows):
+                record.update(observation)
+            direction_observation_metrics['rtc_r1_observation_seconds'] = time.perf_counter() - observation_started
+        raw_rows = getattr(self.defense, '_last_raw_norm_rows', [])
+        if raw_rows:
+            if len(raw_rows) != len(self.last_client_records):
+                raise ValueError('incomplete raw norm records')
+            for record, observation in zip(self.last_client_records, raw_rows):
+                record.update(observation)
+        elif (not hasattr(self.defense, 'raw_norm_mode') and
+              (self.defense.cfg.custom_params or {}).get('raw_norm_mode') == 'observe'):
+            from defenses.rtc.raw_norm import load_calibration as load_raw, trainable_norms, score, summary as raw_summary
+            raw_started = time.perf_counter()
+            raw_cal = load_raw(self.defense.cfg.custom_params['raw_norm_calibration'])
+            indices = sorted(self.scalable_parameter_indices)
+            raw_deltas = [[np.asarray(p[i], dtype=np.float64) - self.global_params[i] for i in indices] for p, _ in updates]
+            raw_rows = score(trainable_norms(raw_deltas, list(range(len(indices)))), raw_cal, 'observe')
+            for record, observation in zip(self.last_client_records, raw_rows):
+                observation['rtc_r2_clip_factor'] = 1.
+                record.update(observation)
+            direction_observation_metrics.update(raw_summary(raw_cal, 'observe', time.perf_counter() - raw_started))
+        if bool((self.defense.cfg.custom_params or {}).get("direction_observe_only", False)):
+            from defenses.rtc.direction_observe import observe_direction
+            observation_started = time.perf_counter()
+            rtc_rows = list(getattr(self.defense, "_last_records", []))
+            if len(rtc_rows) != len(updates):
+                raise ValueError("R0 observation requires complete RTC records")
+            clip = float(self.defense._last_clip_norm)
+            factors = [min(1.0, clip / (row.norm + np.finfo(np.float64).eps))
+                       if row.norm > 0 else 1.0 for row in rtc_rows]
+            observation_rows, direction_observation_metrics = observe_direction(
+                global_params=self.global_params, updates=updates, aggregated=aggregated,
+                client_ids=client_ids, trainable_indices=self.scalable_parameter_indices,
+                parameter_names=self.parameter_names,
+                weights=[row.aggregation_weight for row in rtc_rows], clip_factors=factors,
+                principal_ids=[row.principal_id for row in rtc_rows],
+                anchor_mass=float(self.defense.last_round_metrics["rtc_v3_anchor_recycle_mass"]),
+                reference_mode=(self.defense.cfg.custom_params or {}).get("direction_observe_reference", "multi_krum"),
+            )
+            for record, observation in zip(self.last_client_records, observation_rows):
+                record.update(observation)
+            direction_observation_metrics["rtc_r0_observation_seconds"] = time.perf_counter() - observation_started
+
         # ── Optional server-side optimizer (FedYogi) ──────────────────────────
         name = self.scfg.name.lower()
         if name == "fedyogi":
@@ -590,7 +671,7 @@ class FedSecStrategy(Strategy):
 
         aggregate_parameters_finite = _ndarrays_are_finite(aggregated)
         if not aggregate_parameters_finite:
-            raise FloatingPointError("Server aggregation produced non-finite parameters")
+            raise NumericalFailure("nonfinite_update", "aggregation", "Server aggregation produced non-finite parameters", server_round)
 
         running_variances = [
             np.asarray(aggregated[int(index)], dtype=np.float64)
@@ -603,10 +684,8 @@ class FedSecStrategy(Strategy):
             else None
         )
         if bn_running_var_min is not None and bn_running_var_min < 0.0:
-            raise FloatingPointError(
-                f"Server aggregation produced negative BatchNorm running_var: "
-                f"{bn_running_var_min}"
-            )
+            raise NumericalFailure("invalid_model_buffer", "aggregation",
+                f"Server aggregation produced negative BatchNorm running_var: {bn_running_var_min}", server_round)
 
         aggregate_sketch_started = time.perf_counter()
         aggregate_update_norm, aggregate_update_sketch = aggregate_update_evidence(
@@ -629,6 +708,7 @@ class FedSecStrategy(Strategy):
             elif isinstance(value, (str, bool)):
                 fit_metrics[key] = value
         fit_metrics.update(self._security_round_metrics(self.last_client_records))
+        fit_metrics.update(direction_observation_metrics)
         for key, value in attack_coordinator_metrics.items():
             fit_metrics[key] = value
         fit_metrics["attack_contract_hash"] = str(
@@ -777,6 +857,7 @@ class FedSecStrategy(Strategy):
                 ),
                 "dba_total_examples": fit_metrics.get("dba_total_examples"),
                 "dba_update_scaled": fit_metrics.get("dba_update_scaled"),
+                **{key: value for key, value in fit_metrics.items() if key.startswith("random_noise_")},
                 "principal_id": getattr(rtc_record, "principal_id", cid),
                 "validated_mass": getattr(rtc_record, "validated_mass", None),
                 "nominal_mass": getattr(rtc_record, "nominal_mass", None),

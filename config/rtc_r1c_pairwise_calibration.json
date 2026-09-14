@@ -1,0 +1,32 @@
+{
+  "version": "rtc_r1_spectral_loo.v1",
+  "f": 3,
+  "minimum_gap": 0.4335502709580384,
+  "cosine_threshold": -0.002367746579735744,
+  "cap_multiplier": 0.0,
+  "provenance": {
+    "calibration": "R0b clean seed101 rounds1-60 only; lower1% order statistics",
+    "protocol_sha256": "1dc2c50ec9d9f97f4d8b02a6968109b9c6ec2bf071dbac45ad94f72555b79c71",
+    "offline_reference_source_sha256": "511fec4c811469da67524e9193c6c64444071c46a2b57f727d6bd2f8f9524615",
+    "selection": "R0c one fixed offline reference; sign_flip seed42 diagnostic, no threshold tuning",
+    "cap": "R1 first closed-loop candidate: zero only high-confidence opposing clients; no cap sweep"
+  },
+  "corroboration": {
+    "version": "rtc_r1c_pairwise_corroboration.v1",
+    "pairwise_threshold": -0.007339915373038027,
+    "quorum_numerator": 2,
+    "quorum_denominator": 3,
+    "provenance": {
+      "pairwise_threshold": -0.007339915373038027,
+      "clean_pairs": 2700,
+      "quorum": {
+        "numerator": 2,
+        "denominator": 3,
+        "rounding": "ceiling"
+      },
+      "protocol_sha256": "d2f5e088df3fcb2031c0e472e90538a700d824c204e8aa4fdc74724cd487f24e",
+      "reference_source_sha256": "6bf0d8230bbce6dda3beb7089771f8de4cdeeb1b7842e10fdc945dda74487ec8",
+      "clean_source_sha256": "139d1909c52b1692557162396df9e03a16dd8e2d1598f6a22cfe620394eb2101"
+    }
+  }
+}

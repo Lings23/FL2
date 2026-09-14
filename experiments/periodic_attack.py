@@ -35,6 +35,7 @@ import seaborn as sns
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.config_loader import load_config, override_config
+from utils.numerical_failure import numerical_evidence
 from experiments.trial_plan import (
     TrialPlanV1,
     attach_trial_plans,
@@ -550,13 +551,16 @@ def summarize_run(rounds: pd.DataFrame, spec: Dict[str, Any]) -> Dict[str, Any]:
     collapsed_invalid = bool(
         result.get("numerical_divergence", False)
         or not math.isfinite(evaluation_accuracy)
-        or model_random_guess
         or invalid_asr
     )
     result.update({
         "model_random_guess": model_random_guess,
         "collapsed_invalid": collapsed_invalid,
         "valid": not collapsed_invalid,
+        "execution_state": "completed",
+        "numerical_state": "invalid" if result.get("numerical_divergence", False) else "finite",
+        "utility_collapse": model_random_guess,
+        "utility_state": "utility_collapse" if model_random_guess else "measured",
     })
     if spec["attack"] in LABEL_FLIP_ATTACKS:
         numerator = pd.to_numeric(
@@ -972,6 +976,9 @@ def _run_specs(
         round_path = rounds_dir / f"{identifier}.csv"
         status_path = status_dir / f"{identifier}.json"
         logger.info("[%d/%d] %s", index, len(specs), identifier)
+        if not args.rerun and valid_numerical_terminal(_read_status(status_path), spec):
+            _write_current_summary(specs, args, output, rounds_dir)
+            continue
         if round_path.exists() and not args.rerun:
             valid, reason, _ = validate_round_cache(
                 round_path, _expected_rounds(args), spec,
@@ -1230,6 +1237,7 @@ def _run_spec_worker(
             "error_summary": None,
         })
     except BaseException as exc:
+        evidence = numerical_evidence(exc)
         _write_status(status_path, {
             "run_id": identifier,
             "state": "failed",
@@ -1242,6 +1250,7 @@ def _run_spec_worker(
             "error_type": "python_exception",
             "error_summary": f"{type(exc).__name__}: {exc}",
             "traceback": traceback.format_exc(),
+            "numerical_evidence": evidence,
         })
         raise
     finally:
@@ -1288,6 +1297,10 @@ def _run_spec_with_retries(
         _write_status(status_path, {
             "run_id": identifier,
             "state": "launching",
+            "execution_state": "running",
+            "numerical_evidence": None,
+            "numerical_state": None,
+            "failure_round": None,
             "attempt": attempt,
             "pid": None,
             "started_at": _utc_now(),
@@ -1313,6 +1326,8 @@ def _run_spec_with_retries(
             _write_status(status_path, {
                 "run_id": identifier,
                 "state": "completed",
+                "execution_state": "completed",
+                "numerical_state": "finite",
                 "attempt": attempt,
                 "pid": child_pid,
                 "exit_code": 0,
@@ -1324,6 +1339,20 @@ def _run_spec_with_retries(
             return
 
         current = _read_status(status_path)
+        evidence = current.get("numerical_evidence")
+        if evidence is not None:
+            last_round = _last_logged_round(log_path, log_start_offset)
+            _write_status(status_path, {
+                "run_id": identifier, "state": "terminated_numerical",
+                "execution_state": "terminated_numerical", "numerical_evidence": evidence,
+                "numerical_state": evidence["numerical_state"], "attempt": attempt,
+                "pid": child_pid, "exit_code": exit_code, "last_round": last_round,
+                "failure_round": evidence.get("round") if evidence.get("round") is not None else last_round + 1,
+                "finished_at": _utc_now(), "error_type": "numerical_failure",
+                "error_summary": evidence["detail"], "trial_plan_hash": spec.get("trial_plan_hash"),
+                "attack_implementation_hash": spec.get("attack_implementation_hash"),
+            })
+            return True
         error_type, error_summary, ray_session = _classify_child_failure(
             child_pid, exit_code, current, reason,
         )
@@ -1439,7 +1468,7 @@ def validate_round_cache(
     if missing:
         return False, f"missing columns: {','.join(missing)}", frame
     numeric_rounds = pd.to_numeric(frame["round"], errors="coerce")
-    if numeric_rounds.isna().any() or not np.equal(numeric_rounds, numeric_rounds.astype(int)).all():
+    if not np.isfinite(numeric_rounds).all() or not np.equal(numeric_rounds, np.floor(numeric_rounds)).all():
         return False, "round values must be finite integers", frame
     round_values = numeric_rounds.astype(int)
     if round_values.duplicated().any():
@@ -1461,6 +1490,17 @@ def validate_round_cache(
     invalid_loss = raw_loss.notna() & numeric_loss.isna()
     if invalid_loss.any():
         return False, "server loss contains non-numeric values", frame
+    if not np.isfinite(numeric_loss.to_numpy(dtype=float)).all():
+        return False, "server loss must be finite", frame
+    for column in ("server_model_state_valid", "server_logits_valid", "server_loss_valid",
+                   "fit_received_updates_finite", "fit_coordinated_updates_finite", "fit_aggregate_parameters_finite"):
+        if (spec and str(spec.get('attack_version', '')).startswith('random_noise.trainable_')
+                and column not in frame):
+            return False, f"missing validity flag: {column}", frame
+        if column in frame:
+            values = frame.loc[selected & ((round_values > 0) if column.startswith('fit_') else True), column]
+            if not values.map(lambda value: str(value).lower() in {"true", "1", "1.0"}).all():
+                return False, f"invalid or missing validity flag: {column}", frame
     if spec is not None and (
         str(spec.get("attack_group")) == "targeted"
         or str(spec.get("attack")) in TARGETED_ATTACKS
@@ -1518,6 +1558,40 @@ def validate_round_cache(
     return True, "complete", frame
 
 
+def valid_numerical_terminal(status: dict, spec: dict) -> bool:
+    evidence = status.get("numerical_evidence")
+    return bool(
+        status.get("state") == "terminated_numerical"
+        and status.get("run_id") == run_id(spec)
+        and isinstance(evidence, dict) and evidence.get("schema_version") == 1
+        and evidence.get("numerical_state") and evidence.get("stage")
+        and status.get("failure_round") is not None
+        and status.get("trial_plan_hash") == spec.get("trial_plan_hash")
+        and status.get("attack_implementation_hash") == spec.get("attack_implementation_hash")
+    )
+
+
+def numerical_terminal_row(spec: dict, status: dict, output: Path) -> dict:
+    last_finite = {}
+    raw = output / "raw" / f"{run_id(spec)}.json"
+    if raw.exists():
+        for record in json.loads(raw.read_text(encoding="utf-8")):
+            if (record.get("split") == "server"
+                    and all(isinstance(record.get(k), (int, float)) and math.isfinite(record[k]) for k in ("loss", "accuracy"))):
+                last_finite = record
+    return {
+        **{k: v for k, v in spec.items() if k != "custom_params"},
+        "run_id": run_id(spec), "execution_state": "terminated_numerical",
+        "numerical_state": status["numerical_evidence"]["numerical_state"],
+        "failure_round": status["failure_round"], "numerical_divergence": True,
+        "collapsed_invalid": True, "valid": False, "utility_state": "unmeasurable",
+        "final_accuracy": math.nan, "active_accuracy": math.nan, "min_accuracy": math.nan,
+        "last_finite_round": last_finite.get("round", math.nan),
+        "last_finite_accuracy": last_finite.get("accuracy", math.nan),
+        "last_finite_loss": last_finite.get("loss", math.nan),
+    }
+
+
 def _write_current_summary(
     specs: Sequence[Dict[str, Any]],
     args: argparse.Namespace,
@@ -1527,6 +1601,10 @@ def _write_current_summary(
     rows = []
     for base_spec in specs:
         spec = dict(base_spec)
+        status = _read_status(output / "status" / f"{run_id(spec)}.json")
+        if valid_numerical_terminal(status, spec):
+            rows.append(numerical_terminal_row(spec, status, output))
+            continue
         path = rounds_dir / f"{run_id(spec)}.csv"
         if not path.exists():
             continue

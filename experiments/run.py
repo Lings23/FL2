@@ -265,8 +265,9 @@ def _run_rtc_byzantine_screen(args: argparse.Namespace) -> pd.DataFrame:
     fractions = _csv(args.malicious_fractions or "0.2")
     if len(fractions) != 1:
         raise ValueError("rtc-byzantine-screen requires exactly one malicious fraction")
-    if len(_csv(args.seeds or "42")) != 1:
-        raise ValueError("rtc-byzantine-screen requires exactly one seed")
+    seeds = _csv(args.seeds or "42")
+    if len(set(seeds)) != len(seeds):
+        raise ValueError("rtc-byzantine-screen requires distinct seeds")
     args.malicious_fraction = float(fractions[0])
     args.byzantine_screening = True
     args.defenses = "fedavg"

@@ -284,7 +284,7 @@ def get_trainable_parameter_indices(model: nn.Module) -> set[int]:
     deltas, while buffers retain the values produced by normal local training.
     """
 
-    parameter_names = {str(name) for name, _ in model.named_parameters()}
+    parameter_names = {str(name) for name, parameter in model.named_parameters() if parameter.requires_grad}
     return {
         index
         for index, name in enumerate(model.state_dict().keys())

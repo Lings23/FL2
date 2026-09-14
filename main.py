@@ -418,6 +418,11 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
                         loss=loss,
                         accuracy=metrics.get("accuracy"),
                         **safe_metrics)
+            from utils.numerical_failure import NumericalFailure
+            for flag, reason in (("model_state_valid", "nonfinite_model_state"),
+                                 ("logits_valid", "nonfinite_logits"), ("loss_valid", "nonfinite_loss")):
+                if metrics.get(flag) is False:
+                    raise NumericalFailure(reason, "server_evaluation", flag, server_round)
         return result
 
     def _patched_aggregate_evaluate(server_round, results, failures):
@@ -501,6 +506,7 @@ def run_simulation(cfg: Config, experiment_name: str = "experiment") -> MetricTr
         tracker.print_summary()
         return tracker
     finally:
+        tracker.save()
         shutdown_ray_runtime(force_cpu=cfg.ray.force_cpu)
 
 

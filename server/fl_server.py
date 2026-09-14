@@ -362,6 +362,7 @@ class ServerEvaluator:
         total = 0
         confusion = np.zeros((self.num_classes, self.num_classes), dtype=np.int64)
         clean_logits_valid = True
+        loss_float64_recomputations = 0
 
         if model_state_valid:
             with torch.no_grad():
@@ -372,6 +373,9 @@ class ServerEvaluator:
                         clean_logits_valid = False
                         continue
                     batch_loss = float(criterion(logits, y).item())
+                    if not math.isfinite(batch_loss):
+                        batch_loss = float(criterion(logits.to(torch.float64), y).item())
+                        loss_float64_recomputations += 1
                     if not math.isfinite(batch_loss):
                         clean_logits_valid = False
                         continue
@@ -401,6 +405,7 @@ class ServerEvaluator:
             "accuracy": acc,
             "server_round": server_round,
             "loss_valid": math.isfinite(float(loss)),
+            "loss_float64_recomputations": loss_float64_recomputations,
             "logits_valid": clean_logits_valid,
             "model_state_valid": model_state_valid,
             "macro_recall": (

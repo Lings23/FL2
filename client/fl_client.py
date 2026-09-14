@@ -128,6 +128,9 @@ class LocalTrainer:
                 optimizer.zero_grad()
                 logits = self.model(batch_x)
                 loss = self.criterion(logits, batch_y)
+                if not bool(torch.isfinite(loss).item()):
+                    from utils.numerical_failure import NumericalFailure
+                    raise NumericalFailure("nonfinite_client_metric", "client_training", "Non-finite training loss")
 
                 if self.dp_cfg and self.dp_cfg.enabled:
                     loss.backward()

@@ -34,6 +34,7 @@ from torch.utils.data import DataLoader, Dataset
 from client.fl_client import FedSecClient
 from config.config_loader import AttackConfig, ClientConfig, DPConfig
 from models.model_factory import get_parameters, set_parameters
+from utils.numerical_failure import NumericalFailure
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ def _scale_floating_update(
 
 def _trainable_state_indices(model: nn.Module) -> set[int]:
     """Map registered parameters to their positions in state-dict order."""
-    trainable_names = {str(name) for name, _ in model.named_parameters()}
+    trainable_names = {str(name) for name, parameter in model.named_parameters() if parameter.requires_grad}
     return {
         index
         for index, name in enumerate(model.state_dict().keys())
@@ -150,14 +151,11 @@ def validate_attack_config(attack_cfg: AttackConfig, num_classes: int) -> None:
         raise ValueError("poison_fraction must be in [0, 1]")
     if float(attack_cfg.gaussian_noise_std) < 0.0:
         raise ValueError("gaussian_noise_std must be non-negative")
-    if float(attack_cfg.random_noise_scale) < 0.0:
-        raise ValueError("random_noise_scale must be non-negative")
-    if str(attack_cfg.random_noise_distribution).lower() not in {
-        "rademacher",
-        "gaussian",
-    }:
+    if not np.isfinite(float(attack_cfg.random_noise_scale)) or float(attack_cfg.random_noise_scale) < 0.0:
+        raise ValueError("random_noise_scale must be finite and non-negative")
+    if str(attack_cfg.random_noise_distribution).lower() != "rademacher":
         raise ValueError(
-            "random_noise_distribution must be rademacher or gaussian"
+            "Random noise v2 requires random_noise_distribution=rademacher"
         )
     if float(attack_cfg.sign_flip_scale) < 0.0:
         raise ValueError("sign_flip_scale must be non-negative")
@@ -696,7 +694,7 @@ class GaussianNoiseClient(FedSecClient):
 
 
 class RandomNoiseClient(FedSecClient):
-    """Replaces the local floating update with norm-matched random noise."""
+    """V2: replace trainable deltas, preserving locally trained model buffers."""
 
     def on_before_fit(self, parameters: List[np.ndarray], config: Dict) -> None:
         if getattr(self, "_attack_active", True):
@@ -707,41 +705,75 @@ class RandomNoiseClient(FedSecClient):
     ) -> List[np.ndarray]:
         if not getattr(self, "_attack_active", True):
             return parameters
-        global_params = getattr(self, "_global_params_cache", parameters)
-        squared_norm = 0.0
-        dimension = 0
-        for global_param, local_param in zip(global_params, parameters):
-            if _is_floating_array(global_param):
-                delta = np.asarray(local_param, dtype=np.float64) - np.asarray(
-                    global_param, dtype=np.float64
-                )
-                squared_norm += float(np.dot(delta.reshape(-1), delta.reshape(-1)))
-                dimension += int(delta.size)
-        reference_norm = float(np.sqrt(squared_norm))
+        model = getattr(self, "model", None)
+        global_params = getattr(self, "_global_params_cache", None)
+        if model is None or global_params is None:
+            raise ValueError("Random noise v2 requires a model layout and on_before_fit")
+        layout = list(model.state_dict().items())
+        if len(parameters) != len(layout) or len(global_params) != len(layout):
+            raise ValueError("Random noise v2 parameter count differs from model layout")
+        indices = _trainable_state_indices(model)
+        if not indices:
+            raise ValueError("Random noise v2 requires trainable parameters")
+        for (name, tensor), original, local in zip(layout, global_params, parameters):
+            if (original.shape != tuple(tensor.shape) or local.shape != original.shape
+                    or local.dtype != original.dtype
+                    or torch.from_numpy(np.empty(0, dtype=original.dtype)).dtype != tensor.dtype):
+                raise ValueError(f"Random noise v2 layout mismatch: {name}")
+            if _is_floating_array(original) and (
+                not np.isfinite(original).all() or not np.isfinite(local).all()
+            ):
+                raise NumericalFailure("nonfinite_update", "random_noise_input", name)
+        # Scale each block before squaring to avoid unnecessary norm overflow.
+        def norm(arrays):
+            result = 0.0
+            for array in arrays:
+                largest = float(np.max(np.abs(array), initial=0.0))
+                if largest:
+                    result = float(np.hypot(result, largest * np.sqrt(np.sum((array / largest) ** 2))))
+            return result
+        deltas = [parameters[j].astype(np.float64) - global_params[j].astype(np.float64)
+                  for j in sorted(indices)]
+        reference_norm = norm(deltas)
+        dimension = sum(parameters[j].size for j in indices)
         strength = float(getattr(self.attack_cfg, "random_noise_scale", 1.0))
-        coordinate_scale = (
-            strength * reference_norm / np.sqrt(float(dimension))
-            if dimension > 0
-            else 0.0
-        )
+        if not np.isfinite(strength) or strength < 0:
+            raise ValueError("random_noise_scale must be finite and non-negative")
+        coordinate_scale = strength * (reference_norm / np.sqrt(float(dimension)))
         distribution = str(
             getattr(self.attack_cfg, "random_noise_distribution", "rademacher")
         ).lower()
+        if distribution != "rademacher":
+            raise ValueError("Random noise v2 requires random_noise_distribution=rademacher")
+        if not np.isfinite(reference_norm) or not np.isfinite(coordinate_scale):
+            raise NumericalFailure("nonfinite_update", "random_noise_scale", "noise norm overflow")
         attacked: List[np.ndarray] = []
-        for global_param, local_param in zip(global_params, parameters):
-            if _is_floating_array(global_param):
-                if distribution == "rademacher":
-                    noise = np.random.choice((-1.0, 1.0), size=global_param.shape)
-                elif distribution == "gaussian":
-                    noise = np.random.standard_normal(size=global_param.shape)
-                else:
-                    raise ValueError(
-                        "random_noise_distribution must be rademacher or gaussian"
-                    )
-                value = np.asarray(global_param, dtype=np.float64) + coordinate_scale * noise
-                attacked.append(value.astype(global_param.dtype, copy=False))
+        for index, (global_param, local_param) in enumerate(zip(global_params, parameters)):
+            if index in indices:
+                noise = np.random.choice((-1.0, 1.0), size=global_param.shape)
+                with np.errstate(over="ignore", invalid="ignore"):
+                    value = (global_param.astype(np.float64) + coordinate_scale * noise).astype(global_param.dtype)
+                if not np.isfinite(value).all():
+                    raise NumericalFailure("nonfinite_update", "random_noise_output", "dtype conversion overflow")
+                attacked.append(value)
             else:
                 attacked.append(local_param.copy())
+        actual_norm = norm([attacked[j].astype(np.float64) - global_params[j].astype(np.float64)
+                            for j in sorted(indices)])
+        if not np.isfinite(actual_norm):
+            raise NumericalFailure("nonfinite_update", "random_noise_output", "uploaded norm overflow")
+        if reference_norm > 0 and strength > 0 and actual_norm == 0:
+            raise NumericalFailure("unrepresentable_update", "random_noise_output", "noise lost to dtype rounding")
+        metrics["random_noise_version"] = "random_noise.trainable_rademacher_norm_matched.v2"
+        metrics["random_noise_scope"] = "trainable_parameters_only"
+        metrics["random_noise_dimension"] = dimension
+        metrics["random_noise_tensor_count"] = len(indices)
+        metrics["random_noise_uploaded_norm"] = actual_norm
+        metrics["random_noise_buffers_preserved"] = all(
+            np.array_equal(attacked[j], parameters[j]) for j in range(len(parameters)) if j not in indices
+        )
+        metrics["random_noise_output_finite"] = True
+        metrics["random_noise_zero_reference"] = reference_norm == 0
         metrics["random_noise_reference_norm"] = reference_norm
         metrics["random_noise_coordinate_scale"] = float(coordinate_scale)
         metrics["random_noise_strength"] = strength
@@ -766,6 +798,7 @@ class SignFlipClient(FedSecClient):
             getattr(self, "_global_params_cache", parameters),
             parameters,
             -scale,
+            scalable_indices=_client_scalable_indices(self),
         )
 
 

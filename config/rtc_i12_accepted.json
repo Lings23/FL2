@@ -1,0 +1,31 @@
+{
+  "candidate_accepted": true,
+  "parent": "rtc_i12_direction",
+  "candidate": "rtc_i12_combined",
+  "scope": "Engineering screen: IID seeds44/45 clean, Sign-flip, Gaussian, LIE .5 only; no significance claim",
+  "source_lock_sha256": "3011209b9cca01dba0a0789fe8c5606f9c23814a3084b60744a1c3d69faf3f6d",
+  "training_environment": {
+    "os": "Linux",
+    "machine": "x86_64",
+    "python": "3.11.16",
+    "python_executable": "/home/jia_zhang/miniconda3/envs/fl2/bin/python3.11",
+    "torch": "2.14.0+cu130",
+    "numpy": "2.4.6",
+    "cuda": "13.0",
+    "devices": [
+      "NVIDIA GeForce RTX 5090",
+      "NVIDIA GeForce RTX 5090"
+    ],
+    "deterministic_client_training": true,
+    "pairing_mode": "strict",
+    "sampling_protocol": "principal_uniform"
+  },
+  "schema": "RTCI12AcceptedV1",
+  "integration_gates": 72,
+  "standalone_gates": 26,
+  "runner_quality_gates": 104,
+  "source_count": 213,
+  "source_archive_sha256": "d405e3a5efdcd0210a8209aa17f2934aab39064e64b2930a6ecf9137d51bb2f6",
+  "review_sha256": "a50132ab83b77c3c00f42505004a48c62ab3ba7486cbcbb58a22d6494cb99afb",
+  "pending": "DBA/scaling, Random-v2, LIE .25, Min-Max/Min-Sum, label reversal and final new-seed/non-IID validation"
+}

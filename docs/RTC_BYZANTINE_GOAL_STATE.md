@@ -1,5 +1,83 @@
 # RTC 拜占庭鲁棒性目标状态
 
+## 2026-09-15 / 最新：I12正式接受，R3跨轮残差观测等待人工执行
+
+本节优先于下方历史状态。服务器源码包已补齐并与原锁逐文件一致，213份来源证据完整。
+I12的40项、104项质量门、72项组合门和26项幅度门全部通过，接受M2=B0+R1c+R2，
+范围限于IID/seeds44、45的clean/Sign-flip/Gaussian/LIE .5。原R2历史失败不改写，总目标未完成。
+接受凭据config/rtc_i12_accepted.json，完整审计analysis/rtc_i12_review/review.json。
+源码归档server_sources_complete.zip的SHA256为d405e3a5efdcd0210a8209aa17f2934aab39064e64b2930a6ecf9137d51bb2f6。
+
+主线LIE累计首次惩罚round33/30，62.61%/58.47%恶意权重发生于q=1；早期z与良性重合。
+因此下一批只观察trainable残差跨轮方向持续性，不通过简单加重后期惩罚冒称解决检测延迟。
+M2不变，唯一新增为只读512维固定CountSketch导出；不加入新cap、不改变累计/回填/裁剪。
+clean103/104各M2/观测两项，LIE .5 seeds44/45各M2/观测/MK三项，共10个新单元、旧基线复用0。
+
+15项合成测试、PowerShell语法及最终10项dry-run、Bash语法通过；Linux实际dry-run待人工验证。
+Windows输出logs/rtc_r3_temporal_observation，237份源码、25份冻结产物、status/raw均0；锁SHA256：
+07e18895b2ae781a476e8ac6b3701c3a8a6f92b4a09cc1ce00fea1e3f47ebce0。
+新批次随日志自动保存r3t_sources.zip，避免复制结果后缺少服务器源码。
+协议config/rtc_r3_temporal_observation.json；完整参数/质量门/Git/双平台命令/恢复语义见
+docs/RTC_I12_REVIEW_R3_TEMPORAL_HANDOFF_20260915.md。
+
+阶段WAITING_FOR_MANUAL_EXPERIMENT；本回合为progress，旧源码阻塞解除，新人工边界计数1。
+未启动任何训练、不后台等待、不晋升未经观测的新R3机制；正式blocked尚不满足宿主三回合规则。
+按用户最新指示，本批文件由用户手动提交与推送，命令已写入交接文档；未宣称GitHub同步。
+
+首次自动续行复核：R3-temporal的锁仍为07e18895…47ebce0、Windows准备环境，status/rounds/raw各0；
+未发现本机python/pythonw/raylet进程，也未收到Linux实机dry-run证据。
+上一回合为progress，本回合为no progress；无可轮询活动句柄，不记为verified wait。
+同一人工实验阻塞连续计数2，尚未满足正式blocked条件。未重跑dry-run/测试、未训练或推进下一阶段。
+
+第二次自动续行复核：锁及Windows环境不变，status/rounds/raw仍各0，本机无python/pythonw/raylet进程，
+也未返回Linux dry-run证据。上一回合与本回合均为no progress，无活动句柄，不属于verified wait。
+同一人工执行阻塞已连续3个目标回合成立；准备工作完成，无可独立推进的必要工作，按宿主规则正式blocked。
+阶段保持WAITING_FOR_MANUAL_EXPERIMENT，等待用户的Linux验证或实验产物；总体目标未完成，禁止自动训练或推进下一阶段。
+
+---
+
+## 2026-09-15 / I12服务器结果已返回，数值门通过，待补源码证据
+
+本节优先于下方历史交接。用户确认整个logs目录来自外部服务器复制；不能再把本地目录视为未执行的Windows准备批次。
+阶段WAITING_FOR_SOURCE_EVIDENCE，总目标未完成。未启动训练、未修改服务器原始日志/锁、未晋升组合或推进新R3。
+服务器锁SHA256：3011209b9cca01dba0a0789fe8c5606f9c23814a3084b60744a1c3d69faf3f6d。
+环境Linux x86_64/Python3.11.16/torch2.14.0+cu130/numpy2.4.6/CUDA13.0，两张RTX5090；
+仓库/home/jia_zhang/hqr/FL2，Python/home/jia_zhang/miniconda3/envs/fl2/bin/python3.11。
+本批内部配对，不与旧Windows结果混算；协议内容与预注册config/rtc_i12_protocol.json完全一致。
+
+40/40项completed、exit0、last_round60，逐项61个唯一轮号、600条客户端记录；104/104 runner门通过。
+66份冻结计划产物哈希一致。离线导入审计仅对JSON读取做哈希校验后的绝对路径映射，保留原分析器的同宿主执行锁约束。
+严格配对、原验证器机制/预算/重构/累计重放全部通过；独立向量参考复核24000条，最大cosine差6.153e-12。
+预注册组合72/72门与独立幅度26/26门通过；candidate_accepted暂为null，源码完整性未通过前不宣布正式验收。
+
+两seed等权均值（active/final ACC）：
+- Sign-flip：B0 77.2965%/81.755%，组合83.3571%/87.460%，MK82.7595%/87.210%；方向/组合结果一致。
+- Gaussian：B0/方向84.0389%/87.820%，幅度/组合84.2213%/88.245%，MK84.3480%/87.860%，RFA84.8620%/88.565%。
+  组合将每轮恶意权重由18.0648%降至0；平均ACC增加0.1824pp，原R2历史+0.2pp门失败不改写。
+- clean：四RTC组均80.8309%/89.310%；LIE .5四组均76.9455%/86.630%，MK79.2681%/87.310%。
+  LIE尚无收益，相对MK平均低2.3226pp；不能把组合门通过称为已解决慢攻击。
+- 四RTC组的实际联合良性cap误标率均0；该结论仅覆盖这批IID/seeds44、45，未作显著性/非IID/targeted推广。
+
+服务器213份源码中209份恢复并匹配原始哈希（160份本地字节一致，46份仅换行差异，3份匹配git a0a90b0）。
+尚缺4份原始服务器文件：
+config/rtc_v3_formal_all_attacks_two_seed.linux.freeze.json；config/rtc_v3_seed42_signflip_v2_linux.freeze.json；
+experiments/run_rtc_i12_bridge.sh；experiments/run_rtc_formal_attacks_seed42_linux.sh。
+下一动作只补这四份来源证据，核验与锁中的哈希一致；无需重跑40项实验。完整锁与缺失哈希见review.json。
+审计脚本analysis/rtc_i12_review/audit_import.py；结果analysis/rtc_i12_review/review.json。
+补回文件保持原相对路径置于analysis/rtc_i12_review/server_sources后，运行该脚本重新核验。
+若原文件已改变，须找回匹配的归档；不重写锁以迁就当前源码。
+
+本回合属于progress：真实训练产物解除人工实验阻塞，完成跨平台产物及机制复核。
+新的源码证据阻塞首次出现，尚不满足宿主连续三回合blocked条件；不后台等待。
+遵循用户最新“手动提交”指示，本回合新增审计与状态修改留待人工git提交/推送，未声称GitHub已同步。
+
+2026-09-15首次自动续行复核：服务器源码包及server_sources目录均未到达，服务器锁哈希不变。
+上一回合为progress，本回合为no progress；没有已确认的活动任务句柄，不记为verified wait。
+同一源码证据阻塞连续计数=2（含首次交接），尚未达到正式blocked阈值。
+保持WAITING_FOR_SOURCE_EVIDENCE；未重复分析/测试、未启动训练、未推进依赖完整验收的新候选。
+
+---
+
 ## 最新交接：R3观测已验收，I12等待人工实验
 
 日期：2026-09-14。阶段WAITING_FOR_MANUAL_EXPERIMENT，目标未完成；本节优先于下方历史状态。

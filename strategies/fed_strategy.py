@@ -621,6 +621,12 @@ class FedSecStrategy(Strategy):
             for record, observation in zip(self.last_client_records, observation_rows):
                 record.update(observation)
             direction_observation_metrics['rtc_r1_observation_seconds'] = time.perf_counter() - observation_started
+        temporal_rows = getattr(self.defense, '_last_temporal_rows', [])
+        if temporal_rows:
+            if len(temporal_rows) != len(self.last_client_records):
+                raise ValueError('Temporal observation/client record count mismatch')
+            for record, observation in zip(self.last_client_records, temporal_rows):
+                record.update(observation)
         raw_rows = getattr(self.defense, '_last_raw_norm_rows', [])
         if raw_rows:
             if len(raw_rows) != len(self.last_client_records):

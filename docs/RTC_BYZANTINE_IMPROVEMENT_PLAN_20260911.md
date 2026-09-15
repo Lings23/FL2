@@ -304,3 +304,13 @@ R3观测3项与20项质量门通过，独立向量参考/原始日志/累计状�
 相对R1c主线只再开启固定raw cap。Windows最终目录logs/rtc_i12_bridge_v2，默认dry-run；Linux脚本同步提供。
 进入WAITING_FOR_MANUAL_EXPERIMENT，未启动训练；Linux实际dry-run尚待核验。
 最新交接、版本关系、原失败保留及预登记门见docs/RTC_R3_REVIEW_I12_HANDOFF_20260914.md。
+
+## 2026-09-15 / I12接受与M2跨轮残差观测
+
+Linux服务器40项完整，104项质量门、72项组合门、26项幅度门与213份源码来源全部验收。
+接受M2=B0+R1c+R2在IID/seeds44、45的四条件范围；clean/Sign-flip保留，Gaussian恶意权重归零。
+LIE .5无新增收益、平均ACC仍比MK低2.3226pp；累计首次惩罚round33/30，约62.61%/58.47%恶意权重在q=1期间。
+早期幅度z与良性重合，现有标量/同轮Gram不能还原跨轮残差方向。因此新批次只导出trainable残差固定512维sketch，
+配对验证观测不改变M2行为；clean103/104两组及LIE44/45三组共10项，新cap/阈值均未启用。
+源码随日志归档，双平台入口已准备；真实实验继续由用户手动执行，Linux先完成实机dry-run。
+完整验收与下一边界见docs/RTC_I12_REVIEW_R3_TEMPORAL_HANDOFF_20260915.md。R4/R5与最终覆盖范围保持不变。

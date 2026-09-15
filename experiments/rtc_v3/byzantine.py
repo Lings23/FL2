@@ -76,6 +76,7 @@ DEFENSES: Mapping[str, tuple[str, Mapping[str, Any]]] = {
     "rtc_i12_direction": ("rtc_full", {}),
     "rtc_i12_norm": ("rtc_full", {}),
     "rtc_i12_combined": ("rtc_full", {}),
+    "rtc_i12_temporal_observe": ("rtc_full", {"temporal_residual_observe_only": True}),
     "rtc_i12_multikrum": ("krum", {}),
     "rtc_i12_rfa": ("rfa", {"num_iterations": 3, "smoothing": 1e-6, "use_num_examples": True}),
     "rtc_b4_residual_rank_cap": ("rtc_full", {}),
@@ -375,9 +376,9 @@ def build_matrix(args) -> list[dict[str, Any]]:
                 defense_type, custom = DEFENSES[defense]
                 if defense.startswith('rtc_i12_'):
                     custom = {**custom,
-                              'spectral_direction_mode': 'cap' if defense in ('rtc_i12_direction', 'rtc_i12_combined') else 'observe',
+                              'spectral_direction_mode': 'cap' if defense in ('rtc_i12_direction', 'rtc_i12_combined', 'rtc_i12_temporal_observe') else 'observe',
                               'spectral_direction_calibration': 'config/rtc_r1c_pairwise_calibration.json',
-                              'raw_norm_mode': 'cap' if defense in ('rtc_i12_norm', 'rtc_i12_combined') else 'observe',
+                              'raw_norm_mode': 'cap' if defense in ('rtc_i12_norm', 'rtc_i12_combined', 'rtc_i12_temporal_observe') else 'observe',
                               'raw_norm_calibration': 'config/rtc_r2_raw_norm_calibration.json'}
                     if defense_type == 'rtc_full':
                         custom = {**rtc_custom, **custom, 'semantic_intervention_risk_floor': .5,

@@ -91,6 +91,7 @@ _ALLOWED_CUSTOM_PARAMS = {
     "spectral_direction_calibration",
     "raw_norm_mode",
     "raw_norm_calibration",
+    "temporal_residual_observe_only",
 }
 
 
@@ -125,6 +126,12 @@ class RTCv3Defense(BaseDefense):
     def __init__(self, cfg: DefenseConfig, num_clients: int = 100):
         super().__init__(cfg)
         params = dict(cfg.custom_params or {})
+        self._temporal_observe = params.get('temporal_residual_observe_only', False)
+        if type(self._temporal_observe) is not bool:
+            raise ValueError('temporal_residual_observe_only must be boolean')
+        if self._temporal_observe and params.get('spectral_direction_mode', 'off') == 'off':
+            raise ValueError('Temporal observation requires trainable spectral metadata')
+        self._last_temporal_rows = []
         self.spectral_direction_mode = params.get('spectral_direction_mode', 'off')
         if self.spectral_direction_mode not in ('off', 'observe', 'cap'):
             raise ValueError('invalid spectral_direction_mode')
@@ -1909,6 +1916,14 @@ class RTCv3Defense(BaseDefense):
             summary['rtc_r1_observation_seconds'] = time.perf_counter() - observation_started
             self.last_round_metrics.update(summary)
         self._last_raw_norm_rows = raw_rows
+        self._last_temporal_rows = []
+        if self._temporal_observe:
+            from defenses.rtc.temporal_observe import observe, metadata
+            temporal_started = time.perf_counter()
+            self._last_temporal_rows = observe(residual_arrays,
+                [floating_indices.index(i) for i in self._spectral_trainable_indices])
+            self.last_round_metrics.update(metadata())
+            self.last_round_metrics['rtc_r3t_seconds'] = time.perf_counter() - temporal_started
         if raw_rows:
             from defenses.rtc.raw_norm import summary as raw_summary
             self.last_round_metrics.update(raw_summary(self._raw_norm_calibration, self.raw_norm_mode, raw_seconds))

@@ -1,0 +1,90 @@
+{
+  "schema": "RTCR3TemporalObservationProtocolV1",
+  "training_units": 10,
+  "reused_training_units": 0,
+  "parent": "rtc_i12_combined",
+  "candidate": "none; observation only",
+  "observer_metadata": {
+    "rtc_r3t_version": "rtc_r3_trainable_residual_countsketch.v1",
+    "rtc_r3t_mode": "observe",
+    "rtc_r3t_sketch_dimension": 512,
+    "rtc_r3t_sketch_seed": 20260915,
+    "rtc_r3t_sketch_algorithm": "splitmix64_v1",
+    "rtc_r3t_sketch_normalized": true,
+    "rtc_r3t_reference": "existing_nominal_coordinate_median",
+    "rtc_r3t_scope": "trainable_clipped_delta_minus_existing_anchor"
+  },
+  "conditions": [
+    {
+      "attack": "none",
+      "seeds": [
+        103,
+        104
+      ],
+      "defenses": [
+        "parent",
+        "observer"
+      ]
+    },
+    {
+      "attack": "lie",
+      "lie_z": 0.5,
+      "seeds": [
+        44,
+        45
+      ],
+      "defenses": [
+        "parent",
+        "observer",
+        "multi_krum"
+      ]
+    }
+  ],
+  "training": {
+    "dataset": "cifar10",
+    "model": "resnet18",
+    "pretrained": false,
+    "partition": "iid",
+    "num_clients": 20,
+    "participation_rate": 0.5,
+    "rounds": 60,
+    "local_epochs": 5,
+    "batch_size": 48,
+    "lr": 0.01,
+    "momentum": 0.9,
+    "weight_decay": 0.0001,
+    "scheduler": "cosine",
+    "malicious_fraction": 0.3,
+    "attack_start": 11,
+    "attack_end": 60
+  },
+  "observation_gates": {
+    "complete_rounds": 61,
+    "clients_per_run": 600,
+    "runner_quality_gates": "all applicable",
+    "strict_pairing": true,
+    "observer_vs_parent_accuracy_loss_and_sketch": "exact",
+    "observer_vs_parent_weights_and_caps": "exact",
+    "finite_512_sketch": true,
+    "budget_max": 1e-08,
+    "reconstruction_relative_max": 0.0001,
+    "cumulative_replay_max": 1e-09
+  },
+  "analysis": {
+    "score": "norm(mean(last 5 per-principal unit residual sketches)); causal participation history; any missing/zero vector means unavailable",
+    "calibration_seed": 103,
+    "clean_validation_seed": 104,
+    "attack_seeds_role": "development diagnostics, never threshold fitting",
+    "future_threshold_rule": "No threshold or cap in this batch. Review clean calibration and holdout before separately preregistering one temporal mechanism.",
+    "sketch_limit": "Compressed-space directional estimate; not exact full-space cosine or net harmful direction; honest non-IID persistence remains unvalidated."
+  },
+  "stop_rule": "All ten units and quality checks required. Observation success never accepts a defense. No retries, next candidate, strength/seed search or automatic training.",
+  "resources": {
+    "cpu_per_client": 1,
+    "gpu_per_client": 0.25,
+    "object_store_mib": 3072,
+    "min_available_memory_mib": 10240,
+    "max_spec_retries": 0
+  },
+  "linux_preflight": "Actual server environment must run dry-run before real execution; use independent lock and preserve original source archive."
+}

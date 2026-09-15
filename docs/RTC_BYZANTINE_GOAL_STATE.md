@@ -1,5 +1,43 @@
 # RTC 拜占庭鲁棒性目标状态
 
+## 2026-09-15 / 最新：R3跨轮观测已验收，持续小残差cap等待人工实验
+
+本节优先于下方历史状态。外部Linux服务器10项R3-temporal均completed/exit0/round60，42项质量门通过，
+220份源码/25份计划产物完整核验，四对父版本/观测版的模型轨迹、权重、原cap完全一致。
+审计analysis/rtc_r3_temporal_review/verify.py及review.json；观测接受，新防御仍未接受，M2保持主线。
+原高coherence假设未获支持：部分LIE残差为零导致方向无定义；攻击有效方向持续性反而低于clean。
+新线索是攻击的trainable残差相对其他principal显著偏小；按预先写入的clean-only规则校准，不用LIE数据拟合阈值。
+
+候选M2+lower-tail cap：ratio<0.8738694595117251且连续两次参与低尾后q=0；正常/无效观测重置。
+参考排除自身principal、至少9个其他正名义质量principal，残差中位数含零值且须>1e-12；重复客户端不重复计数。
+clean103校准、clean104验证均0/600标记；旧LIE44/45离线标记163/179、133/150，良性0/321、0/350，首标记round12。
+生产模块与独立重放一致；这些是旧轨迹筛选证据，不是闭环ACC收益，非IID/合法中心更新误伤仍待验证。
+原R1c/R2 cap、累计参数、裁剪和回填全部保留；父版本仅新增inert低尾observe，候选只将其改为cap。
+
+新批次固定seeds201/202，clean各2项、Sign-flip各3项、Gaussian各4项、LIE .5各3项，共24个新单元，旧基线复用0。
+23项合成测试、PowerShell语法/最终dry-run、Bash语法通过；Linux实际dry-run待人工验证，未启动训练。
+Windows目录logs/rtc_r3_lower_tail，245份源码/51份冻结产物、status/raw均0，含r3l_sources.zip。
+锁SHA256：3d70d7b038c755eaf749a3ea045de16264221f042e58e03a6dba6e6e2ebee807。
+源码zip SHA256：39519784664172a5601109cd542946b871e8704422cabd5625f14b0bb8c878e9。
+校准canonical hash：666ef4c6c31726fdf206deeed88947c802b433cbf997ba0493a164c82d64ba71。
+协议config/rtc_r3_lower_tail_protocol.json；完整参数、门、Git、双平台命令见docs/RTC_R3_TEMPORAL_REVIEW_LOWER_TAIL_HANDOFF_20260915.md。
+
+本回合为progress：完成服务器观测验收、独立clean筛选与新候选准备，旧人工阻塞解除。
+阶段WAITING_FOR_MANUAL_EXPERIMENT，新人工边界计数1，尚未达到正式blocked条件。
+按用户最新指示留待手动git提交/推送，未宣称已同步；不后台等待，不启动训练，不提前推进下一候选或声称目标完成。
+
+首次自动续行复核：lower-tail锁仍为3d70d7b0…ebee807、Windows准备环境，24项计划的status/rounds/raw均0；
+本机未发现python/pythonw/raylet进程，也未返回Linux实机验证证据。
+上一回合为progress，本回合为no progress；无可轮询活动句柄，不记为verified wait。
+同一人工执行阻塞连续计数2，尚未满足正式blocked条件；未重复测试/dry-run、未训练或推进下一候选。
+
+第二次自动续行复核：lower-tail锁、Windows准备环境保持不变，status/rounds/raw仍各0；本机无python/pythonw/raylet进程，
+未返回Linux实机验证或训练证据。上一回合与本回合均为no progress，无活动句柄，不属于verified wait。
+同一人工执行阻塞已连续3个目标回合成立，必要准备已完成且没有可独立推进的工作；按宿主规则正式blocked。
+阶段保持WAITING_FOR_MANUAL_EXPERIMENT，等待用户返回Linux验证或实验产物；目标未完成，不自动训练或推进下一候选。
+
+---
+
 ## 2026-09-15 / 最新：I12正式接受，R3跨轮残差观测等待人工执行
 
 本节优先于下方历史状态。服务器源码包已补齐并与原锁逐文件一致，213份来源证据完整。

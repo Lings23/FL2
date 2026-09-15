@@ -1,0 +1,96 @@
+{
+  "schema": "RTCR3LowerTailProtocolV1",
+  "stage": "R3-lower-tail",
+  "training_units": 24,
+  "reused_training_units": 0,
+  "seeds": [
+    201,
+    202
+  ],
+  "parent": "rtc_i12_lower_observe",
+  "parent_version": "rtc_i12_combined",
+  "candidate": "rtc_i12_lower_cap",
+  "lower_calibration_hash": "666ef4c6c31726fdf206deeed88947c802b433cbf997ba0493a164c82d64ba71",
+  "design": {
+    "schema": "RTCR3LowerTailDesignV1",
+    "hypothesis": "LIE may have unusually small trainable residual to the contaminated coordinate-median anchor; test a persistent lower-tail cap on accepted M2",
+    "calibration_seed": 103,
+    "clean_holdout_seed": 104,
+    "threshold_rule": "minimum of all finite leave-one-principal-out residual ratios in clean seed103; strict ratio < threshold",
+    "reference": "ratio to median of all other nominal-positive principals, including zero values; at least9 peers; median>1e-12; own principal excluded",
+    "persistence": 2,
+    "history": "consecutive eligible participations, normal or invalid observation resets; no decay on nonparticipation; no attack-label reset",
+    "cap_multiplier": 0,
+    "other_parameters": "M2 unchanged",
+    "holdout_rule": "additional lower-tail applied flag rate <=1% on clean104; never retune if it fails",
+    "new_training_seeds": [
+      201,
+      202
+    ],
+    "new_matrix": "clean parent/candidate; Sign-flip parent/candidate/MK; Gaussian parent/candidate/MK/RFA; LIE .5 parent/candidate/MK",
+    "training_units": 24,
+    "utility_gates": {
+      "lie_active_gain_min": 0.01,
+      "lie_final_gain_min": 0,
+      "other_active_final_gain_min": -0.002,
+      "benign_union_flag_max": 0.01,
+      "lie_malicious_weight_ratio_max": 0.8,
+      "other_malicious_weight_increase_max": 0.001
+    },
+    "development_attack_use": "diagnostics only; no threshold or persistence fitting on LIE44/45",
+    "scope": "IID engineering candidate only; non-IID/targeted and other attacks remain pending",
+    "seed_revision_reason": "49 and 52 appeared in prior calibration/smoke artifacts; use 201/202 with no matching local run artifacts, before any new training"
+  },
+  "attacks": {
+    "sign_flip": {
+      "strength_level": "weak",
+      "parameters": {
+        "sign_flip_scale": 1.0
+      }
+    },
+    "gaussian_noise": {
+      "strength_level": "strong",
+      "parameters": {
+        "gaussian_noise_mean": 0.0,
+        "gaussian_noise_std": 0.1
+      }
+    },
+    "lie": {
+      "strength_level": "medium",
+      "parameters": {
+        "lie_z": 0.5,
+        "coordinated_attack_knowledge": "all_updates"
+      }
+    }
+  },
+  "gates": {
+    "lie_active_gain_min": 0.01,
+    "lie_final_gain_min": 0,
+    "other_active_final_gain_min": -0.002,
+    "benign_union_flag_max": 0.01,
+    "lie_malicious_weight_ratio_max": 0.8,
+    "other_malicious_weight_increase_max": 0.001
+  },
+  "quality": {
+    "strict_pairing": true,
+    "complete_rounds": 61,
+    "clients_per_run": 600,
+    "budget_max": 1e-08,
+    "reconstruction_relative_max": 0.0001,
+    "cumulative_replay_max": 1e-09,
+    "lower_state_replay": "exact flags/streak; ratio tolerance1e-10"
+  },
+  "windows": {
+    "clean": [
+      1,
+      60
+    ],
+    "attacks": [
+      11,
+      60
+    ]
+  },
+  "stop_rule": "All 24 runs, each seed and each gate required; no optional stopping, retries, threshold/seed search. Reject new cap only on failure; retain accepted M2.",
+  "pending": "LIE .25, Min-Max/Min-Sum, Random-v2, label reversal, DBA/scaling, final independent seeds/non-IID; no claim of broad superiority",
+  "source_observation_lock": "f22fb117240047a63aac80edeae5968188f2fa6b0c54cacdc8807db278595dbd"
+}

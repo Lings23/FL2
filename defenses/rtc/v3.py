@@ -92,6 +92,8 @@ _ALLOWED_CUSTOM_PARAMS = {
     "raw_norm_mode",
     "raw_norm_calibration",
     "temporal_residual_observe_only",
+    "lower_tail_mode",
+    "lower_tail_calibration",
 }
 
 
@@ -132,6 +134,18 @@ class RTCv3Defense(BaseDefense):
         if self._temporal_observe and params.get('spectral_direction_mode', 'off') == 'off':
             raise ValueError('Temporal observation requires trainable spectral metadata')
         self._last_temporal_rows = []
+        self.lower_tail_mode=params.get('lower_tail_mode','off')
+        if self.lower_tail_mode not in ('off','observe','cap'):
+            raise ValueError('Invalid lower_tail_mode')
+        self._lower_tail=None
+        self._last_lower_tail_rows=[]
+        if self.lower_tail_mode!='off':
+            from defenses.rtc.lower_tail import load_calibration, LowerTailEvidence
+            if params.get('spectral_direction_mode','off')=='off':
+                raise ValueError('Lower tail requires explicit trainable metadata')
+            self._lower_tail=LowerTailEvidence(load_calibration(params['lower_tail_calibration']))
+        elif 'lower_tail_calibration' in params:
+            raise ValueError('Lower-tail calibration requires enabled mode')
         self.spectral_direction_mode = params.get('spectral_direction_mode', 'off')
         if self.spectral_direction_mode not in ('off', 'observe', 'cap'):
             raise ValueError('invalid spectral_direction_mode')
@@ -1448,6 +1462,20 @@ class RTCv3Defense(BaseDefense):
                 row['rtc_r2_nominal_mass'] = float(nominal[i])
             client_q_cap = np.minimum(client_q_cap, [r['rtc_r2_q'] for r in raw_rows])
         raw_seconds = time.perf_counter() - raw_started
+        lower_rows=[]
+        lower_transition=None
+        lower_started=time.perf_counter()
+        if self._lower_tail is not None:
+            from defenses.rtc.raw_norm import trainable_norms
+            lower_rows,lower_transition=self._lower_tail.prepare(
+                trainable_norms(residual_arrays,[floating_indices.index(i) for i in self._spectral_trainable_indices]),
+                self._principal_ids,nominal,self.lower_tail_mode)
+            for i,row in enumerate(lower_rows):
+                row['rtc_r3l_existing_q']=float(client_q_cap[i])
+                row['rtc_r3l_nominal_mass']=float(nominal[i])
+                row['rtc_r3l_applied']=bool(row['rtc_r3l_q']<client_q_cap[i])
+            client_q_cap=np.minimum(client_q_cap,[row['rtc_r3l_q'] for row in lower_rows])
+        lower_seconds=time.perf_counter()-lower_started
         reference_client_q_cap = client_q_cap.copy()
         residual_rank_cap_multiplier = np.ones(len(updates), dtype=np.float64)
         residual_rank_cap_indices: tuple[int, ...] = ()
@@ -1916,6 +1944,12 @@ class RTCv3Defense(BaseDefense):
             summary['rtc_r1_observation_seconds'] = time.perf_counter() - observation_started
             self.last_round_metrics.update(summary)
         self._last_raw_norm_rows = raw_rows
+        self._last_lower_tail_rows=lower_rows
+        if lower_transition is not None:
+            from defenses.rtc.lower_tail import VERSION as LOWER_VERSION, calibration_hash as lower_hash
+            self._lower_tail.commit(lower_transition)
+            self.last_round_metrics.update(rtc_r3l_version=LOWER_VERSION,rtc_r3l_mode=self.lower_tail_mode,
+                rtc_r3l_calibration_hash=lower_hash(self._lower_tail.calibration),rtc_r3l_seconds=lower_seconds)
         self._last_temporal_rows = []
         if self._temporal_observe:
             from defenses.rtc.temporal_observe import observe, metadata

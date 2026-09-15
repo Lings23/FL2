@@ -1,0 +1,30 @@
+{
+  "schema": "RTCR3LowerTailDesignV1",
+  "hypothesis": "LIE may have unusually small trainable residual to the contaminated coordinate-median anchor; test a persistent lower-tail cap on accepted M2",
+  "calibration_seed": 103,
+  "clean_holdout_seed": 104,
+  "threshold_rule": "minimum of all finite leave-one-principal-out residual ratios in clean seed103; strict ratio < threshold",
+  "reference": "ratio to median of all other nominal-positive principals, including zero values; at least9 peers; median>1e-12; own principal excluded",
+  "persistence": 2,
+  "history": "consecutive eligible participations, normal or invalid observation resets; no decay on nonparticipation; no attack-label reset",
+  "cap_multiplier": 0,
+  "other_parameters": "M2 unchanged",
+  "holdout_rule": "additional lower-tail applied flag rate <=1% on clean104; never retune if it fails",
+  "new_training_seeds": [
+    201,
+    202
+  ],
+  "new_matrix": "clean parent/candidate; Sign-flip parent/candidate/MK; Gaussian parent/candidate/MK/RFA; LIE .5 parent/candidate/MK",
+  "training_units": 24,
+  "utility_gates": {
+    "lie_active_gain_min": 0.01,
+    "lie_final_gain_min": 0,
+    "other_active_final_gain_min": -0.002,
+    "benign_union_flag_max": 0.01,
+    "lie_malicious_weight_ratio_max": 0.8,
+    "other_malicious_weight_increase_max": 0.001
+  },
+  "development_attack_use": "diagnostics only; no threshold or persistence fitting on LIE44/45",
+  "scope": "IID engineering candidate only; non-IID/targeted and other attacks remain pending",
+  "seed_revision_reason": "49 and 52 appeared in prior calibration/smoke artifacts; use 201/202 with no matching local run artifacts, before any new training"
+}

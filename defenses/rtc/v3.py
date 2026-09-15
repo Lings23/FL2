@@ -94,6 +94,7 @@ _ALLOWED_CUSTOM_PARAMS = {
     "temporal_residual_observe_only",
     "lower_tail_mode",
     "lower_tail_calibration",
+    "reference_history_observe_only",
 }
 
 
@@ -134,6 +135,15 @@ class RTCv3Defense(BaseDefense):
         if self._temporal_observe and params.get('spectral_direction_mode', 'off') == 'off':
             raise ValueError('Temporal observation requires trainable spectral metadata')
         self._last_temporal_rows = []
+        history_observe=params.get('reference_history_observe_only',False)
+        if type(history_observe) is not bool:
+            raise ValueError('reference_history_observe_only must be boolean')
+        self._reference_history=None
+        if history_observe:
+            if params.get('spectral_direction_mode','off')=='off':
+                raise ValueError('Reference history requires spectral metadata')
+            from defenses.rtc.reference_history import ReferenceHistory
+            self._reference_history=ReferenceHistory()
         self.lower_tail_mode=params.get('lower_tail_mode','off')
         if self.lower_tail_mode not in ('off','observe','cap'):
             raise ValueError('Invalid lower_tail_mode')
@@ -1943,6 +1953,14 @@ class RTCv3Defense(BaseDefense):
             summary['rtc_r1_scoring_seconds'] = spectral_seconds
             summary['rtc_r1_observation_seconds'] = time.perf_counter() - observation_started
             self.last_round_metrics.update(summary)
+            if self._reference_history is not None:
+                history_started=time.perf_counter()
+                history_rows,history_summary,history_next=self._reference_history.prepare(clipped,actual_deltas,spectral)
+                for row,extra in zip(self._last_spectral_rows,history_rows):
+                    row.update(extra)
+                self._reference_history.commit(history_next)
+                self.last_round_metrics.update(history_summary)
+                self.last_round_metrics['rtc_r1h_seconds']=time.perf_counter()-history_started
         self._last_raw_norm_rows = raw_rows
         self._last_lower_tail_rows=lower_rows
         if lower_transition is not None:

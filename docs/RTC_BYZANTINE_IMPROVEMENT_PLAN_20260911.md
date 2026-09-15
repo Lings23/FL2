@@ -325,3 +325,15 @@ clean104独立验证0/600，旧LIE44/45离线标记163/179、133/150且良性均
 要求LIE平均至少+1pp、最终不下降、恶意权重≤父版本80%；原条件效用非劣≤.2pp、联合良性误标≤1%及全部质量门。
 小残差不是一般恶意判据，合法中心更新/非IID仍是风险；通过此批也不替代剩余攻击和最终泛化。
 详细交接docs/RTC_R3_TEMPORAL_REVIEW_LOWER_TAIL_HANDOFF_20260915.md，当前WAITING_FOR_MANUAL_EXPERIMENT。
+
+
+## 2026-09-15 / 低尾闭环收益与参考污染修正（最新）
+
+24项Linux实验、92项runner门与完整228份来源通过验收；原38个候选门3项失败，保留拒绝。
+LIE平均ACC两seed+5.1524pp、最终+.45pp，支持保留低尾机制；Gaussian seed201新增良性误伤8/354超1%。
+父版本M2在Sign-flip seed201也有4/351误伤，主要在6/10攻击者控制谱参考时；历史I12接受不代表该seed安全转移。
+Gaussian极端轮同样暴露raw留一中位数及低尾参考污染；不能靠加大std或删掉压力轮解决。
+先收集M2的本轮谱参考与前轮实际trainable聚合方向的精确关系，现有同轮Gram无法恢复这一信息。
+准备5项seed201 clean/Sign-flip严格配对，只读观测、未启用新cap，原抽样计划保持。
+观测是必要诊断，不作为算法成功或新seed泛化；之后单机制修复父版本，再修复保留G并验证组合。
+详细报告及人工边界docs/RTC_LOWER_TAIL_REVIEW_REFERENCE_HISTORY_HANDOFF_20260915.md。

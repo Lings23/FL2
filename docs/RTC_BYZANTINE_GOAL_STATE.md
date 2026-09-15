@@ -1,5 +1,55 @@
 # RTC 拜占庭鲁棒性目标状态
 
+## 2026-09-15 / 最新：低尾cap有LIE收益但回归失败，父版本参考可靠性等待人工观测
+
+本节优先于下方历史状态。logs/rtc_r3_lower_tail已经是外部Linux完成结果：24/24 completed/exit0/round60，
+每项61轮/600客户端，92项runner质量门通过，228份源码和51份计划产物匹配；独立14400条谱参考、
+低尾状态、累计、预算与严格配对均通过，本地审计与服务器decision完全一致。38个验收门有3个失败。
+审计analysis/rtc_r3_lower_tail_review/verify.py及review.json，原锁a727c6d498f0e2f75c8ccbf022b0807623e51064df7cdc4a66d2f88865d3f966。
+原zip 56cf30ef2e81a3a77708dffe425b7f0977be83c2960395803550ba7ad0e9a1e3，服务器原始文件保持不变。
+
+LIE平均ACC两seed由77.5934%升至82.7458%（+5.1524pp），最终87.505%→87.955%；
+恶意权重分别25.1162%→3.6%、26.8754%→1.2%，良性误标1/357、0/353。
+但Gaussian seed201候选良性误标8/354=2.2599%；Sign-flip seed201父版和候选均4/351=1.1396%。
+因此低尾G未接受，保留为有闭环收益、待修正的研究模块。M2仍仅具有历史I12已接受范围，seed201安全转移失败。
+Sign-flip round52有6/10攻击者，错误谱参考全由攻击者组成；Gaussian已拒绝的大残差仍污染低尾中位数。
+Gaussian seed201 round35同样有6攻击者使raw参考失效，当轮攻击权重31.3449%；不得再外推所有seed权重为零。
+
+下一步先诊断M2参考可靠性：当前Gram不能还原跨轮方向，新增只读全trainable前一聚合位移点积/参考夹角/hash链。
+父版rtc_i12_combined，观测版rtc_i12_reference_observe，唯一变化reference_history_observe_only=True；
+原R1c/R2与累计/裁剪/回填不变，不增加新cap。原低尾G保持未接受，后续单独修正并重做集成，不丢弃其LIE收益。
+固定开发seed201，clean父版/观测2项、Sign-flip父版/观测/MK3项，共5新单元、复用0。
+两份trial-plan与旧seed201相同，保留原随机压力；不改抽样使失败轮消失。所有攻击/targeted/非IID最终范围保持。
+
+12项纯合成测试通过；PS语法和5项默认dry-run通过；Bash -n通过，Linux实际dry-run待返回。
+新目录logs/rtc_reference_history_observation：251份源码、14份计划产物、5格、status/raw均0。
+锁c04a971db980be0d6e92a1b4bb94e950d18527de08745b3a63fdf51089211903；
+zip 8f7958244fdb525e4749d90ea9aa0cc43ec87bc42a0161e697b5a396c21c2606。
+协议config/rtc_reference_history_observation.json；详细参数、质量门、双平台命令、Git清单和恢复语义：
+docs/RTC_LOWER_TAIL_REVIEW_REFERENCE_HISTORY_HANDOFF_20260915.md。
+人工Windows启动：powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'D:\workspace\FL2\experiments\run_rtc_reference_history_observation.ps1' -Execute
+完成分析：同一命令将-Execute换成-Analyze。Linux仅交接真实服务器路径的无训练dry-run。
+
+本回合为progress：返回的24项终态结果解除旧阻塞，完成拒绝验收/根因诊断及必要新观测准备。
+不是verified wait，无已确认远端活动句柄；新人工执行边界连续计数1，宿主要求连续3回合才可正式blocked。
+阶段WAITING_FOR_MANUAL_EXPERIMENT。未启动任何训练、不后台等待、不推进依赖新观测的候选。
+按用户最新指示由用户手动git提交/推送，命令在交接文档；未宣称GitHub已同步。总体目标未完成。
+
+参考历史观测首次自动续行复核：锁仍为c04a971d…9211903，Windows准备环境，5项计划的status/rounds/raw均0；
+本机python/pythonw/raylet进程0，未返回Linux实机验证或训练产物，不能推断外部服务器正在运行。
+上一回合为progress，本回合为no progress，无可轮询活动句柄，不记为verified wait。
+同一人工执行边界连续计数2，尚未达到正式blocked条件。保持WAITING_FOR_MANUAL_EXPERIMENT；
+未重复测试/dry-run、未启动训练、未改冻结合同或推进依赖结果的下一候选。
+
+参考历史观测第二次自动续行复核：同一锁及Windows环境保持，5项计划status/rounds/raw仍各0，
+本机python/pythonw/raylet进程0，未收到Linux验证或训练产物；没有已确认的活动句柄。
+上一回合与本回合均为no progress，不属于verified wait。同一人工执行阻塞连续3个目标回合成立，
+准备工作已完成且没有可独立推进的必要工作，按宿主规则正式将目标标记blocked。
+阶段保持WAITING_FOR_MANUAL_EXPERIMENT，等待用户返回验证或实验产物；总体目标未完成。
+未启动训练、后台等待、重复测试/dry-run或推进下一候选。
+
+---
+
 ## 2026-09-15 / 最新：R3跨轮观测已验收，持续小残差cap等待人工实验
 
 本节优先于下方历史状态。外部Linux服务器10项R3-temporal均completed/exit0/round60，42项质量门通过，

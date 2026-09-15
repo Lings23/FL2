@@ -1,0 +1,84 @@
+{
+  "schema": "RTCReferenceHistoryObservationProtocolV1",
+  "training_units": 5,
+  "reused_training_units": 0,
+  "parent": "rtc_i12_combined",
+  "candidate": "none; observation only",
+  "observer_version": "rtc_reference_history_observe.v1",
+  "conditions": [
+    {
+      "attack": "none",
+      "seed": 201,
+      "defenses": [
+        "parent",
+        "observer"
+      ]
+    },
+    {
+      "attack": "sign_flip",
+      "seed": 201,
+      "defenses": [
+        "parent",
+        "observer",
+        "multi_krum"
+      ]
+    }
+  ],
+  "training": {
+    "dataset": "cifar10",
+    "model": "resnet18",
+    "pretrained": false,
+    "partition": "iid",
+    "num_clients": 20,
+    "participation_rate": 0.5,
+    "rounds": 60,
+    "local_epochs": 5,
+    "batch_size": 48,
+    "lr": 0.01,
+    "momentum": 0.9,
+    "weight_decay": 0.0001,
+    "scheduler": "cosine",
+    "malicious_fraction": 0.3,
+    "attack_start": 11,
+    "attack_end": 60
+  },
+  "attacks": {
+    "sign_flip": {
+      "strength_level": "weak",
+      "parameters": {
+        "sign_flip_scale": 1.0
+      }
+    }
+  },
+  "resources": {
+    "cpu_per_client": 1,
+    "gpu_per_client": 0.25,
+    "object_store_mib": 3072,
+    "min_available_memory_mib": 10240,
+    "max_spec_retries": 0
+  },
+  "observation_gates": {
+    "complete_rounds": 61,
+    "clients_per_run": 600,
+    "runner_quality_gates": "all applicable",
+    "strict_pairing": true,
+    "observer_vs_parent_accuracy_loss_sketch_weights_caps": "exact",
+    "budget_max": 1e-08,
+    "reconstruction_relative_max": 0.0001,
+    "cumulative_replay_max": 1e-09,
+    "history_dot_cosine_tolerance": 1e-10,
+    "history_augmented_gram_psd_relative_tolerance": 1e-08,
+    "hash_chain": "exact previous actual aggregate; empty first round"
+  },
+  "analysis": {
+    "hypothesis": "Previous actual aggregate may identify orientation reversal of a current spectral reference selected from a malicious majority",
+    "origin_lock": "a727c6d498f0e2f75c8ccbf022b0807623e51064df7cdc4a66d2f88865d3f966",
+    "diagnostic_round": 52,
+    "seed_role": "201 is development evidence, never held-out validation",
+    "scope": "Exact trainable clipped-client dots against immediately previous actual aggregate; no sketch approximation",
+    "report": "All rounds, valid and missing reference counts, flagged benign and malicious distributions, reference contamination, first divergence; never just selected round",
+    "threshold_policy": "No calibrated threshold, cap, or acceptance of defense in this batch. Any guard requires separate registration and fresh validation. Previous aggregate is potentially contaminated, not a trusted oracle."
+  },
+  "stop_rule": "All five units and all quality gates required; observation always candidate_accepted=false. No training retries, auto expansion or sampling restrictions.",
+  "pending": "Repair M2 reference reliability, separately repair and reintegrate retained lower-tail LIE mechanism, all remaining attacks/targeted/non-IID/final report unchanged."
+}

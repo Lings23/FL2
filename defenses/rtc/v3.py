@@ -95,6 +95,7 @@ _ALLOWED_CUSTOM_PARAMS = {
     "lower_tail_mode",
     "lower_tail_calibration",
     "reference_history_observe_only",
+    "reference_guard_mode",
 }
 
 
@@ -138,8 +139,11 @@ class RTCv3Defense(BaseDefense):
         history_observe=params.get('reference_history_observe_only',False)
         if type(history_observe) is not bool:
             raise ValueError('reference_history_observe_only must be boolean')
+        self.reference_guard_mode=params.get('reference_guard_mode','off')
+        if self.reference_guard_mode not in ('off','observe','cap'):
+            raise ValueError('Invalid reference_guard_mode')
         self._reference_history=None
-        if history_observe:
+        if history_observe or self.reference_guard_mode!='off':
             if params.get('spectral_direction_mode','off')=='off':
                 raise ValueError('Reference history requires spectral metadata')
             from defenses.rtc.reference_history import ReferenceHistory
@@ -1447,6 +1451,7 @@ class RTCv3Defense(BaseDefense):
                 )
             )
         spectral = None
+        reference_guard_rows=[]
         spectral_started = time.perf_counter()
         if self.spectral_direction_mode != 'off':
             from defenses.rtc.spectral_direction import measure
@@ -1454,6 +1459,9 @@ class RTCv3Defense(BaseDefense):
                 raise ValueError('missing spectral trainable metadata')
             spectral = measure(clipped, [floating_indices.index(i) for i in self._spectral_trainable_indices],
                                self._spectral_calibration, self.spectral_direction_mode)
+            if self.reference_guard_mode!='off':
+                from defenses.rtc.reference_guard import apply
+                reference_guard_rows=apply(spectral,clipped,self._reference_history.previous,self.reference_guard_mode)
             spectral['existing_q'] = client_q_cap.copy()
             client_q_cap = np.minimum(client_q_cap, [r['q'] for r in spectral['rows']])
         spectral_seconds = time.perf_counter() - spectral_started
@@ -1958,9 +1966,15 @@ class RTCv3Defense(BaseDefense):
                 history_rows,history_summary,history_next=self._reference_history.prepare(clipped,actual_deltas,spectral)
                 for row,extra in zip(self._last_spectral_rows,history_rows):
                     row.update(extra)
+                for row,extra in zip(self._last_spectral_rows,reference_guard_rows):
+                    row.update(extra)
                 self._reference_history.commit(history_next)
                 self.last_round_metrics.update(history_summary)
                 self.last_round_metrics['rtc_r1h_seconds']=time.perf_counter()-history_started
+                if self.reference_guard_mode!='off':
+                    from defenses.rtc.reference_guard import VERSION as GUARD_VERSION
+                    self.last_round_metrics.update(rtc_r1g_version=GUARD_VERSION,
+                        rtc_r1g_mode=self.reference_guard_mode,rtc_r1g_threshold=0.)
         self._last_raw_norm_rows = raw_rows
         self._last_lower_tail_rows=lower_rows
         if lower_transition is not None:

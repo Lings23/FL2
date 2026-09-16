@@ -1,5 +1,71 @@
 # RTC 拜占庭鲁棒性目标状态
 
+## 2026-09-16 / 最新：参考历史观测验收，M2-H1等待人工实验
+
+本节优先于下方历史状态。五项Linux参考历史观测已completed/exit0/round60，21项质量门通过；
+234份源码、14份计划产物与3000条独立谱参考核验通过，父/观测模型轨迹、权重及原cap完全一致。
+审计analysis/rtc_reference_history_review/verify.py及review.json；只接受观测质量，不接受新防御。
+服务器锁909fb289c50a5db76f642c432f12c070f0a97baa76ddb4040abd5ab8b58c456e；
+源码zip 1097accb5c93dd739efcf0d397a6165e85c99ac5ecd9c631d177714811edb241。
+
+Sign-flip seed201原误伤4/351，其中round52三条参考被6名攻击者占据，历史cosine约-.0278；
+round60另一误伤的历史cosine为+.03685。旧轨迹若要求历史同向，良性标记4→1，但攻击标记115→79。
+clean589/600条历史参考有效，其中172条非正，说明历史更新不是可信oracle，必须检验误伤和防御损失的取舍。
+M2-G1保持独立归档和待修正/重新集成状态；此阶段不启用G1，也不声称保留其LIE收益的组合已接受。
+
+新H1唯一改动：原R1c危险标记还需有效参考与前一实际trainable聚合cosine严格>0才施加方向cap；
+无历史/零范数/非正时只对该R1c判断弃权，R2、累计、裁剪和accepted回填不变，不使用攻击身份。
+阈值0为固定同半空间确认，不以攻击数值搜索；上一实际聚合含anchor且仅在成功聚合后更新。
+父版rtc_i12_guard_observe，候选rtc_i12_guard_cap；单一差异reference_guard_mode observe→cap。
+24个新单元、复用0：seeds201（已知开发）/203（无既有产物的独立工程筛选），每seed clean2/Sign3/Gaussian4/LIE.5三项。
+seed201原抽样不变；父版已知误伤失败继续报告，新协议验收候选修复，绝不追改原24项判定。
+
+每seed各条件候选联合误伤≤1%；201 Sign误伤条数严格减少；所有条件active/final ACC差≥-.002；
+所有攻击每轮恶意权重增加≤.001。全部24项质量/配对/预算/原机制与guard重放须通过；不按平均掩盖失败。
+19项不同纯合成测试通过，含600条合成日志完整验证器和伪造字段拒收；未训练。
+PowerShell语法/24项默认dry-run、Bash -n/LF检查通过；Linux实际dry-run待返回。
+分析入口对缺少status按预期拒绝；未提前生成接受结果。
+新输出logs/rtc_reference_guard，259份源码/51份计划产物，status/raw为0。
+锁45b9faca8f973702e522d49707aa53c9c49573a295053a59864b832d949f6af2；
+zip957119e049b47c1f7de338468936b07067ad1b9f193709f85ae36376b2a670c5。
+完整参数、门、Git清单和双平台命令docs/RTC_REFERENCE_HISTORY_REVIEW_H1_HANDOFF_20260916.md。
+Windows人工启动：powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'D:\workspace\FL2\experiments\run_rtc_reference_guard.ps1' -Execute
+完成后将-Execute改为-Analyze；Linux先执行文档内实机dry-run，验收后再交接其真实训练命令。
+
+本回合为progress：真实终态产物解除旧五项等待，完成观测验收和H1准备。新人工边界计数1，
+正式blocked须连续三回合。阶段WAITING_FOR_MANUAL_EXPERIMENT；未启动训练、不后台等待、不推进依赖H1结果的新机制。
+总体范围与G1收益保留义务不变，目标未完成。按用户指示手动Git提交/推送，本轮未自动同步GitHub。
+
+H1首次自动续行复核（2026-09-16）：Windows准备锁仍为45b9faca8f973702e522d49707aa53c9c49573a295053a59864b832d949f6af2，
+计划24项，status文件、rounds文件及raw目录均0；未收到Linux实机dry-run或训练产物。
+本机发现1个python/pythonw/raylet类进程，但读取命令行的CIM接口拒绝访问，无法确认其是否属于本实验；
+不把它计为训练进展，也不声称本机或外部服务器训练已停止。没有已确认属于H1的活动句柄，故不属于verified wait。
+上一回合仅复核保留归档并说明已有结论，未改变下一动作，分类no progress；本回合同样no progress。
+以原H1交接与本次明确复核保守计数2；尚不正式blocked。保持WAITING_FOR_MANUAL_EXPERIMENT，
+等待人工实验或实机验证产物，不重复测试/dry-run、不启动训练、不推进依赖H1结果的下一机制。
+M2-G1继续保留待修正并重新集成；全部攻击、targeted及非IID最终验收仍待完成。
+
+H1第二次自动续行复核（2026-09-16）：同一Windows冻结锁保持，24项计划的status/rounds/raw仍各0，
+尚无Linux实机验证或训练结果返回。本机仍有1个未确认归属的Python类进程，没有已确认属于H1的活动句柄；
+不推断外部训练状态，不停止或重启任何进程。上一回合与本回合均为no progress，不属于verified wait。
+同一人工执行边界已连续3个目标回合成立，准备工作已完成，无可独立推进的必要工作；按宿主规则正式标记blocked。
+阶段保持WAITING_FOR_MANUAL_EXPERIMENT，等待人工返回验证或实验产物；完整目标未完成，M2-G1保留义务不变。
+未训练、未后台等待、未重复测试/dry-run、未修改冻结合同或推进下一候选。Git仍由用户手动提交/推送。
+
+---
+
+## 2026-09-15 / 保留候选登记：M2-G1不可静默舍弃
+
+按用户要求，M2+持续低尾cap正式登记为M2-G1，研究状态retained_for_repair_and_reintegration。
+原批次仍rejected、未晋升主线；全部ACC效用门通过，失败是3项良性误伤门，不能描述成没有效果。
+LIE两seed平均ACC +5.1524pp、最终+.45pp和恶意权重下降已保存为必须追踪的实测收益。
+登记analysis/rtc_retained_candidates/M2-G1/candidate.json，阅读入口analysis/rtc_retained_candidates/README.md。
+独立保存完整配对配置、校准/协议、原锁、review，以及301个审计输入的归档（含服务器源码）。
+audit_bundle.zip SHA256 e709490a3749b16976dd076a4c760aad5b577aa199109d721e8d5d63c4b29766，
+逐文件校验通过；仅本地保存，大包不随Git提交。后续须明确其修正、重新集成或有证据替代的去向。
+本次没有训练或改动当前5项观测冻结合同；WAITING_FOR_MANUAL_EXPERIMENT与目标blocked保持。
+Git按用户既有指示留待手动提交/推送，未声称远端同步。
+
 ## 2026-09-15 / 最新：低尾cap有LIE收益但回归失败，父版本参考可靠性等待人工观测
 
 本节优先于下方历史状态。logs/rtc_r3_lower_tail已经是外部Linux完成结果：24/24 completed/exit0/round60，

@@ -1,0 +1,13 @@
+attack,defense,seeds,active_accuracy,final_accuracy
+none,rtc_i12_lower_observe,"201,202",0.8080791666666668,0.8914
+none,rtc_i12_lower_cap,"201,202",0.8080733333333334,0.891
+sign_flip,rtc_i12_lower_observe,"201,202",0.8374410000000001,0.8761
+sign_flip,rtc_i12_lower_cap,"201,202",0.837468,0.8758
+sign_flip,rtc_i12_multikrum,"201,202",0.8333729999999999,0.87435
+gaussian_noise,rtc_i12_lower_observe,"201,202",0.8422810000000001,0.88005
+gaussian_noise,rtc_i12_lower_cap,"201,202",0.8418979999999999,0.879
+gaussian_noise,rtc_i12_multikrum,"201,202",0.8372,0.8735999999999999
+gaussian_noise,rtc_i12_rfa,"201,202",0.8485100000000001,0.8826
+lie,rtc_i12_lower_observe,"201,202",0.775934,0.87505
+lie,rtc_i12_lower_cap,"201,202",0.827458,0.87955
+lie,rtc_i12_multikrum,"201,202",0.766116,0.87225

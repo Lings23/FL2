@@ -1,0 +1,2 @@
+# Large local evidence archives are backed up separately, not pushed as Git blobs.
+*.zip

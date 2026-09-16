@@ -1,0 +1,100 @@
+{
+  "schema": "RTCRetainedCandidateV1",
+  "candidate_id": "M2-G1",
+  "display_name": "M2 + persistent lower-tail cap",
+  "parent": "M2 / rtc_i12_combined",
+  "runtime_alias": "rtc_i12_lower_cap",
+  "research_status": "retained_for_repair_and_reintegration",
+  "batch_acceptance": "rejected",
+  "accepted_mainline": false,
+  "quality_accepted": true,
+  "utility_gates_all_passed": true,
+  "baseline_safety_transfer": "Sign-flip seed201 parent fails benign flag gate; historical I12 acceptance scope unchanged",
+  "scope": "IID CIFAR10 ResNet18 seeds201/202; engineering evidence, not significance or final generalization",
+  "mechanisms": {
+    "direction": "R1c cap",
+    "raw_norm": "R2 cap",
+    "lower_tail": "G1 cap",
+    "cumulative_q_power": 1,
+    "semantic_floor": 0.5,
+    "norm_clip_mad_k": 2.5,
+    "accepted_anchor_recycle": 0.51
+  },
+  "unique_change": "Relative to M2 with inert lower-tail observation: lower_tail_mode observe -> cap",
+  "calibration": {
+    "version": "rtc_r3_lower_tail_persistence.v1",
+    "ratio_threshold": 0.8738694595117251,
+    "min_peers": 9,
+    "required_visits": 2,
+    "cap_multiplier": 0,
+    "provenance": {
+      "calibration_seed": 103,
+      "rule": "minimum clean ratio; strict lower tail; two consecutive eligible participations",
+      "clean_validation_seed": 104,
+      "source_clients_sha256": "bdd6cb8d3e5c34f244b18f1dc113acce1abca88818108df494a1dffb300adbaa",
+      "source_lock_sha256": "f22fb117240047a63aac80edeae5968188f2fa6b0c54cacdc8807db278595dbd",
+      "source_observation_review_sha256": "f601954065445ebcb09fcef0eec2a323e6b527bf8d43a3d8d96c38ac5ac84deb",
+      "threshold_uses_attack_data": false,
+      "clean_validation_flag_rate": 0.0,
+      "clean_validation_records": 600
+    }
+  },
+  "lie_evidence": {
+    "mean_active_parent": 0.775934,
+    "mean_active_candidate": 0.827458,
+    "gain_percentage_points": 5.1524,
+    "mean_final_parent": 0.87505,
+    "mean_final_candidate": 0.87955,
+    "final_gain_percentage_points": 0.45,
+    "seed201_malicious_weight_parent": 0.2511617464558647,
+    "seed201_malicious_weight_candidate": 0.036,
+    "seed202_malicious_weight_parent": 0.26875409584491156,
+    "seed202_malicious_weight_candidate": 0.012
+  },
+  "failed_checks": [
+    "sign_flip_seed201/parent/benign_union",
+    "sign_flip_seed201/candidate/benign_union",
+    "gaussian_noise_seed201/candidate/benign_union"
+  ],
+  "protocol_gates": {
+    "lie_active_gain_min": 0.01,
+    "lie_final_gain_min": 0,
+    "other_active_final_gain_min": -0.002,
+    "benign_union_flag_max": 0.01,
+    "lie_malicious_weight_ratio_max": 0.8,
+    "other_malicious_weight_increase_max": 0.001
+  },
+  "source_lock_sha256": "a727c6d498f0e2f75c8ccbf022b0807623e51064df7cdc4a66d2f88865d3f966",
+  "original_batch": "logs/rtc_r3_lower_tail",
+  "source_archive_sha256": "56cf30ef2e81a3a77708dffe425b7f0977be83c2960395803550ba7ad0e9a1e3",
+  "audit_bundle": {
+    "path": "analysis/rtc_retained_candidates/M2-G1/audit_bundle.zip",
+    "sha256": "e709490a3749b16976dd076a4c760aad5b577aa199109d721e8d5d63c4b29766",
+    "bytes": 116925566,
+    "files": 301,
+    "contents": "All JSON/CSV audit evidence and frozen artifacts, including original server source archive; no model checkpoints or stdout logs",
+    "restoration": "Extract into a separate directory, preserving relative paths. Do not overwrite active experiment outputs. Original Linux paths remain in the frozen contract; use a hash-checked import audit."
+  },
+  "retention_rules": [
+    "Preserve original decision, thresholds and evidence; do not relabel the old batch accepted.",
+    "Do not silently discard G1 after repairing M2. Return to lower-tail reference repair and test integration on the repaired parent.",
+    "Every subsequent stage handoff must state G1 retained, under repair, integrated, or explicitly superseded with evidence.",
+    "A successor must compare retained LIE gain and the failed safety regressions under a newly preregistered paired protocol.",
+    "No default enablement or promotion before safety/quality/integration gates pass.",
+    "Discard or replacement requires a written evidence-based disposition, not merely a prior rejected batch."
+  ],
+  "pending": "LIE .25, Min-Max/Min-Sum, Random-v2, label reversal, DBA/scaling, final independent seeds/non-IID; no claim of broad superiority",
+  "snapshot_sha256": {
+    "audit_bundle.zip": "e709490a3749b16976dd076a4c760aad5b577aa199109d721e8d5d63c4b29766",
+    "candidate_resolved_seed201.json": "d60b3bb8088a6d5c75b8c595731654cab049a4f4d991844403872543be1a6195",
+    "comparison.csv": "eb305828cd782dd404449188c9c62ba66b7d5ea33bd154c61bca50744a3c2281",
+    "parent_resolved_seed201.json": "2908b8b47c94142d43859b48c510543cee641948650718c52d9ad38f5f7a8c3c",
+    "review.json": "eac68bbe477511f390d69b2a27b22be244c1e39f5f0f8e60c5697f1c87962617",
+    "rtc_r1c_pairwise_calibration.json": "cfa8dbdebdcbb2840ff5a56e52b1e3ff016dfcee87b0f36d9e4c48a70225f9c9",
+    "rtc_r2_raw_norm_calibration.json": "319182f49d4fd9c58515e2f0e89347716bd68be27a3a8620eb298e37ad97faea",
+    "rtc_r3_lower_tail_calibration.json": "79880781746815aadbe2821e9a2b1717a62987e90d3fbc8bd440040cd827ddaa",
+    "rtc_r3_lower_tail_protocol.json": "c81af5b6a78c33163b25e99a8a8c856e38515017fdb5191195b03851977e55af",
+    "rtc_v3_manifest_formal_iid_semantic.json": "1b7bac432da58ae3253ff0909414a56749c939373c0e4ac4cc73f1674f4be779",
+    "server_lock.json": "a727c6d498f0e2f75c8ccbf022b0807623e51064df7cdc4a66d2f88865d3f966"
+  }
+}

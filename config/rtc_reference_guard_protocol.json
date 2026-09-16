@@ -1,0 +1,107 @@
+{
+  "schema": "RTCReferenceGuardProtocolV1",
+  "stage": "reference-guard",
+  "training_units": 24,
+  "reused_training_units": 0,
+  "seeds": [
+    201,
+    203
+  ],
+  "parent": "rtc_i12_guard_observe",
+  "parent_version": "rtc_i12_combined",
+  "candidate": "rtc_i12_guard_cap",
+  "guard_version": "rtc_reference_history_guard.v1",
+  "threshold": 0.0,
+  "design": {
+    "schema": "RTCReferenceGuardDesignV1",
+    "parent": "M2",
+    "candidate": "M2-H1",
+    "single_change": "A current R1c flag can cap only when its valid spectral reference has strictly positive cosine with the immediately previous actual trainable aggregate; otherwise abstain on R1c only.",
+    "threshold": 0.0,
+    "threshold_basis": "Fixed same-half-space geometric corroboration; not fitted to attack cosine values or an accuracy search.",
+    "missing_history": "abstain on R1c; all other caps remain unchanged",
+    "mode": "observe or cap",
+    "state": "actual aggregate including accepted anchor; only commit after successful aggregation",
+    "training_seeds": [
+      201,
+      203
+    ],
+    "seed_roles": {
+      "201": "known failure/development paired recheck",
+      "203": "new held-out engineering screen; not significance"
+    },
+    "training_units": 24,
+    "regression_conditions": [
+      "none",
+      "sign_flip",
+      "gaussian_noise",
+      "lie .5"
+    ],
+    "candidate_benign_union_max": 0.01,
+    "accuracy_active_and_final_noninferiority_min": -0.002,
+    "malicious_weight_increase_max": 0.001,
+    "development_sign_benign_strict_reduction": true,
+    "parent_benign_gate": "Report known parent failure; new repair acceptance gates candidate absolute safety, not retroactive acceptance of parent.",
+    "risks": [
+      "Previous actual update can be poisoned or naturally reverse.",
+      "Known offline loss of 36/115 malicious direction flags; preserve strict weight and accuracy gates, reject H1 if tradeoff fails.",
+      "No protection claim for majority attacks or non-IID."
+    ],
+    "retained_candidate": "M2-G1 remains retained_for_repair_and_reintegration; H1 does not enable or discard G1.",
+    "stop_rule": "All 24 units; no retries/optional seeds/threshold search; if rejected retain M2 and G1 record unchanged."
+  },
+  "attacks": {
+    "sign_flip": {
+      "strength_level": "weak",
+      "parameters": {
+        "sign_flip_scale": 1.0
+      }
+    },
+    "gaussian_noise": {
+      "strength_level": "strong",
+      "parameters": {
+        "gaussian_noise_mean": 0.0,
+        "gaussian_noise_std": 0.1
+      }
+    },
+    "lie": {
+      "strength_level": "medium",
+      "parameters": {
+        "lie_z": 0.5,
+        "coordinated_attack_knowledge": "all_updates"
+      }
+    }
+  },
+  "gates": {
+    "candidate_benign_union_max": 0.01,
+    "accuracy_noninferiority_min": -0.002,
+    "malicious_weight_increase_max": 0.001,
+    "sign_seed201_benign_strict_reduction": true
+  },
+  "quality": {
+    "strict_pairing": true,
+    "complete_rounds": 61,
+    "clients_per_run": 600,
+    "budget_max": 1e-08,
+    "reconstruction_relative_max": 0.0001,
+    "cumulative_replay_max": 1e-09,
+    "history_hash_chain": "exact",
+    "history_projection_replay_tolerance": 1e-10,
+    "history_augmented_gram_psd_relative": 1e-08,
+    "guard_replay": "exact flags/q/veto; no attack labels in runtime"
+  },
+  "windows": {
+    "clean": [
+      1,
+      60
+    ],
+    "attacks": [
+      11,
+      60
+    ]
+  },
+  "stop_rule": "All 24 units; no retries/optional seeds/threshold search; if rejected retain M2 and G1 record unchanged.",
+  "pending": "LIE .25, Min-Max/Min-Sum, Random-v2, label reversal, DBA/scaling, final independent seeds/non-IID; no claim of broad superiority",
+  "source_observation_lock": "909fb289c50a5db76f642c432f12c070f0a97baa76ddb4040abd5ab8b58c456e",
+  "retained_candidate": "M2-G1 not enabled in this parent repair; return to its repair and reintegration after the parent decision"
+}

@@ -1,0 +1,18 @@
+{
+  "version": "rtc_r3_lower_tail_persistence.v1",
+  "ratio_threshold": 0.8738694595117251,
+  "min_peers": 9,
+  "required_visits": 2,
+  "cap_multiplier": 0,
+  "provenance": {
+    "calibration_seed": 103,
+    "rule": "minimum clean ratio; strict lower tail; two consecutive eligible participations",
+    "clean_validation_seed": 104,
+    "source_clients_sha256": "bdd6cb8d3e5c34f244b18f1dc113acce1abca88818108df494a1dffb300adbaa",
+    "source_lock_sha256": "f22fb117240047a63aac80edeae5968188f2fa6b0c54cacdc8807db278595dbd",
+    "source_observation_review_sha256": "f601954065445ebcb09fcef0eec2a323e6b527bf8d43a3d8d96c38ac5ac84deb",
+    "threshold_uses_attack_data": false,
+    "clean_validation_flag_rate": 0.0,
+    "clean_validation_records": 600
+  }
+}

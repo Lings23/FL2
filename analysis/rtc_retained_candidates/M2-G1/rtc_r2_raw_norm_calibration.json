@@ -1,0 +1,15 @@
+{
+  "version": "rtc_r2_raw_norm_loo.v1",
+  "f": 3,
+  "ratio_threshold": 3.0,
+  "cap_multiplier": 0.0,
+  "provenance": {
+    "clean_source": "logs/rtc_r0b_geometric_observation/clean_calibration_seed101/raw/none__continuous_1_0__m0.3__s101__rtc_r0b_geometric_observe__iid__p0.50__b10__3a9741ce_clients.csv",
+    "clean_source_sha256": "c16990f7bc137dfd5ab4a371057f75ba4484391a4c7dd289b216316bedc421f8",
+    "protocol_sha256": "ad63a753556233be9535dceef9aa7de9fb777d9f9ea4e1079d67191a50f13b1f",
+    "calibrator_sha256": "929e5a6b86a5572c5b3fe80e8dd93cf3af17c75253b250a081bff6c11ee64eff",
+    "clean_records": 600,
+    "clean_upper99_ratio": 1.0979135245172809,
+    "clean_flags": 0
+  }
+}

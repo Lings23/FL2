@@ -1,0 +1,109 @@
+{
+  "rule": "h2_design.json, fixed two-thirds, last original R1c/R2 flag; no tuning",
+  "source_lock_sha256": "130303998e35f04d8f4eb41439e750dd14140b9f4b85c1936a900eb0b7cb7d51",
+  "closed_loop": false,
+  "results": [
+    {
+      "batch": "none_seed201",
+      "counts": {
+        "benign_original": 0,
+        "benign_kept": 0,
+        "malicious_original": 0,
+        "malicious_kept": 0
+      },
+      "veto": []
+    },
+    {
+      "batch": "sign_flip_seed201",
+      "counts": {
+        "benign_original": 4,
+        "benign_kept": 1,
+        "malicious_original": 115,
+        "malicious_kept": 115
+      },
+      "veto": [
+        {
+          "round": 52,
+          "cid": "11",
+          "attack_active": false,
+          "eligible": 1,
+          "total": 6
+        },
+        {
+          "round": 52,
+          "cid": "12",
+          "attack_active": false,
+          "eligible": 1,
+          "total": 6
+        },
+        {
+          "round": 52,
+          "cid": "19",
+          "attack_active": false,
+          "eligible": 1,
+          "total": 6
+        }
+      ]
+    },
+    {
+      "batch": "gaussian_noise_seed201",
+      "counts": {
+        "benign_original": 0,
+        "benign_kept": 0,
+        "malicious_original": 0,
+        "malicious_kept": 0
+      },
+      "veto": []
+    },
+    {
+      "batch": "lie_seed201",
+      "counts": {
+        "benign_original": 0,
+        "benign_kept": 0,
+        "malicious_original": 0,
+        "malicious_kept": 0
+      },
+      "veto": []
+    },
+    {
+      "batch": "none_seed203",
+      "counts": {
+        "benign_original": 0,
+        "benign_kept": 0,
+        "malicious_original": 0,
+        "malicious_kept": 0
+      },
+      "veto": []
+    },
+    {
+      "batch": "sign_flip_seed203",
+      "counts": {
+        "benign_original": 0,
+        "benign_kept": 0,
+        "malicious_original": 121,
+        "malicious_kept": 121
+      },
+      "veto": []
+    },
+    {
+      "batch": "gaussian_noise_seed203",
+      "counts": {
+        "benign_original": 0,
+        "benign_kept": 0,
+        "malicious_original": 0,
+        "malicious_kept": 0
+      },
+      "veto": []
+    },
+    {
+      "batch": "lie_seed203",
+      "counts": {
+        "benign_original": 0,
+        "benign_kept": 0,
+        "malicious_original": 0,
+        "malicious_kept": 0
+      },
+      "veto": []
+    }
+  ]
+}

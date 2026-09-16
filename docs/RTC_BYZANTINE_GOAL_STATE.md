@@ -1,5 +1,62 @@
 # RTC 拜占庭鲁棒性目标状态
 
+## 2026-09-16 / 最新：H1闭环拒绝，H2参考主体资格等待人工实验
+
+本节优先于下方历史记录。本次恢复发现H1目录已是Linux终态结果，解除旧人工阻塞。
+按manifest指定status/<run_id>.json和rounds/<run_id>.csv核验24/24 completed、exit0、last_round60，
+每项61轮/600客户端；92项runner质量门、242份源码、51份产物、严格配对/预算/累计/历史状态全部通过。
+独立重建14400条谱参考，最大cosine误差3.3611e-12；本地与服务器31项候选门一致，23通过、8失败。
+初始按文件名包含status/rounds的计数不适用于该结构，已纠正为合同路径，不能将其当作未执行证据。
+H1锁130303998e35f04d8f4eb41439e750dd14140b9f4b85c1936a900eb0b7cb7d51；
+源码zip 9a8c45ca708af20bced412c595e34f84c41c35518808acc0ceef58356f8d811c。
+审计analysis/rtc_reference_guard_review/verify.py、review.json；原服务器产物与判定不改。
+
+Sign-flip平均/最终ACC：seed201 M2 83.7182/87.41→H1 82.4322/86.87，seed203 84.0108/87.26→83.2910/86.30；
+攻击期每轮平均恶意权重4.6326%→9.2095%、2.0881%→7.5629%；误伤仍4/351、0/363。
+clean/Gaussian/LIE父子轨迹不变。H1从round31/32撤销正确攻击拒绝，改变轨迹后round52污染参考变成历史正向，
+seed201仍误伤4个良性客户端。故拒绝H1，不继承、不改阈值求通过；历史M2接受范围保持但不能外推新seed安全。
+
+H2唯一变化：原R1c cap需要至少ceil(2*参考主体数/3)个主体在其上次参与未被原R1c/R2标记。
+未知有资格，缺席保留、正常参与清除；同主体只计一票，当前轮只读旧状态，成功聚合后同时提交原判断。
+不重算谱参考、不翻转模型、不撤销R2/累计/预算；不读攻击标签。H1关闭，G1暂未启用。
+父版rtc_i12_eligibility_observe，候选rtc_i12_eligibility_cap，唯一差异reference_eligibility_mode observe→cap。
+固定规则旧轨迹重放seed201误伤4→1，保留115/115攻击标记，seed203保留121/121；仅开发证据，非闭环收益。
+设计及重放analysis/rtc_reference_guard_review/h2_design.json、replay_h2.py和h2_offline.json。
+
+24个新单元、复用0：seeds201开发/204新工程筛选，每seed clean2/Sign3/Gaussian4/LIE.5三项；
+注册前未发现seed204产物，201四条件trial-plan与H1相同，不消除多数攻击轮。
+每seed/条件联合良性误伤≤1%，201 Sign误伤数严格减少；active/final ACC差≥-.002，
+各攻击的攻击期每轮平均恶意权重增加≤.001；全部完成性/质量/配对/预算/资格状态及原机制重放须通过。
+完整参数及双平台命令docs/RTC_H1_REVIEW_H2_HANDOFF_20260916.md；协议config/rtc_reference_eligibility_protocol.json。
+13项纯合成检查通过，Windows24项默认dry-run、PS语法、Bash -n/LF、Python编译通过；Linux实机dry-run待返回。
+缺status时分析器按预期拒绝，无提前接受结果。新目录logs/rtc_reference_eligibility的status/rounds/raw均0。
+冻结267份源码/51份产物；锁4dd7b1ca353493feb633323e803dfe1dde19a26160060a98c3cb4c1914f22c1a；
+源码zip f8a4accc5b154b7d662eda810b46c47d21e3f2f5408cffdaadc899d36e06648d。
+
+M2-G1的11项原归档哈希再次一致，继续保留待修正并重新集成。H2不代表已保存G1组合收益；
+其结论后必须返回低尾参考污染修复与LIE收益/安全回归验证，或提交明确替代证据，不得跳过至R4/R5。
+Windows人工启动：powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'D:\workspace\FL2\experiments\run_rtc_reference_eligibility.ps1' -Execute
+完成后将-Execute改为-Analyze；Linux仅交接已知服务器路径的实机无训练dry-run。
+本回合progress：H1终态解除旧阻塞，完成闭环验收/诊断及H2准备。新人工边界计数1，正式blocked须连续3回合。
+阶段WAITING_FOR_MANUAL_EXPERIMENT；未训练、不后台等待、不推进依赖H2结果的后续候选；总体目标未完成。
+Git按用户要求手动提交/推送，本地HEAD ba54ee2，本轮未自动同步；全部攻击/targeted/最终新seed与非IID范围不缩减。
+
+H2首次自动续行复核（2026-09-16）：Windows锁仍为4dd7b1ca353493feb633323e803dfe1dde19a26160060a98c3cb4c1914f22c1a。
+按24个计划run_id核查，status文件0、rounds文件0、raw文件0，本机python/pythonw/raylet进程0。
+没有返回Linux实机验证或训练产物，也没有已确认的远端活动句柄；不能推断外部服务器是否运行。
+上一回合为progress，本回合为no progress，不属于verified wait。同一人工执行边界连续计数2，尚不正式blocked。
+保持WAITING_FOR_MANUAL_EXPERIMENT；不训练、不后台等待、不重复测试/dry-run、不推进依赖H2结果的新机制。
+M2-G1保留与后续重新集成义务不变，完整目标尚未完成。
+
+H2第二次自动续行复核（2026-09-16）：同一Windows准备锁保持；按24个计划run_id核查，
+status、rounds、raw文件仍均0，本机python/pythonw/raylet进程0，无已确认的远端活动句柄。
+上一回合与本回合均为no progress，不属于verified wait；不据此推断外部服务器训练状态。
+同一人工执行阻塞连续3个目标回合成立，准备工作已完成且无可独立推进的必要工作，按宿主规则正式标记blocked。
+阶段保持WAITING_FOR_MANUAL_EXPERIMENT，等待人工实机验证或实验产物；完整目标未完成，M2-G1仍保留待修正和重新集成。
+未启动训练、后台等待、重复测试/dry-run或推进依赖H2结果的新机制；Git仍按用户要求手动提交/推送。
+
+---
+
 ## 2026-09-16 / 最新：参考历史观测验收，M2-H1等待人工实验
 
 本节优先于下方历史状态。五项Linux参考历史观测已completed/exit0/round60，21项质量门通过；

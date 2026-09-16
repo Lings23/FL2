@@ -96,6 +96,7 @@ _ALLOWED_CUSTOM_PARAMS = {
     "lower_tail_calibration",
     "reference_history_observe_only",
     "reference_guard_mode",
+    "reference_eligibility_mode",
 }
 
 
@@ -140,6 +141,16 @@ class RTCv3Defense(BaseDefense):
         if type(history_observe) is not bool:
             raise ValueError('reference_history_observe_only must be boolean')
         self.reference_guard_mode=params.get('reference_guard_mode','off')
+        self.reference_eligibility_mode=params.get('reference_eligibility_mode','off')
+        if self.reference_eligibility_mode not in ('off','observe','cap'):
+            raise ValueError('Invalid reference_eligibility_mode')
+        self._reference_eligibility=None
+        if self.reference_eligibility_mode!='off':
+            if (self.reference_guard_mode!='off' or params.get('spectral_direction_mode')!='cap'
+                or params.get('raw_norm_mode')!='cap'):
+                raise ValueError('Eligibility requires original R1c/R2 caps and no H1 guard')
+            from defenses.rtc.reference_eligibility import ReferenceEligibility
+            self._reference_eligibility=ReferenceEligibility()
         if self.reference_guard_mode not in ('off','observe','cap'):
             raise ValueError('Invalid reference_guard_mode')
         self._reference_history=None
@@ -1452,6 +1463,9 @@ class RTCv3Defense(BaseDefense):
             )
         spectral = None
         reference_guard_rows=[]
+        eligibility_rows=[]
+        eligibility_original=[]
+        eligibility_next=None
         spectral_started = time.perf_counter()
         if self.spectral_direction_mode != 'off':
             from defenses.rtc.spectral_direction import measure
@@ -1462,6 +1476,9 @@ class RTCv3Defense(BaseDefense):
             if self.reference_guard_mode!='off':
                 from defenses.rtc.reference_guard import apply
                 reference_guard_rows=apply(spectral,clipped,self._reference_history.previous,self.reference_guard_mode)
+            if self._reference_eligibility is not None:
+                eligibility_rows,eligibility_original=self._reference_eligibility.prepare(
+                    spectral,self._principal_ids,self.reference_eligibility_mode)
             spectral['existing_q'] = client_q_cap.copy()
             client_q_cap = np.minimum(client_q_cap, [r['q'] for r in spectral['rows']])
         spectral_seconds = time.perf_counter() - spectral_started
@@ -1480,6 +1497,8 @@ class RTCv3Defense(BaseDefense):
                 row['rtc_r2_nominal_mass'] = float(nominal[i])
             client_q_cap = np.minimum(client_q_cap, [r['rtc_r2_q'] for r in raw_rows])
         raw_seconds = time.perf_counter() - raw_started
+        if self._reference_eligibility is not None:
+            eligibility_next=self._reference_eligibility.transition(self._principal_ids,eligibility_original,raw_rows)
         lower_rows=[]
         lower_transition=None
         lower_started=time.perf_counter()
@@ -1976,6 +1995,13 @@ class RTCv3Defense(BaseDefense):
                     self.last_round_metrics.update(rtc_r1g_version=GUARD_VERSION,
                         rtc_r1g_mode=self.reference_guard_mode,rtc_r1g_threshold=0.)
         self._last_raw_norm_rows = raw_rows
+        if eligibility_next is not None:
+            from defenses.rtc.reference_eligibility import VERSION as ELIGIBILITY_VERSION
+            for row,extra in zip(self._last_spectral_rows,eligibility_rows):
+                row.update(extra)
+            self._reference_eligibility.commit(eligibility_next)
+            self.last_round_metrics.update(rtc_r1e_version=ELIGIBILITY_VERSION,
+                rtc_r1e_mode=self.reference_eligibility_mode,rtc_r1e_quorum_numerator=2,rtc_r1e_quorum_denominator=3)
         self._last_lower_tail_rows=lower_rows
         if lower_transition is not None:
             from defenses.rtc.lower_tail import VERSION as LOWER_VERSION, calibration_hash as lower_hash

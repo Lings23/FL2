@@ -1,0 +1,20 @@
+{
+  "schema": "RTCReferenceEligibilityDesignV1",
+  "candidate": "M2-H2",
+  "parent": "M2",
+  "single_change": "An original R1c cap requires at least two-thirds of its reference principals to have no original R1c or R2 rejection at their last observed participation.",
+  "quorum": "ceil(2 * reference_count / 3); inherited two-thirds corroboration rule, no numerical sweep",
+  "state": "Per principal, last observed original R1c flag OR raw R2 flag; update only after successful aggregation, simultaneously after all current decisions; absent principals retain state.",
+  "unknown": "Eligible, not presumed malicious; no history cannot disable the original R1c protection.",
+  "duplicates": "Reference votes count unique principals, never multiple clients from one principal; any original rejection in a principal's current uploads marks its next state.",
+  "scope": "Veto unreliable R1c reference only; do not rewrite spectral reference, flip updates, add quarantine, change R2, cumulative budgets or accepted anchor.",
+  "h1": "Disabled; previous aggregate half-space gate failed and is not inherited.",
+  "g1": "Retained for reference repair and reintegration; not enabled in this parent repair.",
+  "motivation": "At seed201 round52, five of six reference clients were flagged at their previous participation. H1 instead removed correct caps starting round31 and changed the trajectory so the contaminated reference became positively aligned with history.",
+  "offline_use": "Replay exactly this fixed rule on existing trajectories as development evidence only; no closed-loop accuracy claims and no threshold search.",
+  "risks": ["Original flags may be false and contaminate eligibility.", "On-off attackers can clear state on a normal participation.", "Unknown attackers and an initially malicious majority remain unresolved.", "Stale state across absence can harm non-IID clients; no safety guarantee."],
+  "training_seeds": [201, 204],
+  "seed_roles": {"201": "known-failure development recheck", "204": "new engineering validation after checking absence of prior artifacts"},
+  "training_units": 24,
+  "stop_rule": "One fixed candidate, full preregistered matrix; no optional seeds, retries or threshold sweep. Reject if any gate fails."
+}

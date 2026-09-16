@@ -9,6 +9,41 @@ from tests.test_rtc_i12_bridge import combined_artifacts
 from tests.test_rtc_r2_stage import write_csv
 
 
+def test_host_client_defaults_cannot_change_registered_training(tmp_path):
+    import yaml
+    from dataclasses import asdict
+    from config.config_loader import load_config
+    base = dict(dataset=dict(data_dir='old'), ray=dict(client_num_gpus=.5),
+        client=dict(local_epochs=2, batch_size=128, optimizer='adam', learning_rate=.1,
+            momentum=0., weight_decay='5e-3', lr_scheduler='none'))
+    saved = copy.deepcopy(base)
+    cfg = stage.runtime_config(base, '/server/data')
+    path = tmp_path / 'runtime.yaml'
+    path.write_text(yaml.safe_dump(cfg))
+    stage.verify_client_contract(asdict(load_config(path).client))
+    assert base == saved and cfg['ray'] == base['ray']
+    assert cfg['dataset']['data_dir'] == '/server/data'
+    assert cfg['client'] == stage.CLIENT_CONTRACT
+
+
+def test_contract_error_names_actual_and_expected_fields():
+    wrong = dict(stage.CLIENT_CONTRACT, local_epochs=2, weight_decay='0.0001')
+    with pytest.raises(ValueError) as error:
+        stage.verify_client_contract(wrong)
+    text = str(error.value)
+    assert 'local_epochs' in text and 'weight_decay' in text and 'actual_type' in text
+    assert 'expected' in text and 'actual' in text
+
+
+def test_interrupted_preparation_preserved(tmp_path, monkeypatch):
+    evidence = tmp_path / 'runtime_config.yaml'
+    evidence.write_text('old preparation')
+    monkeypatch.setattr(stage.subprocess, 'run', lambda *a, **kw: pytest.fail('Must not start subprocess'))
+    with pytest.raises(ValueError, match='Nonempty unfrozen'):
+        stage.prepare(tmp_path)
+    assert evidence.read_text() == 'old preparation'
+
+
 def test_matrix_defaults_and_failed_run_guard(tmp_path,monkeypatch):
     assert sum(len(ds) for _,_,_,ds in stage.batches())==24
     assert {s for _,_,s,_ in stage.batches()}=={201,204}

@@ -1,5 +1,22 @@
 # RTC 拜占庭鲁棒性目标状态
 
+## H2最新执行修复：Linux准备参数不一致，等待重新dry-run
+
+用户返回Linux prepare的client字典AssertionError；这是无训练准备失败，不是训练结果或候选判定。
+原实现继承服务器主config/config.yaml中的客户端参数，只由命令行固定batch_size；现有堆栈不足以确定具体差异字段。
+现已在H2运行配置显式固定原预登记5epochs/batch48/SGD/lr.01/momentum.9/weight_decay.0001/cosine，
+保存原client配置与固定值到preparation_client_parameters.json，改为逐字段expected/actual/type的ValueError。
+不修改主配置或GPU资源配额、不放宽验收、不改变H2机制或24项矩阵。9项纯合成检查通过，无真实训练。
+原服务器失败目录和本地旧锁均保留；新目录logs/rtc_reference_eligibility_configfix。
+最新人工无训练命令及手动Git同步见docs/RTC_H2_DRY_RUN_CONFIG_FIX.md；服务器必须先重新dry-run并返回新锁。
+后续执行和分析均须带新输出路径。阶段WAITING_FOR_MANUAL_EXPERIMENT，当前等待实机准备验证；M2-G1及完整目标范围不变。
+本地新目录24项dry-run通过，267源码/52产物匹配，训练产物0，所有client参数及trial-plan与旧本地准备一致。
+新Windows锁e37374a699be1830ed4b489e4233303a685918ced990324633179c55a1cf8e55；
+源码zip 98f10ad43db134e06be0000b91ab65d8409ed1602b0028d278f91af044460d12。旧目录和锁保持不变。
+本回合为progress，修复实际准备失败并形成可执行交接；没有启动实验或自动Git提交/推送。
+
+---
+
 ## 2026-09-16 / 最新：H1闭环拒绝，H2参考主体资格等待人工实验
 
 本节优先于下方历史记录。本次恢复发现H1目录已是Linux终态结果，解除旧人工阻塞。

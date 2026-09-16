@@ -27,6 +27,25 @@ OUTPUT = ROOT / 'logs/rtc_reference_eligibility'
 PROTOCOL = ROOT / 'config/rtc_reference_eligibility_protocol.json'
 RECEIPT = ROOT / 'config/rtc_i12_accepted.json'
 MODES = {PARENT: ('cap', 'cap'), OBSERVER: ('cap', 'cap'), MK: ('observe', 'observe'), RFA: ('observe', 'observe')}
+CLIENT_CONTRACT = dict(local_epochs=5, batch_size=48, optimizer='sgd', learning_rate=.01,
+    momentum=.9, weight_decay=.0001, lr_scheduler='cosine')
+
+
+def runtime_config(base, data_dir):
+    """Pin the registered training recipe without editing the host's master config."""
+    cfg = copy.deepcopy(base)
+    cfg['dataset']['data_dir'] = str(data_dir)
+    cfg.setdefault('client', {}).update(CLIENT_CONTRACT)
+    return cfg
+
+
+def verify_client_contract(actual):
+    differences = {key: {'expected': CLIENT_CONTRACT.get(key), 'actual': actual.get(key),
+        'actual_type': type(actual.get(key)).__name__}
+        for key in sorted(set(CLIENT_CONTRACT) | set(actual))
+        if key not in actual or key not in CLIENT_CONTRACT or actual[key] != CLIENT_CONTRACT[key]}
+    if differences:
+        raise ValueError('H2 client training contract mismatch: ' + json.dumps(differences, sort_keys=True))
 
 
 def batches():
@@ -70,10 +89,16 @@ def prepare(root, data_dir=None):
     protocol = prior.read_json(PROTOCOL)
     assert protocol['training_units'] == 24 and protocol['eligibility_version'] == reference_eligibility.VERSION
     root.mkdir(parents=True, exist_ok=True)
-    cfg = yaml.safe_load((ROOT / 'config/config.yaml').read_text(encoding='utf-8'))
+    base = yaml.safe_load((ROOT / 'config/config.yaml').read_text(encoding='utf-8'))
     data_dir = str(Path(data_dir or ROOT / 'data').resolve())
-    cfg['dataset']['data_dir'] = data_dir
+    cfg = runtime_config(base, data_dir)
     (root / 'runtime_config.yaml').write_text(yaml.safe_dump(cfg, sort_keys=False), encoding='utf-8')
+    prior.write(root / 'preparation_client_parameters.json', {
+        'source': 'config/config.yaml', 'source_client': base.get('client', {}),
+        'registered_client': CLIENT_CONTRACT,
+        'reason': 'Use preregistered H2 training parameters independently of host defaults; GPU quotas are unchanged.'})
+    from config.config_loader import load_config
+    verify_client_contract(asdict(load_config(root / 'runtime_config.yaml').client))
     prior.write(root / 'attack.freeze.json', {'schema_version': 'RTCByzantineAttackFreezeV1',
         'implementation_source_sha256': attack_source_hash(), 'selection_policy': 'Fixed M2 reference repair and old-attack regression; no strength or sampling tuning',
         'attacks': protocol['attacks']})
@@ -92,8 +117,7 @@ def prepare(root, data_dir=None):
             config = asdict(periodic_attack._build_spec_config(s, args, root / name))
             custom = config['security']['defense']['custom_params']
             assert (custom['spectral_direction_mode'], custom['raw_norm_mode']) == MODES[s['defense']]
-            assert config['client'] == dict(local_epochs=5, batch_size=48, optimizer='sgd', learning_rate=.01,
-                momentum=.9, weight_decay=.0001, lr_scheduler='cosine')
+            verify_client_contract(config['client'])
             assert config['federation']['num_rounds'] == 60 and config['federation']['deterministic_client_training']
             assert config['model']['architecture'] == 'resnet18' and not config['model']['pretrained']
             configs[s['defense']] = config

@@ -87,6 +87,8 @@ M2-H1的24项已完成，质量通过但Sign-flip两个seed的ACC与恶意权重
 现准备M2-H2的24项（201开发/204新工程筛选；clean/Sign/Gaussian/LIE），等待人工执行。
 唯一改动为原R1c cap还须三分之二参考主体在上次参与未被原R1c/R2标记；未知历史有资格，成功聚合后更新状态。
 H1关闭，G1保留待修正；最新交接docs/RTC_H1_REVIEW_H2_HANDOFF_20260916.md。
+H2服务器dry-run曾因继承主配置client参数而失败；执行修正见docs/RTC_H2_DRY_RUN_CONFIG_FIX.md，
+必须使用新输出logs/rtc_reference_eligibility_configfix重新实机准备，旧锁/失败目录保持不变。
 H2结论明确后必须返回G1参考污染修复与组合验收，或提供明确替代证据；不放宽误伤、效用或恶意权重门。
 旧锁、阈值和失败记录保留，不原地修订旧实验；最终全部攻击/targeted/非IID范围不缩减。
 R2原始+0.2pp门未通过的记录保持不变；其固定多seed复核可与新预登记I12矩阵统一设计，避免无依据重复训练。

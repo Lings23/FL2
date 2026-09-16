@@ -1,5 +1,9 @@
 # H1闭环拒绝与H2参考主体资格人工交接
 
+后续执行修正：Linux原准备在client参数断言处失败。H2已显式固定预登记训练参数并增加差异说明，
+改用独立输出logs/rtc_reference_eligibility_configfix重新dry-run；最新命令见docs/RTC_H2_DRY_RUN_CONFIG_FIX.md。
+下方原Windows锁及默认目录命令只保留为历史交接；不得用修改后源码直接执行旧冻结目录。
+
 日期：2026-09-16。H1质量通过、候选拒绝；H2尚未运行。当前WAITING_FOR_MANUAL_EXPERIMENT。
 
 ## H1返回产物的独立核验

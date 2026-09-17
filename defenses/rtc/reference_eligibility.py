@@ -49,5 +49,22 @@ class ReferenceEligibility:
             raise ValueError('Invalid eligibility state')
         self._state = copy.deepcopy(state)
 
+    def transition_confirmed(self, principals, original, raw_rows, eligibility_rows):
+        """An abstained directional judgment is not fresh rejection evidence."""
+        if not (len(principals) == len(original) == len(raw_rows) == len(eligibility_rows)):
+            raise ValueError('Mismatched confirmed eligibility transition')
+        groups = {}
+        for pid, flag, raw, row in zip(map(str, principals), original, raw_rows, eligibility_rows):
+            reject, abstain = groups.get(pid, (False, False))
+            veto = bool(row['rtc_r1e_vetoed'])
+            groups[pid] = (reject or bool(raw['rtc_r2_flagged']) or bool(flag and not veto), abstain or veto)
+        state = dict(self._state)
+        for pid, (reject, abstain) in groups.items():
+            if reject:
+                state[pid] = True
+            elif not abstain:
+                state[pid] = False
+        return state
+
     def state_dict(self):
         return dict(self._state)

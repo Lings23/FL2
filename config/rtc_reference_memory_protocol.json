@@ -1,0 +1,107 @@
+{
+  "schema": "RTCReferenceMemoryProtocolV1",
+  "stage": "reference-memory",
+  "training_units": 32,
+  "reused_training_units": 0,
+  "seeds": [
+    201,
+    205
+  ],
+  "parent": "rtc_i12_eligibility_cap",
+  "parent_version": "rtc_i12_combined",
+  "candidate": "rtc_i12_eligibility_confirmed",
+  "design": {
+    "candidate": "M2-H2b",
+    "research_parent": "M2-H2 (unaccepted, retained)",
+    "accepted_parent": "M2",
+    "single_change": "On eligibility-vetoed R1c judgments keep previous principal memory, unless current R2 rejects; no unconfirmed judgment can newly blacklist a principal.",
+    "memory": "current-round read old state; simultaneous commit after successful aggregate; duplicate principal confirmed rejection wins, otherwise any abstention preserves prior state",
+    "threshold_changes": false,
+    "training_seeds": [
+      201,
+      205
+    ],
+    "batch_size": 96,
+    "ray_client_num_gpus": 0.1,
+    "training_units": 32,
+    "seed_roles": {
+      "201": "development failure recheck",
+      "205": "no local run artifacts before registration; engineering screen"
+    },
+    "risks": [
+      "A previously unflagged attacker can retain eligibility on abstention.",
+      "On-off and initially malicious majorities remain unresolved.",
+      "Non-IID and targeted safety remain unvalidated."
+    ]
+  },
+  "attacks": {
+    "sign_flip": {
+      "strength_level": "weak",
+      "parameters": {
+        "sign_flip_scale": 1.0
+      }
+    },
+    "gaussian_noise": {
+      "strength_level": "strong",
+      "parameters": {
+        "gaussian_noise_mean": 0.0,
+        "gaussian_noise_std": 0.1
+      }
+    },
+    "lie": {
+      "strength_level": "medium",
+      "parameters": {
+        "lie_z": 0.5,
+        "coordinated_attack_knowledge": "all_updates"
+      }
+    }
+  },
+  "gates": {
+    "candidate_benign_union_max": 0.01,
+    "accuracy_noninferiority_min": -0.002,
+    "malicious_weight_increase_max": 0.001,
+    "sign_seed201_benign_strict_reduction": true,
+    "preserve_H2_benign_flags": true,
+    "strict_seed201_malicious_veto_reduction_vs_H2": true,
+    "noninferiority_against": [
+      "M2",
+      "H2"
+    ]
+  },
+  "quality": {
+    "strict_pairing": true,
+    "complete_rounds": 61,
+    "clients_per_run": 600,
+    "budget_max": 1e-08,
+    "reconstruction_relative_max": 0.0001,
+    "cumulative_replay_max": 1e-09,
+    "eligibility_replay": "Exact votes, prior memory, veto, confirmed post-round state; numeric integral quorum serialization is allowed but fractions are rejected."
+  },
+  "windows": {
+    "clean": [
+      1,
+      60
+    ],
+    "attacks": [
+      11,
+      60
+    ]
+  },
+  "stop_rule": "All 32 units, no optional seeds or threshold search; reject if any utility, safety, memory or pairing gate fails.",
+  "pending": "LIE .25, Min-Max/Min-Sum, Random-v2, label reversal, DBA/scaling, final independent seeds/non-IID; no claim of broad superiority",
+  "retained_candidate": "M2-H2 safety gain retained for repair; M2-G1 remains retained for reference repair and reintegration after parent decision.",
+  "eligibility_version": "rtc_reference_eligibility.v1",
+  "accepted_parent": "rtc_i12_eligibility_observe",
+  "source_h2_lock": "65de3cb6680acff790ab3f4a97a6a0d34ac94cdcbd880c18d410c3a324fa436e",
+  "training": {
+    "local_epochs": 5,
+    "batch_size": 96,
+    "optimizer": "sgd",
+    "learning_rate": 0.01,
+    "momentum": 0.9,
+    "weight_decay": 0.0001,
+    "lr_scheduler": "cosine",
+    "num_rounds": 60,
+    "ray_client_num_gpus": 0.1
+  }
+}

@@ -1,0 +1,181 @@
+{
+  "project": {
+    "name": "FedSec",
+    "seed": 201,
+    "log_level": "INFO",
+    "checkpoint_dir": "checkpoints/",
+    "log_dir": "/home/jia_zhang/hqr/FL2/logs/rtc_reference_eligibility/sign_flip_seed201/raw"
+  },
+  "federation": {
+    "num_rounds": 60,
+    "num_clients": 20,
+    "clients_per_round": 10,
+    "min_fit_clients": 10,
+    "min_evaluate_clients": 3,
+    "min_available_clients": 20,
+    "max_client_samples": 0,
+    "pairing_mode": "strict",
+    "sampling_protocol": "principal_uniform",
+    "trial_plan_path": "/home/jia_zhang/hqr/FL2/logs/rtc_reference_eligibility/sign_flip_seed201/trial_plans/3b8fba155b912dd79a23.json",
+    "trial_plan_hash": "397449b8cf95bae1cf588eed8f26d0dac60a27c4ebcf84ebd47fb7115ae114f0",
+    "deterministic_client_training": true
+  },
+  "dataset": {
+    "name": "cifar10",
+    "data_dir": "/home/jia_zhang/hqr/FL2/data",
+    "download_source": "huggingface",
+    "partition": "iid",
+    "dirichlet_alpha": 0.5,
+    "num_classes": 10,
+    "val_split": 0.1
+  },
+  "model": {
+    "architecture": "resnet18",
+    "pretrained": false,
+    "num_classes": 10
+  },
+  "client": {
+    "local_epochs": 5,
+    "batch_size": 96,
+    "optimizer": "sgd",
+    "learning_rate": 0.01,
+    "momentum": 0.9,
+    "weight_decay": 0.0001,
+    "lr_scheduler": "cosine"
+  },
+  "strategy": {
+    "name": "fedavg",
+    "proximal_mu": 0.01,
+    "eta": 0.01,
+    "eta_l": 0.0316,
+    "beta_1": 0.9,
+    "beta_2": 0.99,
+    "tau": 0.001
+  },
+  "security": {
+    "attack": {
+      "enabled": true,
+      "type": "sign_flip",
+      "malicious_fraction": 0.3,
+      "backdoor_target_label": 0,
+      "trigger_pattern": "pixel",
+      "poison_fraction": 0.1,
+      "trigger_size": 3,
+      "trigger_value": 1.0,
+      "dba_trigger_num": 4,
+      "dba_pattern_mode": "paper_cifar_1x6_2x2",
+      "dba_trigger_value_mode": "cifar10_normalized_white",
+      "dba_gap": 3,
+      "dba_base_row": 0,
+      "dba_base_col": 0,
+      "dba_fragment_index": -1,
+      "dba_scale_update": true,
+      "dba_boost_factor": 10.0,
+      "model_replacement_boost_factor": 10.0,
+      "aggregation_aware_scaling": false,
+      "replacement_gain": 1.0,
+      "mpaf_lambda": 10.0,
+      "mpaf_base_scale": 0.0,
+      "mpaf_max_update_norm": 0.0,
+      "gaussian_noise_std": 0.1,
+      "gaussian_noise_mean": 0.0,
+      "random_noise_scale": 1.0,
+      "random_noise_distribution": "rademacher",
+      "sign_flip_scale": 1.0,
+      "lie_z": 0.0,
+      "coordinated_attack_knowledge": "all_updates",
+      "optimization_perturbation": "inverse_sign",
+      "optimization_gamma_init": 0.001,
+      "optimization_tolerance": 1e-06,
+      "optimization_max_iterations": 64,
+      "optimization_gamma_fraction": 1.0,
+      "optimization_gamma_max": 1000000.0,
+      "attack_start_round": 11,
+      "attack_end_round": -1,
+      "attack_on_rounds": 1,
+      "attack_off_rounds": 0,
+      "source_label": 5,
+      "target_label": 3,
+      "label_flip_poison_fraction": 1.0
+    },
+    "defense": {
+      "enabled": true,
+      "type": "rtc_full",
+      "krum_num_to_select": 1,
+      "krum_num_malicious": 3,
+      "trim_fraction": 0.3,
+      "root_dataset_size": 100,
+      "reserve_root_for_all": true,
+      "custom_params": {
+        "calibration_path": "/home/jia_zhang/hqr/FL2/config/rtc_v3_manifest_formal_iid_semantic.json",
+        "sketch_algorithm_version": "splitmix64_v1",
+        "implementation_phase": 6,
+        "principal_map": {
+          "0": "0",
+          "1": "1",
+          "2": "2",
+          "3": "3",
+          "4": "4",
+          "5": "5",
+          "6": "6",
+          "7": "7",
+          "8": "8",
+          "9": "9",
+          "10": "10",
+          "11": "11",
+          "12": "12",
+          "13": "13",
+          "14": "14",
+          "15": "15",
+          "16": "16",
+          "17": "17",
+          "18": "18",
+          "19": "19"
+        },
+        "principal_first_sampling_verified": true,
+        "parameter_roles": {},
+        "reference_eligibility_mode": "cap",
+        "spectral_direction_mode": "cap",
+        "spectral_direction_calibration": "config/rtc_r1c_pairwise_calibration.json",
+        "raw_norm_mode": "cap",
+        "raw_norm_calibration": "config/rtc_r2_raw_norm_calibration.json",
+        "semantic_intervention_risk_floor": 0.5,
+        "cumulative_q_cap_power": 1,
+        "anchor_recycle_fraction": 0.51,
+        "anchor_recycle_weighting": "accepted"
+      }
+    }
+  },
+  "evaluation": {
+    "metrics": [
+      "accuracy",
+      "loss",
+      "backdoor_asr"
+    ],
+    "eval_every_n_rounds": 1,
+    "save_best_model": false,
+    "max_test_samples": 0,
+    "early_stopping": {
+      "enabled": false,
+      "patience": 10,
+      "min_delta": 0.001
+    }
+  },
+  "differential_privacy": {
+    "enabled": false,
+    "noise_multiplier": 1.0,
+    "max_grad_norm": 1.0,
+    "delta": 1e-05
+  },
+  "ray": {
+    "client_num_cpus": 1.0,
+    "client_num_gpus": 0.1,
+    "force_cpu": false,
+    "log_to_driver": false,
+    "include_dashboard": false,
+    "object_store_memory_mb": 3072,
+    "min_available_memory_mb": 10240,
+    "memory_wait_seconds": 120.0,
+    "memory_poll_seconds": 2.0
+  }
+}

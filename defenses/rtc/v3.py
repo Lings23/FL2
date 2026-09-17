@@ -97,6 +97,7 @@ _ALLOWED_CUSTOM_PARAMS = {
     "reference_history_observe_only",
     "reference_guard_mode",
     "reference_eligibility_mode",
+    "reference_eligibility_memory",
 }
 
 
@@ -142,6 +143,11 @@ class RTCv3Defense(BaseDefense):
             raise ValueError('reference_history_observe_only must be boolean')
         self.reference_guard_mode=params.get('reference_guard_mode','off')
         self.reference_eligibility_mode=params.get('reference_eligibility_mode','off')
+        self.reference_eligibility_memory=params.get('reference_eligibility_memory','original')
+        if self.reference_eligibility_memory not in ('original','confirmed'):
+            raise ValueError('Invalid reference_eligibility_memory')
+        if self.reference_eligibility_memory=='confirmed' and self.reference_eligibility_mode!='cap':
+            raise ValueError('Confirmed eligibility memory requires cap mode')
         if self.reference_eligibility_mode not in ('off','observe','cap'):
             raise ValueError('Invalid reference_eligibility_mode')
         self._reference_eligibility=None
@@ -1498,7 +1504,11 @@ class RTCv3Defense(BaseDefense):
             client_q_cap = np.minimum(client_q_cap, [r['rtc_r2_q'] for r in raw_rows])
         raw_seconds = time.perf_counter() - raw_started
         if self._reference_eligibility is not None:
-            eligibility_next=self._reference_eligibility.transition(self._principal_ids,eligibility_original,raw_rows)
+            if self.reference_eligibility_memory=='confirmed':
+                eligibility_next=self._reference_eligibility.transition_confirmed(
+                    self._principal_ids,eligibility_original,raw_rows,eligibility_rows)
+            else:
+                eligibility_next=self._reference_eligibility.transition(self._principal_ids,eligibility_original,raw_rows)
         lower_rows=[]
         lower_transition=None
         lower_started=time.perf_counter()
@@ -2001,7 +2011,8 @@ class RTCv3Defense(BaseDefense):
                 row.update(extra)
             self._reference_eligibility.commit(eligibility_next)
             self.last_round_metrics.update(rtc_r1e_version=ELIGIBILITY_VERSION,
-                rtc_r1e_mode=self.reference_eligibility_mode,rtc_r1e_quorum_numerator=2,rtc_r1e_quorum_denominator=3)
+                rtc_r1e_mode=self.reference_eligibility_mode,rtc_r1e_quorum_numerator=2,rtc_r1e_quorum_denominator=3,
+                rtc_r1e_memory=self.reference_eligibility_memory)
         self._last_lower_tail_rows=lower_rows
         if lower_transition is not None:
             from defenses.rtc.lower_tail import VERSION as LOWER_VERSION, calibration_hash as lower_hash

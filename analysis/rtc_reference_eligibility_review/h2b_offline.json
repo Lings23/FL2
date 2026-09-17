@@ -1,0 +1,227 @@
+{
+  "rule": "Keep previous rejection state when R1c is vetoed, unless current R2 rejects. No threshold changes.",
+  "source_lock_sha256": "65de3cb6680acff790ab3f4a97a6a0d34ac94cdcbd880c18d410c3a324fa436e",
+  "closed_loop": false,
+  "results": [
+    {
+      "batch": "none_seed201",
+      "defense": "rtc_i12_eligibility_observe",
+      "counts": {
+        "good_original": 0,
+        "good_kept": 0,
+        "bad_original": 0,
+        "bad_kept": 0
+      },
+      "changed": []
+    },
+    {
+      "batch": "none_seed201",
+      "defense": "rtc_i12_eligibility_cap",
+      "counts": {
+        "good_original": 0,
+        "good_kept": 0,
+        "bad_original": 0,
+        "bad_kept": 0
+      },
+      "changed": []
+    },
+    {
+      "batch": "sign_flip_seed201",
+      "defense": "rtc_i12_eligibility_observe",
+      "counts": {
+        "good_original": 4,
+        "good_kept": 0,
+        "bad_original": 120,
+        "bad_kept": 120
+      },
+      "changed": [
+        {
+          "round": 52,
+          "cid": "6",
+          "attack_active": false,
+          "new_flag": false
+        },
+        {
+          "round": 52,
+          "cid": "11",
+          "attack_active": false,
+          "new_flag": false
+        },
+        {
+          "round": 52,
+          "cid": "12",
+          "attack_active": false,
+          "new_flag": false
+        },
+        {
+          "round": 52,
+          "cid": "19",
+          "attack_active": false,
+          "new_flag": false
+        }
+      ]
+    },
+    {
+      "batch": "sign_flip_seed201",
+      "defense": "rtc_i12_eligibility_cap",
+      "counts": {
+        "good_original": 4,
+        "good_kept": 0,
+        "bad_original": 122,
+        "bad_kept": 122
+      },
+      "changed": [
+        {
+          "round": 53,
+          "cid": "0",
+          "attack_active": true,
+          "new_flag": true
+        },
+        {
+          "round": 53,
+          "cid": "10",
+          "attack_active": true,
+          "new_flag": true
+        },
+        {
+          "round": 53,
+          "cid": "16",
+          "attack_active": true,
+          "new_flag": true
+        }
+      ]
+    },
+    {
+      "batch": "gaussian_noise_seed201",
+      "defense": "rtc_i12_eligibility_observe",
+      "counts": {
+        "good_original": 0,
+        "good_kept": 0,
+        "bad_original": 0,
+        "bad_kept": 0
+      },
+      "changed": []
+    },
+    {
+      "batch": "gaussian_noise_seed201",
+      "defense": "rtc_i12_eligibility_cap",
+      "counts": {
+        "good_original": 0,
+        "good_kept": 0,
+        "bad_original": 0,
+        "bad_kept": 0
+      },
+      "changed": []
+    },
+    {
+      "batch": "lie_seed201",
+      "defense": "rtc_i12_eligibility_observe",
+      "counts": {
+        "good_original": 0,
+        "good_kept": 0,
+        "bad_original": 0,
+        "bad_kept": 0
+      },
+      "changed": []
+    },
+    {
+      "batch": "lie_seed201",
+      "defense": "rtc_i12_eligibility_cap",
+      "counts": {
+        "good_original": 0,
+        "good_kept": 0,
+        "bad_original": 0,
+        "bad_kept": 0
+      },
+      "changed": []
+    },
+    {
+      "batch": "none_seed204",
+      "defense": "rtc_i12_eligibility_observe",
+      "counts": {
+        "good_original": 0,
+        "good_kept": 0,
+        "bad_original": 0,
+        "bad_kept": 0
+      },
+      "changed": []
+    },
+    {
+      "batch": "none_seed204",
+      "defense": "rtc_i12_eligibility_cap",
+      "counts": {
+        "good_original": 0,
+        "good_kept": 0,
+        "bad_original": 0,
+        "bad_kept": 0
+      },
+      "changed": []
+    },
+    {
+      "batch": "sign_flip_seed204",
+      "defense": "rtc_i12_eligibility_observe",
+      "counts": {
+        "good_original": 0,
+        "good_kept": 0,
+        "bad_original": 131,
+        "bad_kept": 131
+      },
+      "changed": []
+    },
+    {
+      "batch": "sign_flip_seed204",
+      "defense": "rtc_i12_eligibility_cap",
+      "counts": {
+        "good_original": 0,
+        "good_kept": 0,
+        "bad_original": 131,
+        "bad_kept": 131
+      },
+      "changed": []
+    },
+    {
+      "batch": "gaussian_noise_seed204",
+      "defense": "rtc_i12_eligibility_observe",
+      "counts": {
+        "good_original": 0,
+        "good_kept": 0,
+        "bad_original": 0,
+        "bad_kept": 0
+      },
+      "changed": []
+    },
+    {
+      "batch": "gaussian_noise_seed204",
+      "defense": "rtc_i12_eligibility_cap",
+      "counts": {
+        "good_original": 0,
+        "good_kept": 0,
+        "bad_original": 0,
+        "bad_kept": 0
+      },
+      "changed": []
+    },
+    {
+      "batch": "lie_seed204",
+      "defense": "rtc_i12_eligibility_observe",
+      "counts": {
+        "good_original": 0,
+        "good_kept": 0,
+        "bad_original": 0,
+        "bad_kept": 0
+      },
+      "changed": []
+    },
+    {
+      "batch": "lie_seed204",
+      "defense": "rtc_i12_eligibility_cap",
+      "counts": {
+        "good_original": 0,
+        "good_kept": 0,
+        "bad_original": 0,
+        "bad_kept": 0
+      },
+      "changed": []
+    }
+  ]
+}

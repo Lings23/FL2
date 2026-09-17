@@ -1,5 +1,57 @@
 # RTC 拜占庭鲁棒性目标状态
 
+## 2026-09-17 / 最新：指定目录H2 batch96验收，H2b等待人工实验
+
+用户指定logs/rtc_reference_eligibility；该目录现为Linux完成结果，旧Windows准备及configfix等待已过期。
+按24个合同run_id核验全部completed/exit0/last_round60，每项61轮/600客户端；92项runner门、250源码/52产物通过。
+独立14400条谱参考最大cosine差8.8913e-12；原机制、资格记忆、累计/预算、有限性和严格配对通过。
+CSV的2.0/3.0整数字段仅作数值无损导入，1920项有完整记录，拒绝小数与非有限值，原文件不改。
+审计analysis/rtc_reference_eligibility_review/verify.py、review.json；本地31门与服务器一致，29通过2失败。
+锁65de3cb6680acff790ab3f4a97a6a0d34ac94cdcbd880c18d410c3a324fa436e；
+源码zip 7638f68db62e8327bc54cae37e2691332b97d01fb458d966574202dd53402dca。
+
+实际全部batch96、每client GPU.1（用户训练前选择96），仅按本批父子配对，不混用旧batch48。
+Sign seed201 M2→H2：平均ACC80.1984→79.9716（-.2268pp，低于-.2门），最终84.20→84.52；
+恶意每轮平均权重5.3510%→5.6019%（+.2509pp，高于+.1门），误伤4/351→0/351。
+seed204 Sign及其他三条件父子无分叉。故H2不晋升，但消除误伤的实测价值保留。
+round52误伤被撤销后原标记仍写入历史，导致round53三条正确攻击拒绝被撤销；逐客户端来源已核查。
+M2-H2独立保留登记retained_for_memory_repair，302份审计输入及原配置/源码快照，包97097261字节，
+SHA256 5422938b0157db17f1fe66718ae3066891b7c565b78757d7211bcb8f5cd1e91f；大包仅本地、Git忽略。
+M2-G1原11项哈希再次一致，继续保留；batch96下不能直接继承其batch48校准泛化或收益结论。
+
+H2b只改reference_eligibility_memory=confirmed：资格弃权保留旧历史，当前R2拒绝优先；
+无弃权的正常判断照旧更新，同主体去重，成功聚合后同时提交。不调三分之二、R1c/R2、累计或回填。
+原H2保留作未接受研究对照，M2为主线对照，H2b为rtc_i12_eligibility_confirmed。
+旧轨迹重放保留四条误伤修复，恢复round53三条攻击拒绝；不是闭环ACC证明。
+32新单元、复用0：seeds201开发/205新工程筛选；每seed clean3/Sign4/Gaussian5/LIE.5四项，含M2/H2/H2b及挑战者。
+205注册前无本地运行产物，201抽样与本次原结果一致；固定batch96、GPU.1、60轮、本地5轮，其他训练/攻击参数不变。
+每seed各条件对M2和H2分别验收active/final差≥-.002、恶意平均权重增加≤.001；误伤≤1%且不超过H2，
+201 Sign相对M2误伤严格减少、相对H2撤销恶意标记数严格减少；全部完成性/质量/配对/预算及状态重放须通过。
+19项纯合成检查、PS语法、Bash -n、Windows32项默认dry-run通过；Linux实机dry-run待返回，未训练。
+新目录logs/rtc_reference_memory，274源码/60产物，训练产物0；缺结果时分析器正确拒绝。
+锁84f3ce261ec6a2f771cde455a5a5e51cd8f32ba31aeb6eb115df2ef7894a833f；
+源码zip ff19717b7479ba38bc232caeb9b0ffb26ada711585436fefc71a7df5cfbf5f03。
+完整参数/预登记门/手动Git及双平台命令docs/RTC_H2_REVIEW_H2B_HANDOFF_20260917.md。
+Windows人工启动：powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'D:\workspace\FL2\experiments\run_rtc_reference_memory.ps1' -Execute
+分析同入口改-Analyze；Linux仅交接实机dry-run。状态WAITING_FOR_MANUAL_EXPERIMENT。
+本回合progress，实际结果解除旧阻塞，完成验收/保留/诊断和H2b准备；新人工边界计数1，正式blocked须连续3回合。
+未自动训练、Git提交/推送或后台等待。H2b之后必须返回G1修复/集成；全攻击、targeted、新seed/非IID最终目标未完成。
+
+H2b首次自动续行复核（2026-09-17）：同一Windows锁84f3ce261ec6a2f771cde455a5a5e51cd8f32ba31aeb6eb115df2ef7894a833f保持。
+按32个计划run_id核验，status/rounds/raw文件均0，本机python/pythonw/raylet进程0；未返回Linux实机验证或训练产物。
+没有已确认属于本批的远端活动句柄，不推断外部服务器是否运行。上一回合为progress，本回合no progress，不属于verified wait。
+同一人工执行边界连续计数2，尚未达到正式blocked条件。保持WAITING_FOR_MANUAL_EXPERIMENT。
+未训练、后台等待、重复测试/dry-run或推进依赖H2b结果的新机制；M2-H2/M2-G1保留义务与完整目标不变。
+
+H2b第二次自动续行复核（2026-09-17）：同一Windows准备锁保持，32项计划status/rounds/raw文件仍各0，
+本机python/pythonw/raylet进程0，无已确认的远端活动句柄；不推断服务器训练是否运行。
+上一回合与本回合均为no progress，不属于verified wait。同一人工执行边界已连续3个目标回合成立，
+准备工作已完成且无可独立推进的必要工作，按宿主规则正式将目标标记blocked。
+阶段保持WAITING_FOR_MANUAL_EXPERIMENT，等待人工返回实机验证或实验产物；完整目标未完成。
+未训练、后台等待、重复测试/dry-run或推进下一候选。M2-H2及M2-G1继续保留，Git仍由用户手动提交/推送。
+
+---
+
 ## H2最新执行修复：Linux准备参数不一致，等待重新dry-run
 
 用户返回Linux prepare的client字典AssertionError；这是无训练准备失败，不是训练结果或候选判定。

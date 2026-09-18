@@ -96,5 +96,10 @@
     "rtc_r3_lower_tail_protocol.json": "c81af5b6a78c33163b25e99a8a8c856e38515017fdb5191195b03851977e55af",
     "rtc_v3_manifest_formal_iid_semantic.json": "1b7bac432da58ae3253ff0909414a56749c939373c0e4ac4cc73f1674f4be779",
     "server_lock.json": "a727c6d498f0e2f75c8ccbf022b0807623e51064df7cdc4a66d2f88865d3f966"
+  },
+  "followup_20260918": {
+    "h2b": "Accepted as scoped M3; original H2 rejection unchanged",
+    "evidence": "analysis/rtc_reference_memory_review/review.json",
+    "next_action": "G2 reference-filter repair: four new clean batch96 runs for calibration/holdout, then explicit paired G1 repair and reintegration"
   }
 }

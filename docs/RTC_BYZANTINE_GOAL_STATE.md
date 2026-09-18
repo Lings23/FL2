@@ -1,5 +1,57 @@
 # RTC 拜占庭鲁棒性目标状态
 
+## 2026-09-18 / 最新：H2b验收为M3，G1修复的clean校准等待人工实验
+
+本节优先于全部旧等待状态。logs/rtc_reference_memory已返回Linux完整结果。
+32/32 completed、exit0、last_round60，每项61轮/600客户端，98项runner门/62项候选门通过。
+257源码/60产物哈希核验；19200条独立谱参考最大cosine误差1.7439114e-11；原机制、预算、累计、confirmed记忆、配对重放通过。
+本地与服务器decision一致；原日志未改，2.0/3.0无需转换。审计analysis/rtc_reference_memory_review/verify.py、review.json。
+锁4a6c14a582d21e0cd7c85adac065d32583925ff7724c971d3355cb68f9071a8f；源码zip cf5846542529422bcb1ec0668c2cea49eac1c53ff34c890cddd61e30e42a3814。
+实际batch96/GPU.125（原登记.1，全部32项同等资源偏差，准备源码逐字核对差异已登记，不追改旧协议）。
+Sign201 M2/H2/H2b平均80.1984/79.9716/80.3582，最终84.20/84.52/85.06；良性误标4/0/0。
+每轮恶意权重5.3510/5.6019/5.2148%；H2误撤销攻击3→0，round53合格参考4/7→7/7，恢复三条q0。
+其他七个条件/seed配对无权重/sketch分叉。LIE仍落后MK，未解决慢攻击。
+接受H2b为M3=M2+confirmed资格记忆，范围仅IID/batch96/seeds201、205/clean、Sign、Gaussian、LIE.5；接受记录config/rtc_reference_memory_accepted.json。
+命名澄清：M3=M2+H2b机制（参考主体资格门及confirmed历史写入）；H2b实验已验证该集成组合。
+rtc_reference_memory是包含候选和各对照的实验批次/输出目录名，rtc_i12_eligibility_confirmed是组合运行别名，M3是验收后的主线版本名。
+已核对H2b候选与下一批M3的defense.custom_params：仅Linux/Windows校准绝对路径不同，所指校准JSON内容一致，其余参数完全一致，R1c/R2保持cap。
+本次只澄清文档，不改冻结运行别名或合同。
+M2-H2原失败及归档保留，修复后继为M3；M2-G1继续保留待参考修复与重新集成，17项快照哈希再次一致。
+
+G2固定修正只排除当轮R2已拒绝主体的低尾参考，仍需9个其他正质量主体，两次参与、无效重置不变。
+同主体拒绝优先，10人协议出现R2拒绝时低尾弃权；不改anchor，不使用攻击身份，不保证多数污染安全。
+16条旧轨迹按原阈值重放：Gaussian201候选8条误标→0，LIE201/202攻击标记125/141保持；不是闭环收益证明。
+来源与保留审计哈希一致，replay_g1_filter.py/g1_filter_replay.json保存可重放证据。
+
+新阶段G2-clean-calibration，仅4项、复用0：clean106校准、107留出，每seed M3/只读低尾观察各一项。
+注册前logs无相应seed训练文件；父子只差只读观测，实际G2 cap未接入训练。
+batch96、GPU.125、60轮、本地5epoch、SGD lr.01/momentum.9/decay.0001/cosine，CPU1/objectstore3072MiB/可用10240MiB/等待120s/重试0。
+维持全部M3参数；质量门及配对通过后，要求ACC/loss/权重/聚合sketch一致。
+仅clean106的600条有效过滤后比值最小值作新阈值；严格低于、连续两次；107留出600条有效，新增/联合误标各≤1%，失败不调参。
+本批calibration_accepted与candidate_accepted分开，后者固定false；之后另行预登记M3/G1/G2攻击闭环与安全回归。
+21项纯合成检查通过，增加随机流一致性后5项G2检查再通过；PS语法/Windows4项默认dry-run/Bash -n与LF通过。
+本地281源码/14产物，status/raw0，缺产物分析器正确拒绝；Linux实际dry-run待返回。未训练。
+锁fc361b75bbc245680afa1be9ac1184a396582ef29c69930cc1a46122ecffbe36；源码zip454907af4a910702c25df6b5ca42cb86eaeeee93ee86038df3c72de94822f8e4。
+输出logs/rtc_g2_clean_calibration；详细参数/门/手动Git/双平台命令docs/RTC_H2B_REVIEW_G2_CALIBRATION_HANDOFF_20260918.md。
+Windows启动：powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'D:\workspace\FL2\experiments\run_rtc_g2_clean_calibration.ps1' -Execute；分析改-Analyze。
+Linux先执行已交接的--python/--data-dir无训练实机dry-run，返回后再交接训练。原实验不重跑。
+阶段WAITING_FOR_MANUAL_EXPERIMENT；本回合progress，旧结果解除阻塞并完成M3验收/G1修复诊断/新校准准备。
+新人工边界连续计数1，按宿主规则尚不正式blocked。未自动Git提交/推送、训练或后台等待。
+全部攻击、targeted、非IID、R4/R5及最终报告范围保持未完成。
+
+G2首次自动续行复核（2026-09-18）：本地仍是Windows准备锁fc361b75bbc245680afa1be9ac1184a396582ef29c69930cc1a46122ecffbe36。
+按4个合同run_id逐项核验，status/rounds/raw均不存在，analysis/decision.json未生成；本机python/pythonw/raylet进程0。
+没有已确认的远端活动句柄，不推断服务器是否正在执行。上一回合为progress，本回合no progress，不属于verified wait。
+同一人工执行边界连续计数2，未达正式blocked条件；保持WAITING_FOR_MANUAL_EXPERIMENT。
+未训练、后台等待、重跑测试/dry-run或推进依赖校准结果的新候选；等待Linux实机验证或人工实验产物返回。
+
+G2第二次自动续行复核（2026-09-18）：同一Windows准备锁保持，4个计划run的status/rounds/raw仍各0，分析结果未生成。
+本机python/pythonw/raylet进程0，无已确认的远端活动句柄；不推断远端执行状态。上一回合与本回合均为no progress，不属于verified wait。
+同一人工实验阻塞连续三个目标回合成立，准备工作已完成，没有不依赖返回产物的必要工作；按宿主规则将目标正式标记blocked。
+阶段保持WAITING_FOR_MANUAL_EXPERIMENT，完整目标未完成；未训练、后台等待、重复测试/dry-run或推进下一候选。
+
+---
+
 ## 2026-09-17 / 最新：指定目录H2 batch96验收，H2b等待人工实验
 
 用户指定logs/rtc_reference_eligibility；该目录现为Linux完成结果，旧Windows准备及configfix等待已过期。

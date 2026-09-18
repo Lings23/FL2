@@ -1,0 +1,152 @@
+{
+  "rule": "Exclude current R2 rejected principals; >=9 other eligible peers; invalid resets; two visits; original threshold unchanged",
+  "threshold": 0.8738694595117251,
+  "closed_loop": false,
+  "threshold_fitted": false,
+  "runs": [
+    {
+      "path": "logs/rtc_r3_lower_tail/gaussian_noise_seed201/raw/gaussian_noise__continuous_1_0__m0.3__s201__rtc_i12_lower_cap__iid__p0.50__b10__38f9c836_clients.csv",
+      "sha256": "5a5694c5350a67a69c2b795e94eb1fe42ef72ec578916767d872555acaa8f28b",
+      "old_good": 8,
+      "old_bad": 0,
+      "filtered_good": 0,
+      "filtered_bad": 0,
+      "abstained_records": 490
+    },
+    {
+      "path": "logs/rtc_r3_lower_tail/gaussian_noise_seed201/raw/gaussian_noise__continuous_1_0__m0.3__s201__rtc_i12_lower_observe__iid__p0.50__b10__f8e9f882_clients.csv",
+      "sha256": "d6319d1364d775054efc5479f43500a2a05a62872dcf5f6d6428a32ea18089ec",
+      "old_good": 10,
+      "old_bad": 0,
+      "filtered_good": 0,
+      "filtered_bad": 0,
+      "abstained_records": 490
+    },
+    {
+      "path": "logs/rtc_r3_lower_tail/gaussian_noise_seed202/raw/gaussian_noise__continuous_1_0__m0.3__s202__rtc_i12_lower_cap__iid__p0.50__b10__dc74e0ff_clients.csv",
+      "sha256": "9ea85341971d4b036e6e108d118992f5220d3b135b445fa5775e33c6ae88ea1b",
+      "old_good": 1,
+      "old_bad": 0,
+      "filtered_good": 0,
+      "filtered_bad": 0,
+      "abstained_records": 500
+    },
+    {
+      "path": "logs/rtc_r3_lower_tail/gaussian_noise_seed202/raw/gaussian_noise__continuous_1_0__m0.3__s202__rtc_i12_lower_observe__iid__p0.50__b10__d086ba9d_clients.csv",
+      "sha256": "f3e93369271cd81e2e067dd15aa54da247c5b36c94b2de5c424d096c39c2dc66",
+      "old_good": 1,
+      "old_bad": 0,
+      "filtered_good": 0,
+      "filtered_bad": 0,
+      "abstained_records": 500
+    },
+    {
+      "path": "logs/rtc_r3_lower_tail/lie_seed201/raw/lie__continuous_1_0__m0.3__s201__rtc_i12_lower_cap__iid__p0.50__b10__82ae79f9_clients.csv",
+      "sha256": "b09d01331ddf88ff7a8e7c9f30ed65b30e675f4f6c48852cb943160555646565",
+      "old_good": 1,
+      "old_bad": 125,
+      "filtered_good": 1,
+      "filtered_bad": 125,
+      "abstained_records": 25
+    },
+    {
+      "path": "logs/rtc_r3_lower_tail/lie_seed201/raw/lie__continuous_1_0__m0.3__s201__rtc_i12_lower_observe__iid__p0.50__b10__def67fee_clients.csv",
+      "sha256": "5cf3d1f1e5d009b4fe9b7e8d41412dcf5710d5c90b71f9377036e1894f6aa44a",
+      "old_good": 1,
+      "old_bad": 125,
+      "filtered_good": 1,
+      "filtered_bad": 125,
+      "abstained_records": 25
+    },
+    {
+      "path": "logs/rtc_r3_lower_tail/lie_seed202/raw/lie__continuous_1_0__m0.3__s202__rtc_i12_lower_cap__iid__p0.50__b10__20175ea6_clients.csv",
+      "sha256": "2c748a208cb97459acfdd23a41c2266914b06f037cd7f264b47816274d5d5e45",
+      "old_good": 0,
+      "old_bad": 141,
+      "filtered_good": 0,
+      "filtered_bad": 141,
+      "abstained_records": 15
+    },
+    {
+      "path": "logs/rtc_r3_lower_tail/lie_seed202/raw/lie__continuous_1_0__m0.3__s202__rtc_i12_lower_observe__iid__p0.50__b10__7e9028b8_clients.csv",
+      "sha256": "85e67229175cc08e5c52519651ad9903e729cdd863afee5c51eeadc856b2d85e",
+      "old_good": 0,
+      "old_bad": 141,
+      "filtered_good": 0,
+      "filtered_bad": 141,
+      "abstained_records": 15
+    },
+    {
+      "path": "logs/rtc_r3_lower_tail/none_seed201/raw/none__continuous_1_0__m0.3__s201__rtc_i12_lower_cap__iid__p0.50__b10__8ba57492_clients.csv",
+      "sha256": "d62673ecb71a783511c0b785531c3ca483d5236914b4e9dd3271ad11b810a527",
+      "old_good": 0,
+      "old_bad": 0,
+      "filtered_good": 0,
+      "filtered_bad": 0,
+      "abstained_records": 0
+    },
+    {
+      "path": "logs/rtc_r3_lower_tail/none_seed201/raw/none__continuous_1_0__m0.3__s201__rtc_i12_lower_observe__iid__p0.50__b10__76fd9e0e_clients.csv",
+      "sha256": "d62673ecb71a783511c0b785531c3ca483d5236914b4e9dd3271ad11b810a527",
+      "old_good": 0,
+      "old_bad": 0,
+      "filtered_good": 0,
+      "filtered_bad": 0,
+      "abstained_records": 0
+    },
+    {
+      "path": "logs/rtc_r3_lower_tail/none_seed202/raw/none__continuous_1_0__m0.3__s202__rtc_i12_lower_cap__iid__p0.50__b10__b1df17ff_clients.csv",
+      "sha256": "f7aebd8955611f96dc86d6e8560ca2b21cb0305b6d3ac97862c5afaa0fea3f69",
+      "old_good": 1,
+      "old_bad": 0,
+      "filtered_good": 1,
+      "filtered_bad": 0,
+      "abstained_records": 0
+    },
+    {
+      "path": "logs/rtc_r3_lower_tail/none_seed202/raw/none__continuous_1_0__m0.3__s202__rtc_i12_lower_observe__iid__p0.50__b10__b786026d_clients.csv",
+      "sha256": "d5cd9a235de0c1414bb0136003b8fb2972a21226176063081337247d2bdfec85",
+      "old_good": 2,
+      "old_bad": 0,
+      "filtered_good": 2,
+      "filtered_bad": 0,
+      "abstained_records": 0
+    },
+    {
+      "path": "logs/rtc_r3_lower_tail/sign_flip_seed201/raw/sign_flip__continuous_1_0__m0.3__s201__rtc_i12_lower_cap__iid__p0.50__b10__0e668411_clients.csv",
+      "sha256": "97da0169da1afb3de45445f290e4ee8b87e75b3d665c44512049b836a8ee1eb8",
+      "old_good": 1,
+      "old_bad": 0,
+      "filtered_good": 1,
+      "filtered_bad": 0,
+      "abstained_records": 0
+    },
+    {
+      "path": "logs/rtc_r3_lower_tail/sign_flip_seed201/raw/sign_flip__continuous_1_0__m0.3__s201__rtc_i12_lower_observe__iid__p0.50__b10__1abe4cf9_clients.csv",
+      "sha256": "2f6810f8626dc15ba23c5fca06ab689aef5eb9d18f9be2079d1747ea6aa71ee8",
+      "old_good": 1,
+      "old_bad": 0,
+      "filtered_good": 1,
+      "filtered_bad": 0,
+      "abstained_records": 0
+    },
+    {
+      "path": "logs/rtc_r3_lower_tail/sign_flip_seed202/raw/sign_flip__continuous_1_0__m0.3__s202__rtc_i12_lower_cap__iid__p0.50__b10__b915e95e_clients.csv",
+      "sha256": "48162f5dbb9f40ac695db984ef56b54122af4ca18c1edb5082738c5c1300b5c3",
+      "old_good": 0,
+      "old_bad": 0,
+      "filtered_good": 0,
+      "filtered_bad": 0,
+      "abstained_records": 0
+    },
+    {
+      "path": "logs/rtc_r3_lower_tail/sign_flip_seed202/raw/sign_flip__continuous_1_0__m0.3__s202__rtc_i12_lower_observe__iid__p0.50__b10__a1814d9c_clients.csv",
+      "sha256": "48162f5dbb9f40ac695db984ef56b54122af4ca18c1edb5082738c5c1300b5c3",
+      "old_good": 0,
+      "old_bad": 0,
+      "filtered_good": 0,
+      "filtered_bad": 0,
+      "abstained_records": 0
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "schema": "RTCG2CleanCalibrationProtocolV1",
+  "stage": "G2-clean-calibration",
+  "training_units": 4,
+  "reused_training_units": 0,
+  "seeds": [
+    106,
+    107
+  ],
+  "seed_roles": {
+    "106": "clean calibration only",
+    "107": "fixed clean holdout; never retune"
+  },
+  "accepted_parent": "M3 / rtc_i12_eligibility_confirmed",
+  "source_parent_lock": "4a6c14a582d21e0cd7c85adac065d32583925ff7724c971d3355cb68f9071a8f",
+  "attacks": {},
+  "training": {
+    "batch_size": 96,
+    "local_epochs": 5,
+    "num_rounds": 60,
+    "ray_client_num_gpus": 0.125
+  },
+  "design": {
+    "single_change": "M3 with inert G1 residual observer; paired M3 proves unchanged trajectory",
+    "future_candidate": "G2 excludes current R2 rejected principals from G1 nominal-positive peer references; retain >=9 other principals, two visits, invalid resets, q0. No attack identities.",
+    "threshold_rule": "minimum finite valid ratio from clean106 only; strict ratio<threshold; holdout107 lower/union flag rate<=.01",
+    "no_attack_threshold_fitting": true,
+    "old_threshold": "Only used by inert observer; new threshold from clean106",
+    "old_G1_retained": true
+  },
+  "quality": {
+    "complete_rounds": 61,
+    "clients_per_run": 600,
+    "strict_pairing": true,
+    "budget_max": 1e-08,
+    "reconstruction_relative_max": 0.0001,
+    "cumulative_replay_max": 1e-09,
+    "trajectory": "identical server ACC/loss, client weights and aggregate sketch; ignore timing"
+  },
+  "stop_rule": "All four complete; any quality/observer/holdout failure stops, no retuning or automatic attack experiment",
+  "pending": "This only qualifies clean calibration; future M3/G1/G2 LIE and safety integration is separate, manually run. All final attacks and nonIID remain."
+}

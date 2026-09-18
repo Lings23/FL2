@@ -1,0 +1,31 @@
+{
+  "schema": "RTCAcceptedIntegratedVersionV1",
+  "version": "M3",
+  "parent": "M2",
+  "candidate": "rtc_i12_eligibility_confirmed",
+  "candidate_accepted": true,
+  "quality_accepted": true,
+  "source_lock_sha256": "4a6c14a582d21e0cd7c85adac065d32583925ff7724c971d3355cb68f9071a8f",
+  "source_archive_sha256": "cf5846542529422bcb1ec0668c2cea49eac1c53ff34c890cddd61e30e42a3814",
+  "review_sha256": "b41efe9d49e1aadefeb87fc4dfc0b938a5a9c05b78ea410cd22fce9f84bf1efe",
+  "scope": "IID CIFAR10 ResNet18 batch96 seeds201/205; clean/Sign-flip/Gaussian/LIE .5; GPU quota .125/client",
+  "protocol_deviations": [
+    {
+      "field": "ray_client_num_gpus",
+      "registered": 0.1,
+      "actual": 0.125,
+      "scope": "all 32 resolved and raw configs; preparation source difference only; no pooled old runs"
+    }
+  ],
+  "mechanisms": [
+    "R1c",
+    "R2",
+    "reference eligibility with confirmed memory",
+    "existing cumulative and .51 accepted recycle"
+  ],
+  "pending": "LIE .25, Min-Max/Min-Sum, Random-v2, label reversal, DBA/scaling, final independent seeds/non-IID; no claim of broad superiority",
+  "retained_candidates": [
+    "M2-G1: repair and reintegration next",
+    "M2-H2: original rejected, repaired successor M3 accepted in stated scope"
+  ]
+}

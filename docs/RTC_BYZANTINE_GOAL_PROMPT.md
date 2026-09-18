@@ -210,3 +210,18 @@ update_goal(status="blocked")。不得用同一回合重复检查、sleep、伪�
 
 现在从读取权威文件和核对当前真实状态开始。完成已授权的准备工作；到达第一批需要真实
 实验的边界时，输出真实脚本执行代码，立即等待我手动执行，并按系统规则进入blocked。
+
+
+## 2026-09-18 最新衔接（优先于旧H2b等待记录）
+
+H2b服务器32项完整，98质量门/62候选门及独立重放通过，接受为限定范围M3；
+Sign201误伤4→0、对M2平均ACC+.1598pp/最终+.86pp，原H2历史误写入导致的三条恶意放行修复。
+实际batch96/GPU.125，资源偏差已登记；其余七个条件/seed配对轨迹不变，不宣称非IID/targeted泛化。
+接受记录config/rtc_reference_memory_accepted.json；旧M2和拒绝H2记录保持。
+已回到M2-G1修复：G2只排除R2明确拒绝参考，保留9个其他主体/两次参与/无效重置，不改anchor。
+旧轨迹Gaussian201低尾误标8→0且LIE攻击标记保持，只用于诊断，不预测闭环收益。
+下一批4项clean106校准/107留出，各M3与只读观测两组，batch96/GPU.125；阈值仅来自106，107失败不调参。
+准备、合成测试、Windows dry-run通过，Linux实机dry-run待返回，状态WAITING_FOR_MANUAL_EXPERIMENT。
+详细交接docs/RTC_H2B_REVIEW_G2_CALIBRATION_HANDOFF_20260918.md。
+校准后必须做G1/G2重新集成和LIE/既有攻击回归；不跳过R3其他攻击、R4/R5及最终targeted/非IID范围。
+Git按用户后续“手动提交”指令，由用户执行，优先于本文早期自动同步条款。

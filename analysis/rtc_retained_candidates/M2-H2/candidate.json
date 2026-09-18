@@ -2,7 +2,7 @@
   "schema": "RTCRetainedCandidateV1",
   "candidate_id": "M2-H2",
   "display_name": "M2 + reference eligibility, original judgment memory",
-  "research_status": "retained_for_memory_repair",
+  "research_status": "retained_original_repaired_by_M3",
   "batch_acceptance": "rejected",
   "accepted_mainline": false,
   "quality_accepted": true,
@@ -26,7 +26,7 @@
     "malicious_weight_increase_pp": 0.2509198045588384,
     "malicious_weight_limit_pp": 0.1
   },
-  "next_action": "Repair only historical memory: vetoed R1c judgments preserve previous state unless R2 rejects; validate H2b against both M2 and retained H2. Do not silently discard H2 safety gain or M2-G1 LIE gain.",
+  "next_action": "Preserve original rejection and archive; confirmed-memory successor M3 accepted on IID batch96 seeds201/205. Return to G1 repair.",
   "audit_bundle": {
     "path": "analysis/rtc_retained_candidates/M2-H2/audit_bundle.zip",
     "sha256": "5422938b0157db17f1fe66718ae3066891b7c565b78757d7211bcb8f5cd1e91f",
@@ -41,5 +41,10 @@
     "parent_resolved_seed201.json": "cce59eeb549dc12e3e0fe419b6e006ed55561de9836fa7822f9f84a90c48e71c",
     "candidate_resolved_seed201.json": "39d488046d6b8ac1c6b03bd8fac1ea97d0bfb6f90b06cb43c7848381bdab40ec",
     "audit_bundle.zip": "5422938b0157db17f1fe66718ae3066891b7c565b78757d7211bcb8f5cd1e91f"
+  },
+  "followup_20260918": {
+    "h2b": "Accepted as scoped M3; original H2 rejection unchanged",
+    "evidence": "analysis/rtc_reference_memory_review/review.json",
+    "next_action": "G2 reference-filter repair: four new clean batch96 runs for calibration/holdout, then explicit paired G1 repair and reintegration"
   }
 }

@@ -1,0 +1,50 @@
+{
+  "schema": "RTCRetainedCandidateV1",
+  "candidate_id": "M3-G2",
+  "display_name": "M3 + raw-eligible persistent lower-tail cap",
+  "research_status": "retained_for_sign_flip_repair",
+  "batch_acceptance": "rejected",
+  "accepted_mainline": false,
+  "quality_accepted": true,
+  "scope": "IID batch96 seeds201/206 GPU.125; clean/Sign/Gaussian/LIE .5",
+  "source_lock_sha256": "bf4d343390e627c304af88d52f534930c22139bf1f6b100b1f079cac966745f6",
+  "source_archive_sha256": "66bba1c30f58dd0532b605d954a62761fe80a994c4cb161de99e9a0deb2357ed",
+  "benefit": {
+    "lie_mean_accuracy_gain_pp": 4.0156,
+    "lie_final_accuracy_gain_pp": 1.2,
+    "gaussian_benign_flags_G1_R": [
+      9,
+      6
+    ],
+    "gaussian_benign_flags_G2": [
+      0,
+      0
+    ]
+  },
+  "failed_checks": [
+    "sign_flip_seed201/candidate_benign_union",
+    "sign_flip_seed201/M3/active_accuracy"
+  ],
+  "failure": {
+    "sign_seed201_benign_flags": 7,
+    "benign_records": 351,
+    "active_accuracy_delta_pp": -0.2058,
+    "noninferiority_limit_pp": -0.2
+  },
+  "next_action": "Keep M3 accepted and unchanged. Per user request, run M3-only full-attack evaluation first; revisit Sign-flip safety before any G2 promotion.",
+  "snapshot_sha256": {
+    "server_lock.json": "bf4d343390e627c304af88d52f534930c22139bf1f6b100b1f079cac966745f6",
+    "review.json": "1f985cae258e2db1ef18f5244d3d191e2e8cbcb22e21df54fe021484302a9cca",
+    "protocol.json": "e7aac43e601e48ed81ac6c58a497d1d10dcb936075cc96d006fa2088287784de",
+    "calibration.json": "13d37f9b3576efa5309fe51b1bc1c0d5910d4b0b53a86ee16d1b08d31b2761bd",
+    "parent_resolved_seed201.json": "50981c8dff82334e3909fc14ba33ccfc675229b2c981fe704958b56c0a95f417",
+    "candidate_resolved_seed201.json": "e316fcb8fe9b7f7e92adad4f285fe1e6604c04d00f7013405b65d9cbcd5f7029"
+  },
+  "audit_bundle": {
+    "path": "analysis/rtc_retained_candidates/M3-G2/audit_bundle.zip",
+    "sha256": "97af66dbb993aaaef40dc91d2adf01ca7c64ccdd488fbb36ac7c9e60a86622cf",
+    "bytes": 132714068,
+    "files": 374,
+    "contents": "Frozen artifacts and JSON/CSV evidence; includes server source zip; local only, Git ignored"
+  }
+}

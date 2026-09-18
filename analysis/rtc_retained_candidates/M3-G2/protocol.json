@@ -1,0 +1,104 @@
+{
+  "schema": "RTCG2IntegrationProtocolV1",
+  "stage": "G2-integration",
+  "training_units": 32,
+  "reused_training_units": 0,
+  "seeds": [
+    201,
+    206
+  ],
+  "parent": "rtc_i12_g2_observe",
+  "parent_version": "rtc_i12_eligibility_confirmed",
+  "candidate": "rtc_i12_g2_cap",
+  "design": {
+    "candidate": "M3+G2",
+    "single_change_from_parent": "Enable fixed persistent lower-tail cap; filtered observer on M3 is inert",
+    "single_change_from_G1": "Exclude current R2-rejected principals from peer references; same clean106/107 threshold",
+    "min_peers": 9,
+    "required_visits": 2,
+    "cap_multiplier": 0,
+    "invalid_resets": true,
+    "missing_retains": true,
+    "duplicate_principal_rejection_wins": true,
+    "seed_roles": {
+      "201": "development failure/benefit recheck",
+      "206": "new engineering seed, no prior local artifact filename match"
+    },
+    "training_units": 32,
+    "batch_size": 96,
+    "ray_client_num_gpus": 0.125,
+    "old_G1": "Mechanism retained; this is a fresh batch96 clean-recalibrated control, not a rerun of historical batch48 threshold or its +5.1524pp claim"
+  },
+  "attacks": {
+    "sign_flip": {
+      "strength_level": "weak",
+      "parameters": {
+        "sign_flip_scale": 1.0
+      }
+    },
+    "gaussian_noise": {
+      "strength_level": "strong",
+      "parameters": {
+        "gaussian_noise_mean": 0.0,
+        "gaussian_noise_std": 0.1
+      }
+    },
+    "lie": {
+      "strength_level": "medium",
+      "parameters": {
+        "lie_z": 0.5,
+        "coordinated_attack_knowledge": "all_updates"
+      }
+    }
+  },
+  "gates": {
+    "lie_active_gain_min": 0.01,
+    "lie_final_gain_min": 0.0,
+    "lie_malicious_weight_ratio_max": 0.8,
+    "other_active_final_gain_min": -0.002,
+    "other_malicious_weight_increase_max": 0.001,
+    "candidate_benign_union_max": 0.01,
+    "preserve_G1_benign_count": true,
+    "G1_active_final_noninferiority_min": -0.002,
+    "G1_malicious_weight_increase_max": 0.001
+  },
+  "quality": {
+    "strict_pairing": true,
+    "complete_rounds": 61,
+    "clients_per_run": 600,
+    "budget_max": 1e-08,
+    "reconstruction_relative_max": 0.0001,
+    "cumulative_replay_max": 1e-09,
+    "eligibility_replay": "Exact votes, prior memory, veto, confirmed post-round state; numeric integral quorum serialization is allowed but fractions are rejected.",
+    "lower_replay": "independent principal eligibility, LOO ratio/count, streak/reset, nominal cap and applied flags; finite values and exact integer numeric CSV parsing"
+  },
+  "windows": {
+    "clean": [
+      1,
+      60
+    ],
+    "attacks": [
+      11,
+      60
+    ]
+  },
+  "stop_rule": "All 32 units, every seed and gate; no optional stopping, threshold retuning or automatic reruns. Failed G2 does not erase M3 or retained G1.",
+  "pending": "LIE .25, Min-Max/Min-Sum, Random-v2, label reversal, DBA/scaling, final independent seeds/non-IID; no claim of broad superiority",
+  "retained_candidate": "M2-G1 evaluated as mechanism on M3 with new clean-only batch96 calibration; historical result remains unchanged. Original H2 rejection preserved; repaired H2b already in M3.",
+  "accepted_parent": "M3",
+  "training": {
+    "local_epochs": 5,
+    "batch_size": 96,
+    "optimizer": "sgd",
+    "learning_rate": 0.01,
+    "momentum": 0.9,
+    "weight_decay": 0.0001,
+    "lr_scheduler": "cosine",
+    "num_rounds": 60,
+    "ray_client_num_gpus": 0.125
+  },
+  "unfiltered_control": "rtc_i12_g1_recalibrated",
+  "source_clean_lock": "9b6cff62135446f7d4a48c8876d6bfa71e83bd08a957fada3e63a85c452f6f41",
+  "source_clean_review_sha256": "45787c14a2ec2da2947bc4dd317cb123d76a2b2dc289ad7e061f0e29f63f9f61",
+  "lower_calibration_hash": "da054e505f25268da9b7d29957101f66bc72def24189e25598d04073693ffafa"
+}

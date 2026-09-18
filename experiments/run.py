@@ -360,6 +360,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--seeds", "--seed", dest="seeds", default="")
     parser.add_argument(
+        "--byzantine-evaluation-only", action="store_true",
+        help="Fixed-strength evaluation only; permits explicitly unverified Random-v2, never a screened-strength claim",
+    )
+    parser.add_argument(
         "--malicious-fractions", "--malicious-fraction",
         dest="malicious_fractions", default="",
     )

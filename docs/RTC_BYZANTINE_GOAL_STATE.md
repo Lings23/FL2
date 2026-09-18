@@ -1,5 +1,39 @@
 # RTC 拜占庭鲁棒性目标状态
 
+## 2026-09-18 / 用户最新调整：冻结M3，仅RTC全攻击评估
+
+本节优先于此前G2等待/后续安排。G2集成32项Linux结果已独立复核：98质量门、271源码、60冻结产物、19200谱参考与机制重放通过。
+60候选门58通过；LIE对M3平均ACC +4.0156pp、最终+1.20pp，Gaussian低尾良性误标对G1-R从9/6降至0/0。
+Sign201良性7/351、平均ACC−.2058pp未通过，保持M3、不晋升M4。M3-G2独立快照与证据包落盘，G1/H2旧档案保持。
+
+按用户“仅跑RTC，不重跑已有单seed其他防御”的要求，下一批改为rtc_m3_all_attacks_seed42：12单元，唯一别名rtc_i12_eligibility_confirmed（M3=M2+H2b）。
+clean及全部10种canonical攻击，另补LIE .25；LIE .5、Sign1、Gaussian std.1、Random-v2 Rademacher scale10、Min-Max/Min-Sum、两种label flip、DBA/Scaling参数预先冻结。
+沿用旧Linux基线脚本seed42、batch96、GPU.125、60轮、IID20选10、mf.3、攻击11—60；只做描述性表，不把seed42称新留出或显著性证据。
+Random-v2本地没有已完成FedAvg强度验证，显式evaluation-only入口，参数状态unverified_evaluation_only；正式freeze入口仍拒绝未经验证的Random。不得据此声称强度已通过筛选，也不得混用v1旧结果。
+分析输出RTC-only CSV/Markdown，ACC均值/最终/末10轮；四类有客观ASR定义的攻击输出ASR均值/峰值/末10轮/最终，其他N/A。
+已有基线不自动合并：本地旧全攻击49份完成配置均batch48/GPU.25；对应batch96服务器基线尚未返回本地。返回后核对训练、seed、数据/初始化、TrialPlan、攻击实现与指标定义，再决定配对或历史对比标注。
+新批不包含其他防御、重新校准或G2；全部12项完成并通过质量门后才出完整RTC结果表，差结果仍保留。安全/效用是评估结果，不自动接受M3全范围或完成总目标。
+详细脚本与人工交接：docs/RTC_M3_ALL_ATTACKS_HANDOFF_20260918.md；协议config/rtc_m3_all_attacks_protocol.json。
+真实训练继续全部手动执行，Git继续手动提交/推送。G2修复、模块消融、非IID和独立多seed最终验证仍未完成。
+
+本批准备完成：9项M3+9项G2合成检查及7项Random证据检查通过；PS语法/Bash -n/Windows入口12项dry-run通过，Linux实际dry-run待用户执行。
+源码293/冻结产物63，训练文件0；缺失结果分析拒收。锁3b11a920d04b1178be4f59785a77905f4e7f416e6d0dd235a83034337584242b。
+状态WAITING_FOR_MANUAL_EXPERIMENT，本回合progress，新人工边界计数1；未训练、未自动Git同步、未推进后续实验。
+
+M3全攻击首次自动续行复核（2026-09-18）：Windows准备锁3b11a920d04b1178be4f59785a77905f4e7f416e6d0dd235a83034337584242b保持。
+按12个合同run_id检查，status/rounds/raw均无训练产物，analysis/decision.json不存在；未收到Linux结果或实机dry-run回执。
+上一回合属于progress；本回合没有改变下一行动的新证据，分类no progress，不是verified wait（没有已确认的远端活动句柄）。
+同一人工实验边界连续计数2，尚未达到正式blocked阈值，保持WAITING_FOR_MANUAL_EXPERIMENT。
+未启动训练、补跑、后台等待、重复测试/dry-run或推进后续阶段；等待用户手动执行并返回日志。
+
+M3全攻击第二次自动续行复核（2026-09-18）：同一Windows准备锁未变，12单元status/rounds/raw仍为0，decision未生成。
+上一回合和本回合均no progress；无已确认活动句柄，不推断服务器是否正在训练。
+同一人工实验阻塞累计连续3个目标回合，达到宿主blocked阈值；目标标记blocked，阶段保持WAITING_FOR_MANUAL_EXPERIMENT。
+后续依赖人工执行及返回真实产物；停止自动续行，不启动训练、补跑或后续阶段。总体目标尚未完成。
+
+---
+
+
 ## 2026-09-18 / 最新：G2 clean校准通过，32项G1/G2集成等待人工实验
 
 本节优先于旧G2 clean等待记录。logs/rtc_g2_clean_calibration现为Linux返回结果。

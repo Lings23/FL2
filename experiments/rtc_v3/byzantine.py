@@ -296,7 +296,7 @@ def _seeds(raw: str | Iterable[Any]) -> tuple[int, ...]:
     return tuple(int(value) for value in _csv(raw, ("42", "43", "44")))
 
 
-def _load_attack_freeze(path_value: str | Path, required_attacks=None) -> Mapping[str, Mapping[str, Any]]:
+def _load_attack_freeze(path_value: str | Path, required_attacks=None, *, evaluation_only=False) -> Mapping[str, Mapping[str, Any]]:
     path = Path(path_value).expanduser().resolve()
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("schema_version") != "RTCByzantineAttackFreezeV1":
@@ -313,7 +313,20 @@ def _load_attack_freeze(path_value: str | Path, required_attacks=None) -> Mappin
         raise ValueError("Attack freeze must contain an attacks mapping")
     if 'random_noise' in attacks and (required_attacks is None or 'random_noise' in required_attacks):
         from experiments.rtc_v3.random_noise_validation import validate_freeze_entry
-        validate_freeze_entry(attacks['random_noise'], path.parent)
+        entry = attacks['random_noise']
+        exploratory = entry.get('validation_status') == 'unverified_evaluation_only'
+        if exploratory and evaluation_only:
+            from experiments.rtc_v3.random_noise_validation import VERSION, SCOPE
+            params = entry.get('parameters', {})
+            if (payload.get('purpose') != 'fixed_strength_evaluation_only'
+                    or entry.get('attack_version') != VERSION or entry.get('scope') != SCOPE
+                    or entry.get('strength_level') != 'unverified'
+                    or params.get('random_noise_distribution') != 'rademacher'
+                    or not math.isfinite(float(params.get('random_noise_scale', math.nan)))
+                    or float(params['random_noise_scale']) <= 0):
+                raise ValueError('Invalid exploratory Random-v2 contract')
+        else:
+            validate_freeze_entry(entry, path.parent)
     return attacks
 
 
@@ -327,7 +340,8 @@ def build_matrix(args) -> list[dict[str, Any]]:
     if unknown_defenses:
         raise ValueError(f"Unsupported Byzantine defenses: {sorted(unknown_defenses)}")
     freeze_path = str(getattr(args, "byzantine_attack_freeze", "") or "").strip()
-    frozen = _load_attack_freeze(freeze_path, attacks) if freeze_path else None
+    frozen = _load_attack_freeze(freeze_path, attacks,
+        evaluation_only=bool(getattr(args, 'byzantine_evaluation_only', False))) if freeze_path else None
     if frozen is not None:
         missing_frozen = set(attacks).difference({"none"}).difference(frozen)
         if missing_frozen:
@@ -515,6 +529,9 @@ def build_matrix(args) -> list[dict[str, Any]]:
                     "trim_fraction": float(args.malicious_fraction),
                     **parameters,
                 }
+                if frozen_entry.get('validation_status') == 'unverified_evaluation_only':
+                    row['attack_parameter_status'] = 'unverified_evaluation_only'
+                    row['evaluation_scope'] = 'fixed_strength_only_no_screened_strength_claim'
                 rows.append(row)
     return rows
 

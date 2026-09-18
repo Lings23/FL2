@@ -1,0 +1,16 @@
+{
+  "training_units": 12,
+  "sources": 293,
+  "artifacts": 63,
+  "training_files": 0,
+  "missing_evidence_refused": true,
+  "lock_sha256": "3b11a920d04b1178be4f59785a77905f4e7f416e6d0dd235a83034337584242b",
+  "source_zip_sha256": "5897bb0bc9b4af13297b47b5cd4a9cb6f83b61334788ff09a69eeef8f0689743",
+  "tests": "9 M3 + 9 G2 synthetic passed; 7 additional Random freeze evidence tests passed",
+  "powershell_syntax": true,
+  "bash_syntax": true,
+  "linux_actual_dry_run": "pending user",
+  "defenses": [
+    "rtc_i12_eligibility_confirmed"
+  ]
+}

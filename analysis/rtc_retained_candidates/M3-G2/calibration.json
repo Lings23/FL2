@@ -1,0 +1,22 @@
+{
+  "version": "rtc_r3_lower_tail_persistence.v1",
+  "ratio_threshold": 0.8996827459271943,
+  "min_peers": 9,
+  "required_visits": 2,
+  "cap_multiplier": 0,
+  "provenance": {
+    "calibration_seed": 106,
+    "clean_validation_seed": 107,
+    "rule": "minimum clean106 valid ratio; strict lower tail; two consecutive participations; R2 rejected principals excluded; invalid resets",
+    "source_lock_sha256": "9b6cff62135446f7d4a48c8876d6bfa71e83bd08a957fada3e63a85c452f6f41",
+    "source_archive_sha256": "4c165b03de34eb29469e9704bc812610586a740fd029db316bcd0c84a6cf7037",
+    "source_review_sha256": "45787c14a2ec2da2947bc4dd317cb123d76a2b2dc289ad7e061f0e29f63f9f61",
+    "threshold_uses_attack_data": false,
+    "clean_validation_flag_rate": 0.0,
+    "clean_validation_records": 600,
+    "batch_size": 96,
+    "parent": "M3",
+    "reference_policy": "raw_eligible",
+    "unfiltered_control": "Same threshold for G1 control: all 1200 clean observations had no R2 rejects, so reference populations match"
+  }
+}

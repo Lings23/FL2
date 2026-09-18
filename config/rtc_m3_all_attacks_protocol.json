@@ -1,0 +1,245 @@
+{
+  "schema": "RTCM3AllAttacksEvaluationV1",
+  "stage": "M3-only-all-attacks",
+  "version": "M3",
+  "defense": "rtc_i12_eligibility_confirmed",
+  "seeds": [
+    42
+  ],
+  "training_units": 12,
+  "reused_training_units": 0,
+  "conditions": [
+    {
+      "name": "clean",
+      "attack": "none"
+    },
+    {
+      "name": "gaussian_noise",
+      "attack": "gaussian_noise"
+    },
+    {
+      "name": "random_noise_v2",
+      "attack": "random_noise"
+    },
+    {
+      "name": "sign_flip",
+      "attack": "sign_flip"
+    },
+    {
+      "name": "lie_z025",
+      "attack": "lie",
+      "parameters": {
+        "lie_z": 0.25,
+        "coordinated_attack_knowledge": "all_updates"
+      }
+    },
+    {
+      "name": "lie_z05",
+      "attack": "lie"
+    },
+    {
+      "name": "min_max",
+      "attack": "min_max"
+    },
+    {
+      "name": "min_sum",
+      "attack": "min_sum"
+    },
+    {
+      "name": "label_flip_targeted",
+      "attack": "label_flip_targeted"
+    },
+    {
+      "name": "label_flip_all_reverse",
+      "attack": "label_flip_all_reverse"
+    },
+    {
+      "name": "scaling_backdoor",
+      "attack": "scaling_backdoor"
+    },
+    {
+      "name": "dba",
+      "attack": "dba"
+    }
+  ],
+  "attacks": {
+    "gaussian_noise": {
+      "strength_level": "strong",
+      "parameters": {
+        "gaussian_noise_mean": 0.0,
+        "gaussian_noise_std": 0.1
+      }
+    },
+    "random_noise": {
+      "strength_level": "unverified",
+      "validation_status": "unverified_evaluation_only",
+      "parameters": {
+        "random_noise_scale": 10.0,
+        "random_noise_distribution": "rademacher"
+      },
+      "attack_version": "random_noise.trainable_rademacher_norm_matched.v2",
+      "scope": "trainable_parameters_only"
+    },
+    "sign_flip": {
+      "strength_level": "weak",
+      "parameters": {
+        "sign_flip_scale": 1.0
+      }
+    },
+    "lie": {
+      "strength_level": "medium",
+      "parameters": {
+        "lie_z": 0.5,
+        "coordinated_attack_knowledge": "all_updates"
+      }
+    },
+    "min_max": {
+      "strength_level": "strong",
+      "parameters": {
+        "coordinated_attack_knowledge": "all_updates",
+        "optimization_perturbation": "inverse_sign",
+        "optimization_gamma_init": 0.001,
+        "optimization_tolerance": 1e-06,
+        "optimization_max_iterations": 64,
+        "optimization_gamma_fraction": 1.0
+      }
+    },
+    "min_sum": {
+      "strength_level": "strong",
+      "parameters": {
+        "coordinated_attack_knowledge": "all_updates",
+        "optimization_perturbation": "inverse_sign",
+        "optimization_gamma_init": 0.001,
+        "optimization_tolerance": 1e-06,
+        "optimization_max_iterations": 64,
+        "optimization_gamma_fraction": 1.0
+      }
+    },
+    "scaling_backdoor": {
+      "strength_level": "strong",
+      "parameters": {
+        "aggregation_aware_scaling": true,
+        "replacement_gain": 1.0,
+        "poison_fraction": 0.3
+      }
+    },
+    "label_flip_all_reverse": {
+      "strength_level": "strong",
+      "parameters": {
+        "label_flip_poison_fraction": 1.0
+      }
+    },
+    "dba": {
+      "strength_level": "strong",
+      "parameters": {
+        "aggregation_aware_scaling": true,
+        "replacement_gain": 1.0,
+        "poison_fraction": 0.3,
+        "dba_scale_update": true,
+        "dba_pattern_mode": "paper_cifar_1x6_2x2",
+        "dba_trigger_value_mode": "cifar10_normalized_white"
+      }
+    },
+    "label_flip_targeted": {
+      "strength_level": "fixed",
+      "parameters": {
+        "label_flip_source_label": 5,
+        "label_flip_target_label": 3,
+        "label_flip_poison_fraction": 1.0
+      }
+    }
+  },
+  "accepted_custom_params": {
+    "calibration_path": "config/rtc_v3_manifest_formal_iid_semantic.json",
+    "sketch_algorithm_version": "splitmix64_v1",
+    "implementation_phase": 6,
+    "principal_map": {
+      "0": "0",
+      "1": "1",
+      "2": "2",
+      "3": "3",
+      "4": "4",
+      "5": "5",
+      "6": "6",
+      "7": "7",
+      "8": "8",
+      "9": "9",
+      "10": "10",
+      "11": "11",
+      "12": "12",
+      "13": "13",
+      "14": "14",
+      "15": "15",
+      "16": "16",
+      "17": "17",
+      "18": "18",
+      "19": "19"
+    },
+    "principal_first_sampling_verified": true,
+    "parameter_roles": {},
+    "reference_eligibility_mode": "cap",
+    "reference_eligibility_memory": "confirmed",
+    "spectral_direction_mode": "cap",
+    "spectral_direction_calibration": "config/rtc_r1c_pairwise_calibration.json",
+    "raw_norm_mode": "cap",
+    "raw_norm_calibration": "config/rtc_r2_raw_norm_calibration.json",
+    "semantic_intervention_risk_floor": 0.5,
+    "cumulative_q_cap_power": 1,
+    "anchor_recycle_fraction": 0.51,
+    "anchor_recycle_weighting": "accepted"
+  },
+  "training": {
+    "local_epochs": 5,
+    "batch_size": 96,
+    "optimizer": "sgd",
+    "learning_rate": 0.01,
+    "momentum": 0.9,
+    "weight_decay": 0.0001,
+    "lr_scheduler": "cosine"
+  },
+  "ray_client_num_gpus": 0.125,
+  "rounds": 60,
+  "num_clients": 20,
+  "participation_rate": 0.5,
+  "malicious_fraction": 0.3,
+  "partition": "iid",
+  "attack_start_round": 11,
+  "attack_end_round": 60,
+  "scope": "Single development seed42 descriptive evaluation, RTC only; no statistical superiority or all-attack acceptance claim",
+  "random_noise": "Fixed v2 Rademacher scale10; no completed local FedAvg strength screen. Exploratory only, never merged with v1.",
+  "metrics": {
+    "acc_active_rounds": [
+      11,
+      60
+    ],
+    "clean_rounds": [
+      1,
+      60
+    ],
+    "tail_rounds": [
+      51,
+      60
+    ],
+    "targeted": [
+      "label_flip_targeted",
+      "scaling_backdoor",
+      "dba",
+      "label_flip_all_reverse"
+    ],
+    "targeted_metrics": [
+      "ASR mean",
+      "ASR peak",
+      "ASR tail10",
+      "ASR final"
+    ]
+  },
+  "baseline_reuse": "No comparator training. Existing results can join only after config, seed, dataset, TrialPlan, initial model, attack implementation and evaluation contract audit; otherwise historical/unpaired or unavailable.",
+  "stop_rule": "All 12 units and quality gates; record poor outcomes too. No automatic reruns, threshold tuning or G2 promotion.",
+  "manual_execution_required": true,
+  "accepted_calibration_canonical_sha256": {
+    "config/rtc_v3_manifest_formal_iid_semantic.json": "1887876651fade7b9f870b3d8f597b6db850f5ef6e85038c5c92e13182ce9afc",
+    "config/rtc_r1c_pairwise_calibration.json": "c6445c68f295078b14466c361c20af4e5c5fbcb996ae7638077d830721f1b972",
+    "config/rtc_r2_raw_norm_calibration.json": "e4cddcf7699a051c0cde776f146196adb1a4c38c2476c05c286f77f56a489d12"
+  },
+  "accepted_parent_receipt_canonical_sha256": "6481ddf2b5fd57f4956b4bb65599a1994f3a6b6c6b46be8dcb004041339b909b"
+}

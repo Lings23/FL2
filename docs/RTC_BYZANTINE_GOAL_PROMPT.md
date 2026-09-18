@@ -225,3 +225,15 @@ Sign201误伤4→0、对M2平均ACC+.1598pp/最终+.86pp，原H2历史误写入�
 详细交接docs/RTC_H2B_REVIEW_G2_CALIBRATION_HANDOFF_20260918.md。
 校准后必须做G1/G2重新集成和LIE/既有攻击回归；不跳过R3其他攻击、R4/R5及最终targeted/非IID范围。
 Git按用户后续“手动提交”指令，由用户执行，优先于本文早期自动同步条款。
+
+
+## 2026-09-18 / clean校准返回后的最新衔接
+
+G2 clean106/107四项已验收，18质量门/264源码/14产物及配对不变性通过。
+仅106确定阈值0.8996827459271943，107留出0/600；G2算法仍未接受，M3不因校准通过晋升。
+下一批32项已准备：seeds201/206、clean/Sign/Gaussian/LIE.5；M3父对照/G1-R未过滤cap/G2过滤cap及MK/RFA。
+G1-R与G2使用同一新clean阈值，单独比较参考过滤；历史M2-G1 batch48收益、失败和参数归档不改。
+G2对M3需LIE平均+1pp/final不降/恶意权重≤80%，其他条件非劣及联合误标≤1%；还需保留G1-R效用/权重/误伤收益。
+详细预登记、资源batch96/GPU.125、双平台命令及手动Git见docs/RTC_G2_CLEAN_REVIEW_INTEGRATION_HANDOFF_20260918.md。
+本地测试及Windows dry-run完成，Linux实机dry-run待返回；WAITING_FOR_MANUAL_EXPERIMENT，禁止自动训练。
+M3完整继承M2+H2b；全攻击、targeted、R4/R5、独立seeds/非IID最终目标不缩减。

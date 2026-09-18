@@ -94,6 +94,7 @@ _ALLOWED_CUSTOM_PARAMS = {
     "temporal_residual_observe_only",
     "lower_tail_mode",
     "lower_tail_calibration",
+    "lower_tail_reference_policy",
     "reference_history_observe_only",
     "reference_guard_mode",
     "reference_eligibility_mode",
@@ -166,6 +167,12 @@ class RTCv3Defense(BaseDefense):
             from defenses.rtc.reference_history import ReferenceHistory
             self._reference_history=ReferenceHistory()
         self.lower_tail_mode=params.get('lower_tail_mode','off')
+        self.lower_tail_reference_policy=params.get('lower_tail_reference_policy','all')
+        if self.lower_tail_reference_policy not in ('all','raw_eligible'):
+            raise ValueError('Invalid lower_tail_reference_policy')
+        if self.lower_tail_reference_policy=='raw_eligible' and (
+            self.lower_tail_mode=='off' or params.get('raw_norm_mode')!='cap'):
+            raise ValueError('Filtered lower tail requires enabled lower tail and R2 cap')
         if self.lower_tail_mode not in ('off','observe','cap'):
             raise ValueError('Invalid lower_tail_mode')
         self._lower_tail=None
@@ -174,7 +181,11 @@ class RTCv3Defense(BaseDefense):
             from defenses.rtc.lower_tail import load_calibration, LowerTailEvidence
             if params.get('spectral_direction_mode','off')=='off':
                 raise ValueError('Lower tail requires explicit trainable metadata')
-            self._lower_tail=LowerTailEvidence(load_calibration(params['lower_tail_calibration']))
+            evidence_class=LowerTailEvidence
+            if self.lower_tail_reference_policy=='raw_eligible':
+                from defenses.rtc.filtered_lower_tail import FilteredLowerTailEvidence
+                evidence_class=FilteredLowerTailEvidence
+            self._lower_tail=evidence_class(load_calibration(params['lower_tail_calibration']))
         elif 'lower_tail_calibration' in params:
             raise ValueError('Lower-tail calibration requires enabled mode')
         self.spectral_direction_mode = params.get('spectral_direction_mode', 'off')
@@ -1516,7 +1527,9 @@ class RTCv3Defense(BaseDefense):
             from defenses.rtc.raw_norm import trainable_norms
             lower_rows,lower_transition=self._lower_tail.prepare(
                 trainable_norms(residual_arrays,[floating_indices.index(i) for i in self._spectral_trainable_indices]),
-                self._principal_ids,nominal,self.lower_tail_mode)
+                self._principal_ids,nominal,self.lower_tail_mode,
+                **({'raw_rejected':[bool(row['rtc_r2_flagged']) for row in raw_rows]}
+                   if self.lower_tail_reference_policy=='raw_eligible' else {}))
             for i,row in enumerate(lower_rows):
                 row['rtc_r3l_existing_q']=float(client_q_cap[i])
                 row['rtc_r3l_nominal_mass']=float(nominal[i])
@@ -2018,7 +2031,8 @@ class RTCv3Defense(BaseDefense):
             from defenses.rtc.lower_tail import VERSION as LOWER_VERSION, calibration_hash as lower_hash
             self._lower_tail.commit(lower_transition)
             self.last_round_metrics.update(rtc_r3l_version=LOWER_VERSION,rtc_r3l_mode=self.lower_tail_mode,
-                rtc_r3l_calibration_hash=lower_hash(self._lower_tail.calibration),rtc_r3l_seconds=lower_seconds)
+                rtc_r3l_calibration_hash=lower_hash(self._lower_tail.calibration),rtc_r3l_seconds=lower_seconds,
+                rtc_r3l_reference_policy=self.lower_tail_reference_policy)
         self._last_temporal_rows = []
         if self._temporal_observe:
             from defenses.rtc.temporal_observe import observe, metadata

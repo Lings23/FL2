@@ -1,5 +1,49 @@
 # RTC 拜占庭鲁棒性目标状态
 
+## 2026-09-18 / 最新：G2 clean校准通过，32项G1/G2集成等待人工实验
+
+本节优先于旧G2 clean等待记录。logs/rtc_g2_clean_calibration现为Linux返回结果。
+4/4 completed/exit0/last_round60，各61轮/600客户端，18项runner门、264源码/14产物全部通过。
+原M3机制/confirmed历史/预算/累计/配对重放通过；2400条独立谱参考最大cosine差2.2325891e-15。
+父对照与低尾observe逐轮ACC/loss、权重/sketch、fit及defense随机流一致；clean106平均/最终77.4788333/87.22%，107为77.5926667/86.78%。
+仅clean106的600条有效ratio最小值作阈值0.8996827459271943；独立范数计算差1.1e-16（主体加权均值舍入，容差1e-12）。
+clean107最小ratio0.9002906313990927，600条有效、低尾及联合误标0/600，留出三门通过；不使用攻击结果校准。
+quality/calibration accepted=true，candidate_accepted=false；校准合格不等于G2接受或M4晋升。
+服务器锁9b6cff62135446f7d4a48c8876d6bfa71e83bd08a957fada3e63a85c452f6f41，源码zip4c165b03de34eb29469e9704bc812610586a740fd029db316bcd0c84a6cf7037。
+审计analysis/rtc_g2_clean_review/verify.py、review.json；新校准config/rtc_g2_lower_tail_calibration.json；原产物不改。
+实际batch96/GPU.125符合该批合同，服务器路径/依赖同此前5090环境；旧REMOTE_L20路径不作为当前依据。
+
+新批次rtc_g2_integration：32新单元、复用0；seeds201开发/206新工程（注册前无本地训练文件匹配）。
+每seed clean3、Sign4、Gaussian5、LIE.5四项，含三RTC组及MK/RFA挑战者。
+M3父对照运行别名rtc_i12_g2_observe，仅增加只读过滤低尾观测；G1-R=rtc_i12_g1_recalibrated；唯一候选G2=rtc_i12_g2_cap。
+G2对父组仅observe→cap；对G1-R仅lower_tail_reference_policy all→raw_eligible；全配置严格核对。
+G1-R/G2共用新clean阈值，G1-R是旧机制的新batch96校准控制，不是历史batch48原阈值复现；M2-G1旧收益/失败/归档保留。
+M3=M2+H2b机制仍全部启用；G2只排除当前R2拒绝主体，保留9其他主体、两次参与、正常/无效重置、缺席保留、q0和成功聚合后提交。
+原R1c/R2/资格记忆、anchor、预算和累计不改；同主体拒绝优先，raw过滤配置要求R2 cap，标签不参与判断。
+
+协议config/rtc_g2_integration_protocol.json：每seed候选联合良性≤1%且条数≤G1-R；
+LIE对M3 active至少+1pp/final不降/恶意平均权重≤80%；clean/Sign/Gaussian效用差≥-.2pp、攻击恶意权重增≤.1pp；
+各条件对G1-R active/final差≥-.2pp、攻击恶意权重增≤.1pp；完整质量/配对/状态重放、budget1e-8/重构相对1e-4/累计1e-9。
+固定batch96、GPU.125、60轮/local5epoch、SGD .01/.9/.0001/cosine、IID20选10；mf.3、攻击11--60，Sign1/Gaussian std.1/LIEz.5。
+全部32项/各seed/各门必须通过，失败保留M3，禁止追加seed/调阈值/自动补跑。
+20项纯合成检查通过，包括实际聚合cap/预算/不变性、600行联合日志、伪造拒收、2.0整数兼容、原G1/H2b回归及手动保护。
+PS语法/Windows32项默认dry-run/Bash -n和LF通过；缺结果分析正确拒绝，未训练。Linux实际dry-run待返回。
+本地288源码/60产物，训练status/raw0；锁85fd8a5b25343d65b97740bed558a550f962dfc578072d106bd42d42d396e2e5，源码zipbe85aa72a78cb502190dc5ea7fff916f8e8e7216e3ab94eaccbf5ac1c28b2ae6。
+输出logs/rtc_g2_integration；详细交接docs/RTC_G2_CLEAN_REVIEW_INTEGRATION_HANDOFF_20260918.md。
+Windows启动：powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'D:\workspace\FL2\experiments\run_rtc_g2_integration.ps1' -Execute；分析改-Analyze。
+Linux先只执行交接的--python/--data-dir dry-run，实机结果通过后再交接训练；两平台二选一，不重复两套32项。
+M2-G1/M2-H2共17项快照哈希再次一致；G1正通过新控制组重新集成，H2旧拒绝保存且后继H2b已在M3。
+阶段WAITING_FOR_MANUAL_EXPERIMENT；本回合progress，真实产物解除旧阻塞并形成新交接，新人工边界计数1。
+未自动训练、Git提交/推送或后台等待；R3其他攻击、R4/R5、targeted、最终新seeds/非IID与报告尚未完成。
+
+G2集成首次自动续行复核（2026-09-18）：Windows准备锁85fd8a5b25343d65b97740bed558a550f962dfc578072d106bd42d42d396e2e5保持。
+按32个合同run_id检查，status/rounds/raw均0，analysis/decision.json未生成；本机python/pythonw/raylet进程0。
+无已确认的远端活动句柄，不推断服务器运行状态。上一回合progress，本回合no progress，不属于verified wait。
+同一人工实验边界连续计数2，未达正式blocked条件；阶段保持WAITING_FOR_MANUAL_EXPERIMENT。
+未训练、后台等待、重复测试/dry-run或推进依赖G2结果的下一阶段；等待人工返回实机验证或完整实验产物。
+
+---
+
 ## 2026-09-18 / 最新：H2b验收为M3，G1修复的clean校准等待人工实验
 
 本节优先于全部旧等待状态。logs/rtc_reference_memory已返回Linux完整结果。

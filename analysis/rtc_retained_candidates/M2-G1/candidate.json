@@ -101,5 +101,23 @@
     "h2b": "Accepted as scoped M3; original H2 rejection unchanged",
     "evidence": "analysis/rtc_reference_memory_review/review.json",
     "next_action": "G2 reference-filter repair: four new clean batch96 runs for calibration/holdout, then explicit paired G1 repair and reintegration"
+  },
+  "followup_g2_integration_20260918": {
+    "clean_calibration_accepted": true,
+    "calibration_seed": 106,
+    "holdout_seed": 107,
+    "batch_size": 96,
+    "threshold": 0.8996827459271943,
+    "holdout_flags": 0,
+    "holdout_records": 600,
+    "source_clean_lock": "9b6cff62135446f7d4a48c8876d6bfa71e83bd08a957fada3e63a85c452f6f41",
+    "next_batch": "logs/rtc_g2_integration",
+    "units": 32,
+    "seeds": [
+      201,
+      206
+    ],
+    "controls": "M3 observer, M3+G1 clean-recalibrated, M3+G2 filtered reference; original G1 historical record unchanged",
+    "candidate_accepted": false
   }
 }

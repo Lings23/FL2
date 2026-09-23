@@ -1,0 +1,28 @@
+{
+  "schema": "RTCM3MultiKrumSupplementV1",
+  "stage": "M3-MultiKrum-all-attacks",
+  "training_units": 12,
+  "reused_m3_units": 12,
+  "parent_lock_sha256": "350ed123c1b58df74efb2c8947bfce3beefd99cf98170971d57f5dfdd23af190",
+  "parent_sources_sha256": "f5f8ae948e79cf1cacea7c334a75c8068eb3dbfdf399fc7963880e79f4bd8435",
+  "defense": "rtc_i12_multikrum",
+  "krum_num_malicious": 3,
+  "krum_num_to_select": 5,
+  "matrix": "Exactly the 12 conditions, attack parameters, seed42 and batch96 training recipe in the hash-pinned M3 parent lock",
+  "scope": "Single development seed42, IID CIFAR10/ResNet18. A matched descriptive research comparison; no new RTC version, statistical superiority or final release acceptance.",
+  "acc_noninferiority_pp": 0.2,
+  "m3_benign_cap_limit": 0.01,
+  "checks": "Per condition: report mean/final/tail10 ACC, mean/peak/tail10/final ASR, M3-MK differences, malicious/benign weights, geometry and runtime. Flag ACC drops >0.2pp, any targeted ASR increase, and M3 benign cap rate >1%. These are prospective comparison annotations with M3 results already known, not retrospective M3 acceptance gates.",
+  "quality": "Every planned cell completed/exit0/round60; 61 unique rounds and 600 unique client rows; all runner and recomputed attack execution gates; exact source archive, configuration and same original environment; same TrialPlan/data/initial model/identities/client-fit streams. Replay R1/R2 and M3 confirmed-memory/cumulative/budgets; reconstruct ACC/label ASR; validate triggered ASR and MK five weights of 0.2.",
+  "stop_rule": "No extra seeds, attack tuning, automatic retries or baseline replacement. Incomplete/failed/orphan results stop before any remaining cells start. Completed validated cells may be skipped; no mid-round checkpoint resume.",
+  "manual_execution_required": true,
+  "limitations": [
+    "M3 outcome data were examined before this comparison protocol; seed42 is development evidence, not an independent holdout.",
+    "Known M3 Min-Sum/all-reverse benign-cap failures and targeted ASR spikes remain even if MK is worse.",
+    "Single-seed superiority does not establish multi-seed or non-IID generalization; final ablations and validation remain outstanding.",
+    "Random-v2 scale10 remains exploratory without a FedAvg strength screen.",
+    "Random participation can exceed f3 in a round; this is an empirical pressure comparison, not a Krum theoretical guarantee.",
+    "MK R1/R2 observers do not intervene. Observer flags are not MK false positives; discarded clients are not automatically malicious detections.",
+    "Triggered ASR has no exported per-image predictions; only denominator, validity and count consistency are independently checkable."
+  ]
+}

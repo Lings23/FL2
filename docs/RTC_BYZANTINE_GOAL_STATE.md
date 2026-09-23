@@ -1,5 +1,61 @@
 # RTC 拜占庭鲁棒性目标状态
 
+## 2026-09-23 / 最新：按用户要求补同源码Multi-Krum全攻击对照
+
+本节优先于09-19先修复机制的下一动作，以及09-18不新增其他防御的范围限制。用户要求先补一组全攻击Multi-Krum，评估M3发布定位。
+M3=M2+H2b已是限定范围主线；本批不是晋升M3或M4，不修改RTC，不启用G2，不自动扩大接受范围。
+前一回复仅重述已有对比表，分类no progress；本回合完成新比较控制器/协议/双平台入口/合成检查，分类progress。
+新训练12项，唯一rtc_i12_multikrum(f3/select5)，复用M3已完成12项；seed42/batch96/GPU.125及12条件/攻击参数完全继承。
+父锁350ed123c1b58df74efb2c8947bfce3beefd99cf98170971d57f5dfdd23af190；父源码zip f5f8ae948e79cf1cacea7c334a75c8068eb3dbfdf399fc7963880e79f4bd8435。
+从父zip的276份源码构造独立执行目录；不靠当前工作区源码近似替代。Linux运行前须同原Python3.11.16/Torch2.14.0+cu130/NumPy2.4.6/CUDA13/双5090环境。
+prepare重新重放M3完整原始证据；MK结果再验数据/初始化/TrialPlan/采样随机流等运行时配对。不得提前宣称未运行MK已严格配对。
+旧攻击hash包含OS路径分隔符；Windows仅生成preflight派生freeze，源码字节不变，Linux原hash独立重建；Windows训练环境不匹配则拒绝。
+19项合成/入口检查及PS/Bash语法通过。Windows最终dry-run结果和新锁hash见下方本机验证记录；Linux实际dry-run待用户返回。
+质量门及逐条件ACC非劣.2pp、ASR不增、M3良性cap≤1%比较检查已登记；已知M3两项误伤及targeted峰值保留，不能以MK更差抵消。
+M3结果已见，本批仅开发seed比较，不冒称盲测预注册、多seed显著性、全范围安全或最终目标完成。
+协议config/rtc_m3_multikrum_protocol.json；交接docs/RTC_M3_MULTIKRUM_HANDOFF_20260923.md。
+
+阶段WAITING_FOR_MANUAL_EXPERIMENT：先等待原服务器手动Linux dry-run回执，再核验后提供训练启动命令；新边界连续计数1，尚不正式blocked。
+本机唯一预检：powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'D:\workspace\FL2\experiments\run_rtc_m3_multikrum.ps1'。
+Linux仅验证：bash /home/jia_zhang/hqr/FL2/experiments/run_rtc_m3_multikrum.sh --python /home/jia_zhang/miniconda3/envs/fl2/bin/python3.11 --data-dir /home/jia_zhang/hqr/FL2/data --output /home/jia_zhang/hqr/FL2/logs/rtc_m3_multikrum_seed42。
+真实训练后分析：同Linux入口，--output保持原目录、去掉--data-dir并加入--analyze。
+恢复规则：只跳过已完成且复核通过单元，失败/不完整/孤立产物先拒绝；不自动补跑，不支持轮级续训。
+Git继续由用户手动提交/推送，具体命令在交接文档；不上传父大日志与源码zip，原服务器必须保留它们。
+M2-G1/M3-G2继续保留待修复，M2-H2原失败及M3后继保持；本批之后仍需处理R1误伤、targeted峰值、G2修复、最终非IID/独立seeds/消融。
+
+本机最终验证记录：Windows默认入口exit0，12份manifest/12份resolved、340冻结产物、96份父证据文件、父12项完整重放通过；新status/rounds/raw训练产物均0。
+新Windows预检锁SHA256：7ae4012d07851c29bf8b289b32c333fbc26bad077ca9c1f031c5faa1e857aca5；控制器SHA256：c65950d4e96d1d462fc72e218c5900b925dca0db706009498752a8784581e8f6。
+该Windows锁不可搬到Linux执行；Linux需自行生成同276源码字节、原Linux攻击hash的独立锁。
+
+---
+
+
+## 2026-09-19 / 最新：M3全攻击返回，结果表完成，原人工实验阻塞解除
+
+本节优先于旧M3等待记录。logs/rtc_m3_all_attacks_seed42已被Linux完整结果替换：12/12 completed、exit0、last_round60，服务器尚无analysis/decision。
+只读导入审计完成：119质量门、276源码/63产物、7200谱参考（最大cosine误差8.38912273e-15）、R1c/R2/confirmed历史/累计/预算核验通过。
+11项攻击执行门重算通过；732轮ACC、122轮标签ASR从混淆矩阵重算；后门122轮仅日志分母/有效标志一致性，缺逐图预测不能独立重算触发器ASR。
+服务器锁350ed123c1b58df74efb2c8947bfce3beefd99cf98170971d57f5dfdd23af190。2.0/3.0解析通过，未修改原日志或冻结训练入口。
+
+用户已指出两个既有基线目录，不重新跑其他防御：
+1. rtc_v3_seed42_dual5090_b96_signflip_v2的实际配置batch96/GPU.125，7攻击×7防御=49项；与M3训练/数据/初始化/TrialPlan/随机流匹配。
+2. rtc_v3_formal_all_attacks_two_seed_mf03的实际配置batch48/GPU.25；当前manifest47项完整结果独立列历史，seed46不混入seed42，5项失败或非manifest记录保留排除理由。
+第一批攻击contract相同但implementation hash不同；22旧源码恢复20份，旧attack_client.py/spec.py尚未恢复，主表仅作为跨源码版本描述性比较，不称严格优越性。
+Multi-Krum仅在batch48补充中，不能填入batch96对比列；Random旧v1/scale1与M3 v2/scale10不能做效果差值解释。
+
+M3：Sign平均78.5160%、LIE .5 75.0496%、Min-Max80.2050%、Min-Sum80.0718%；Scaling平均/峰值ASR2.0058/2.7667%，DBA2.4393/3.1889%。
+LIE两档各143条攻击更新均无R1/R2标记，仍是弱项；Gaussian135/135、Random-v2 157/157由R2约束、恶意权重0、良性误标0。
+新增风险：targeted标签翻转第39轮ASR83.8%（均值20.844%）；Min-Sum R1良性4/344=1.1628%、全反转12/344=3.4884%；不能扩大M3接受范围。
+质量通过与算法全范围接受分开；本批没有预注册版本升级判定，不追改M3既有接受记录，不晋升M4。
+
+已生成完整ACC/ASR对比表、CSV及来源审计：analysis/rtc_m3_all_attacks_review；报告docs/RTC_M3_ALL_ATTACKS_REVIEW_20260919.md。
+原WAITING_FOR_MANUAL_EXPERIMENT阻塞已由真实结果解除；本回合progress，目标仍active且未完成，不因缺少旧源码而阻塞其他可做的离线机制诊断。
+下一工作：先查Min-Sum/全反转R1误伤和targeted第39轮峰值，保留M3-G2的LIE收益及Sign失败，再预登记单一机制的RTC父子回归；本回合未创建下一训练批次。
+M2-G1、M2-H2、M3-G2归档均保持。禁止自动训练；Git仍手动提交/推送。独立多seed/非IID、消融、最终验收尚未完成。
+
+---
+
+
 ## 2026-09-18 / 用户最新调整：冻结M3，仅RTC全攻击评估
 
 本节优先于此前G2等待/后续安排。G2集成32项Linux结果已独立复核：98质量门、271源码、60冻结产物、19200谱参考与机制重放通过。

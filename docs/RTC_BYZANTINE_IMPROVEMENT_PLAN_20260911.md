@@ -419,3 +419,39 @@ Random-v2本地没有已完成FedAvg强度验证，显式evaluation-only入口�
 新批不包含其他防御、重新校准或G2；全部12项完成并通过质量门后才出完整RTC结果表，差结果仍保留。安全/效用是评估结果，不自动接受M3全范围或完成总目标。
 详细脚本与人工交接：docs/RTC_M3_ALL_ATTACKS_HANDOFF_20260918.md；协议config/rtc_m3_all_attacks_protocol.json。
 真实训练继续全部手动执行，Git继续手动提交/推送。G2修复、模块消融、非IID和独立多seed最终验证仍未完成。
+
+
+## 2026-09-19 / 最新：M3全攻击返回，结果表完成，原人工实验阻塞解除
+
+本节优先于旧M3等待记录。logs/rtc_m3_all_attacks_seed42已被Linux完整结果替换：12/12 completed、exit0、last_round60，服务器尚无analysis/decision。
+只读导入审计完成：119质量门、276源码/63产物、7200谱参考（最大cosine误差8.38912273e-15）、R1c/R2/confirmed历史/累计/预算核验通过。
+11项攻击执行门重算通过；732轮ACC、122轮标签ASR从混淆矩阵重算；后门122轮仅日志分母/有效标志一致性，缺逐图预测不能独立重算触发器ASR。
+服务器锁350ed123c1b58df74efb2c8947bfce3beefd99cf98170971d57f5dfdd23af190。2.0/3.0解析通过，未修改原日志或冻结训练入口。
+
+用户已指出两个既有基线目录，不重新跑其他防御：
+1. rtc_v3_seed42_dual5090_b96_signflip_v2的实际配置batch96/GPU.125，7攻击×7防御=49项；与M3训练/数据/初始化/TrialPlan/随机流匹配。
+2. rtc_v3_formal_all_attacks_two_seed_mf03的实际配置batch48/GPU.25；当前manifest47项完整结果独立列历史，seed46不混入seed42，5项失败或非manifest记录保留排除理由。
+第一批攻击contract相同但implementation hash不同；22旧源码恢复20份，旧attack_client.py/spec.py尚未恢复，主表仅作为跨源码版本描述性比较，不称严格优越性。
+Multi-Krum仅在batch48补充中，不能填入batch96对比列；Random旧v1/scale1与M3 v2/scale10不能做效果差值解释。
+
+M3：Sign平均78.5160%、LIE .5 75.0496%、Min-Max80.2050%、Min-Sum80.0718%；Scaling平均/峰值ASR2.0058/2.7667%，DBA2.4393/3.1889%。
+LIE两档各143条攻击更新均无R1/R2标记，仍是弱项；Gaussian135/135、Random-v2 157/157由R2约束、恶意权重0、良性误标0。
+新增风险：targeted标签翻转第39轮ASR83.8%（均值20.844%）；Min-Sum R1良性4/344=1.1628%、全反转12/344=3.4884%；不能扩大M3接受范围。
+质量通过与算法全范围接受分开；本批没有预注册版本升级判定，不追改M3既有接受记录，不晋升M4。
+
+已生成完整ACC/ASR对比表、CSV及来源审计：analysis/rtc_m3_all_attacks_review；报告docs/RTC_M3_ALL_ATTACKS_REVIEW_20260919.md。
+原WAITING_FOR_MANUAL_EXPERIMENT阻塞已由真实结果解除；本回合progress，目标仍active且未完成，不因缺少旧源码而阻塞其他可做的离线机制诊断。
+下一工作：先查Min-Sum/全反转R1误伤和targeted第39轮峰值，保留M3-G2的LIE收益及Sign失败，再预登记单一机制的RTC父子回归；本回合未创建下一训练批次。
+M2-G1、M2-H2、M3-G2归档均保持。禁止自动训练；Git仍手动提交/推送。独立多seed/非IID、消融、最终验收尚未完成。
+
+
+## 2026-09-23 / 最新用户安排：补一组Multi-Krum，再评估M3研究发布
+
+当前优先动作改为同源码Multi-Krum全攻击补充：12新单元、复用M3的12项；同seed42/batch96/GPU.125、完整12条件。
+使用已验收M3源码归档逐字恢复执行目录，同原Linux环境；不修改M3、不启用G2、不重跑其他方法。
+协议config/rtc_m3_multikrum_protocol.json；控制器experiments/rtc_m3_multikrum.py；双平台入口run_rtc_m3_multikrum.ps1/.sh。
+交接docs/RTC_M3_MULTIKRUM_HANDOFF_20260923.md。Windows只预检，Linux实际dry-run未完成前只提供验证命令，不训练。
+M3是已接受的限定范围研究主线，补对照可完善阶段性发布表格；不是全范围通过或最终目标完成。
+已知误伤/targeted峰值与LIE弱点保留；逐条件ACC/ASR及误伤比较不能用宏平均抵消，单开发seed不能证明泛化。
+M2-G1/M3-G2保留待修复，M2-H2旧失败及M3后继关系保持；后续独立seeds/非IID/消融及最终报告范围不缩减。
+WAITING_FOR_MANUAL_EXPERIMENT，新边界计数1；真实实验全部手动，Git继续手动提交/推送。

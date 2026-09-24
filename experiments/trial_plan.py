@@ -149,6 +149,10 @@ def _condition_payload(spec: Mapping[str, Any], args: Any) -> Dict[str, Any]:
         for key in PLAN_CONDITION_KEYS
         if key in spec
     }
+    # Do not change historical plan hashes for specs without an explicit model.
+    for key in ("dataset", "architecture"):
+        if key in spec:
+            condition[key] = str(spec[key])
     smoke = bool(getattr(args, "smoke", False))
     smoke_all_clients = smoke and bool(
         getattr(args, "smoke_all_clients", True)
@@ -298,7 +302,7 @@ def generate_trial_plan(
         })
 
     data_config = {
-        "dataset": "cifar10",
+        "dataset": str(condition.get("dataset", "cifar10")),
         "seed": seed,
         "partition": condition.get("partition"),
         "dirichlet_alpha": condition.get("dirichlet_alpha"),
@@ -306,7 +310,8 @@ def generate_trial_plan(
         "max_client_samples": condition.get("max_client_samples", 0),
     }
     initial_model_config = {
-        "seed": seed, "dataset": "cifar10", "architecture": "resnet18"
+        "seed": seed, "dataset": str(condition.get("dataset", "cifar10")),
+        "architecture": str(condition.get("architecture", "resnet18"))
     }
     payload: Dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,

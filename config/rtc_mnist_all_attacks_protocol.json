@@ -1,0 +1,232 @@
+{
+  "conditions": [
+    {
+      "name": "clean",
+      "attack": "none"
+    },
+    {
+      "name": "gaussian_noise",
+      "attack": "gaussian_noise"
+    },
+    {
+      "name": "random_noise_v2",
+      "attack": "random_noise"
+    },
+    {
+      "name": "sign_flip",
+      "attack": "sign_flip"
+    },
+    {
+      "name": "lie_z025",
+      "attack": "lie",
+      "parameters": {
+        "lie_z": 0.25,
+        "coordinated_attack_knowledge": "all_updates"
+      }
+    },
+    {
+      "name": "lie_z05",
+      "attack": "lie"
+    },
+    {
+      "name": "min_max",
+      "attack": "min_max"
+    },
+    {
+      "name": "min_sum",
+      "attack": "min_sum"
+    },
+    {
+      "name": "label_flip_targeted",
+      "attack": "label_flip_targeted"
+    },
+    {
+      "name": "label_flip_all_reverse",
+      "attack": "label_flip_all_reverse"
+    },
+    {
+      "name": "scaling_backdoor",
+      "attack": "scaling_backdoor"
+    },
+    {
+      "name": "dba",
+      "attack": "dba"
+    }
+  ],
+  "attacks": {
+    "gaussian_noise": {
+      "strength_level": "strong",
+      "parameters": {
+        "gaussian_noise_mean": 0.0,
+        "gaussian_noise_std": 0.1
+      }
+    },
+    "random_noise": {
+      "strength_level": "unverified",
+      "validation_status": "unverified_evaluation_only",
+      "parameters": {
+        "random_noise_scale": 10.0,
+        "random_noise_distribution": "rademacher"
+      },
+      "attack_version": "random_noise.trainable_rademacher_norm_matched.v2",
+      "scope": "trainable_parameters_only"
+    },
+    "sign_flip": {
+      "strength_level": "weak",
+      "parameters": {
+        "sign_flip_scale": 1.0
+      }
+    },
+    "lie": {
+      "strength_level": "medium",
+      "parameters": {
+        "lie_z": 0.5,
+        "coordinated_attack_knowledge": "all_updates"
+      }
+    },
+    "min_max": {
+      "strength_level": "strong",
+      "parameters": {
+        "coordinated_attack_knowledge": "all_updates",
+        "optimization_perturbation": "inverse_sign",
+        "optimization_gamma_init": 0.001,
+        "optimization_tolerance": 1e-06,
+        "optimization_max_iterations": 64,
+        "optimization_gamma_fraction": 1.0
+      }
+    },
+    "min_sum": {
+      "strength_level": "strong",
+      "parameters": {
+        "coordinated_attack_knowledge": "all_updates",
+        "optimization_perturbation": "inverse_sign",
+        "optimization_gamma_init": 0.001,
+        "optimization_tolerance": 1e-06,
+        "optimization_max_iterations": 64,
+        "optimization_gamma_fraction": 1.0
+      }
+    },
+    "scaling_backdoor": {
+      "strength_level": "strong",
+      "parameters": {
+        "aggregation_aware_scaling": true,
+        "replacement_gain": 1.0,
+        "poison_fraction": 0.3,
+        "trigger_value": 2.82148653034729
+      }
+    },
+    "label_flip_all_reverse": {
+      "strength_level": "strong",
+      "parameters": {
+        "label_flip_poison_fraction": 1.0
+      }
+    },
+    "dba": {
+      "strength_level": "strong",
+      "parameters": {
+        "aggregation_aware_scaling": true,
+        "replacement_gain": 1.0,
+        "poison_fraction": 0.3,
+        "dba_scale_update": true,
+        "dba_pattern_mode": "paper_cifar_1x6_2x2",
+        "dba_trigger_value_mode": "scalar",
+        "trigger_value": 2.82148653034729
+      }
+    },
+    "label_flip_targeted": {
+      "strength_level": "fixed",
+      "parameters": {
+        "label_flip_source_label": 5,
+        "label_flip_target_label": 3,
+        "label_flip_poison_fraction": 1.0
+      }
+    }
+  },
+  "training": {
+    "local_epochs": 5,
+    "batch_size": 96,
+    "optimizer": "sgd",
+    "learning_rate": 0.01,
+    "momentum": 0.9,
+    "weight_decay": 0.0001,
+    "lr_scheduler": "cosine"
+  },
+  "rounds": 60,
+  "num_clients": 20,
+  "participation_rate": 0.5,
+  "malicious_fraction": 0.3,
+  "partition": "iid",
+  "attack_start_round": 11,
+  "attack_end_round": 60,
+  "metrics": {
+    "acc_active_rounds": [
+      11,
+      60
+    ],
+    "clean_rounds": [
+      1,
+      60
+    ],
+    "tail_rounds": [
+      51,
+      60
+    ],
+    "targeted": [
+      "label_flip_targeted",
+      "scaling_backdoor",
+      "dba",
+      "label_flip_all_reverse"
+    ],
+    "targeted_metrics": [
+      "ASR mean",
+      "ASR peak",
+      "ASR tail10",
+      "ASR final"
+    ]
+  },
+  "schema": "RTCM3MNISTAllAttacksV1",
+  "dataset": "mnist",
+  "architecture": "mnist_cnn",
+  "evaluation_seeds": [
+    42
+  ],
+  "calibration_seeds": [
+    40,
+    41
+  ],
+  "validation_seeds": [
+    43
+  ],
+  "defenses": [
+    "rtc_i12_eligibility_confirmed",
+    "multi_krum",
+    "fedavg",
+    "fltrust",
+    "foolsgold",
+    "median",
+    "rfa",
+    "trimmed_mean",
+    "krum"
+  ],
+  "evaluation_units": 108,
+  "calibration_units": 2,
+  "validation_units": 2,
+  "ray_client_num_gpus": 0.125,
+  "manual_execution_required": true,
+  "reference_protocol": "config/rtc_m3_all_attacks_protocol.json",
+  "scope": "Single-seed MNIST transfer of M3 mechanisms with independent clean calibration; not CIFAR checkpoint transfer, M4 promotion or significance evidence.",
+  "calibration_rule": "Clean seeds40,41 only; semantic/cone/budget existing calibrator with no inherited CIFAR/bootstrap budget floor; R1 lower1% gap/cosine/pairwise (pairwise clipped to at most -1e-12 for strict negativity); R2 max(3,upper99% LOO norm ratio).",
+  "clean_gate": {
+    "seed": 43,
+    "acc_noninferiority_pp": 0.2,
+    "benign_union_cap_limit": 0.01,
+    "acc_windows": [
+      "mean_rounds1_60",
+      "final_round60",
+      "tail_rounds51_60"
+    ]
+  },
+  "attack_strength_policy": "Fixed CIFAR numerical parameters; strength not validated on MNIST. Report FedAvg damage and ASR for all conditions; never tune using RTC outcomes.",
+  "resume_policy": "Skip verified complete cells; archive incomplete cell artifacts only on explicit --restart-incomplete; restart that cell from round0, never mid-round resume.",
+  "trigger_policy": "Retain four 1x6 DBA fragments (fit within28x28); scalar normalized raw white (1-.1307)/.3081 for DBA and bottom-right3x3 scaling trigger. This is adapted CIFAR geometry, not a claim to reproduce a paper MNIST layout."
+}

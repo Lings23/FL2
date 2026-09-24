@@ -1057,8 +1057,9 @@ def _build_spec_config(
     overrides = {
         "project.seed": spec["seed"],
         "project.log_dir": str(output / "raw"),
-        "dataset.name": "cifar10",
-        "model.architecture": "resnet18",
+        # Explicit cross-dataset specs opt in; historical specs retain their recipe.
+        "dataset.name": str(spec.get("dataset", "cifar10")),
+        "model.architecture": str(spec.get("architecture", "resnet18")),
         "federation.num_rounds": _expected_rounds(args),
         "federation.num_clients": num_clients,
         "federation.clients_per_round": (
@@ -1122,6 +1123,7 @@ def _build_spec_config(
         "security.attack.dba_trigger_value_mode": str(
             spec.get("dba_trigger_value_mode", "cifar10_normalized_white")
         ),
+        "security.attack.trigger_value": float(spec.get("trigger_value", cfg.security.attack.trigger_value)),
         "security.attack.gaussian_noise_mean": float(
             spec.get("gaussian_noise_mean", 0.0)
         ),

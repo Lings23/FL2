@@ -799,10 +799,13 @@ def calibrate_manifest(
     *,
     args: argparse.Namespace,
     specs: Sequence[Mapping[str, Any]],
+    inherit_parent_budget_floor: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     output = Path(args.output).resolve()
     cfg = load_config(args.config)
     parent_manifest = CalibrationManifest.load(args.bootstrap_manifest)
+    if not inherit_parent_budget_floor and parent_manifest.payload.get("metadata", {}).get("artifact_kind") != "rtc_v3_semantic_clean_collection_bootstrap":
+        raise ValueError("Disabling parent floors is only allowed for a new-dataset clean collection bootstrap")
     rounds, clients, sources = _load_observations(
         output, specs, args.rounds, cfg.dataset.num_classes
     )
@@ -916,7 +919,7 @@ def calibrate_manifest(
             }
 
     server_budgets, server_floor_paths = _apply_parent_budget_floor(
-        server_budgets, parent_manifest.payload.get("server_budgets") or {}
+        server_budgets, (parent_manifest.payload.get("server_budgets") or {}) if inherit_parent_budget_floor else {}
     )
     for key, diagnostic in server_diagnostics.items():
         resolution, window, exposure_type = key.split("/")
@@ -1007,7 +1010,7 @@ def calibrate_manifest(
         }
 
     principal_betas, principal_floor_paths = _apply_parent_budget_floor(
-        principal_betas, parent_manifest.payload.get("principal_betas") or {}
+        principal_betas, (parent_manifest.payload.get("principal_betas") or {}) if inherit_parent_budget_floor else {}
     )
     for key, diagnostic in principal_diagnostics.items():
         resolution, window = key.split("/")
@@ -1117,7 +1120,7 @@ def calibrate_manifest(
                 "manifest_hash": parent_manifest.hash,
                 "server_paths_raised": server_floor_paths,
                 "principal_paths_raised": principal_floor_paths,
-                "policy": "inherited_parent_budgets_never_tighten",
+                "policy": "inherited_parent_budgets_never_tighten" if inherit_parent_budget_floor else "new_dataset_clean_calibration_no_parent_floor",
             },
             "warning": "Promotion still requires held-out multi-seed clean/attack gates.",
         },

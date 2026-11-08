@@ -100,6 +100,7 @@ CRITICAL_SOURCES = (
     "utils/numerical_failure.py",
     "defenses/relation_graph/__init__.py",
     "defenses/relation_graph/defense.py",
+    "defenses/relation_graph/exclusion.py",
     "defenses/relation_graph/graph.py",
     "defenses/relation_graph/settings.py",
 )
@@ -197,6 +198,8 @@ def validate(cfg: dict) -> None:
     # The defense contract also needs a classifier head; this is checked in Engine.
     if cfg.get("device") not in {"cuda", "cpu"}:
         raise ValueError("Unsupported device")
+    if cfg.get("defense_variant") not in (None, "group_zero_weight"):
+        raise ValueError("Unsupported defense_variant")
 
 
 def smoke_config(cfg: dict, rounds: int) -> dict:
@@ -254,7 +257,16 @@ class Engine:
                     custom_params={"settings": cfg["relation_graph"]["settings"]})
             else:
                 defense_config = DefenseConfig(enabled=True, type="fedavg")
-            self.defenses[name] = get_defense(defense_config, num_clients=cfg["clients"])
+            if (group["defense"] == "relation_graph"
+                    and cfg.get("defense_variant") == "group_zero_weight"):
+                from defenses.relation_graph.exclusion import (
+                    GroupExclusionRelationGraphDefense,
+                )
+                self.defenses[name] = GroupExclusionRelationGraphDefense(
+                    defense_config, num_clients=cfg["clients"])
+            else:
+                self.defenses[name] = get_defense(
+                    defense_config, num_clients=cfg["clients"])
 
     def fit_round(self, group, state, number, output):
         cfg = self.cfg

@@ -340,6 +340,7 @@ def summarize(run: Path, cfg: dict, rows: dict[str, list[dict]], check: dict) ->
         run=run.as_posix(), seed=cfg["seed"], budget_rounds=budget,
         completed_rounds=min(len(rows[name]) for name in NAMES),
         normalization=cfg.get("normalization"),
+        defense_variant=cfg.get("defense_variant"),
         integrity=check, groups=group_summaries,
     )
     cf, cg = rows["clean_fedavg"], rows["clean_relation_graph"]
@@ -635,6 +636,10 @@ def report_markdown(summary: dict, cfg: dict, check: dict) -> str:
                  "评估使用 2000 张独立训练留出样本，DBA ASR 分母为 1800 张非目标类样本；"
                  "最终测试集未使用。所有结论限定于种子 42 和当前 IID、"
                  f"{normalization_text}协议。\n")
+    if cfg.get("defense_variant") == "group_zero_weight":
+        lines.append("本批使用 `group_zero_weight` 防御动作变体：确认异常子图的客户端聚合权重"
+                     "直接置零，被移除的质量进入 anchor（本轮开始时的广播模型）；"
+                     "检测规则、图证据与历史窗口保持不变。\n")
 
     lines.append("## 结果总览\n")
     lines.append("| 组 | 最终 ACC | 末 10 轮 ACC | 最终 loss | 末 10 轮 loss | "

@@ -51,6 +51,7 @@ from torch.utils.data import DataLoader, Subset
 from flwr.common import FitIns, ndarrays_to_parameters, parameters_to_ndarrays
 
 from attacks.attack_client import validate_attack_config
+from attacks.reference_backdoors import PGD_REFERENCE_CONFIG_KEY
 from attacks.spec import attack_contract_payload, attack_source_hash
 from client.fl_client import make_client_fn
 from config.config_loader import AttackConfig, ClientConfig, DefenseConfig
@@ -105,6 +106,35 @@ CRITICAL_SOURCES = (
     "defenses/relation_graph/settings.py",
 )
 EVALUATION_ATTACK = "dba"
+MULTI_ATTACK_PURPOSE = "relation_graph_mnist_multi_attack_paired"
+ATTACK_TYPES = ("badnet", "neurotoxin", "pgd")
+MULTI_ATTACK_GROUPS = (
+    dict(name="clean_fedavg", attack="none", defense="fedavg"),
+    dict(name="clean_relation_graph", attack="none", defense="relation_graph"),
+    *(dict(name=f"{attack}_{defense}", attack=attack, defense=defense)
+      for attack in ATTACK_TYPES
+      for defense in ("fedavg", "relation_graph")),
+)
+
+
+def group_names(cfg: dict) -> tuple[str, ...]:
+    return tuple(group["name"] for group in cfg["groups"])
+
+
+def group_name(cfg: dict, attack: str, defense: str) -> str:
+    return next(group["name"] for group in cfg["groups"]
+                if group["attack"] == attack and group["defense"] == defense)
+
+
+def pilot_attack_cfg(cfg: dict, condition: str) -> AttackConfig:
+    """Build an attack config, applying multi-attack profile overrides."""
+    if cfg.get("purpose") != MULTI_ATTACK_PURPOSE:
+        return attack_cfg(cfg, condition)
+    if condition == "none":
+        return AttackConfig(**cfg["attack"], type="none", enabled=False)
+    values = dict(cfg["attack"])
+    values.update(cfg.get("attack_profiles", {}).get(condition, {}))
+    return AttackConfig(**values, type=condition, enabled=True)
 
 
 def read(path: Path):
@@ -149,6 +179,13 @@ def paired_model_factory(cfg: dict) -> torch.nn.Module:
 
 
 def validate(cfg: dict) -> None:
+    if cfg.get("purpose") == MULTI_ATTACK_PURPOSE:
+        _validate_multi_attack(cfg)
+        return
+    _validate_dba_pilot(cfg)
+
+
+def _validate_dba_pilot(cfg: dict) -> None:
     if cfg.get("schema_version") != 1 or cfg.get("purpose") != "relation_graph_mnist_paired_clean_dba_pilot":
         raise ValueError("Explicit relation_graph paired pilot protocol required")
     if (cfg.get("dataset"), cfg.get("architecture")) != ("mnist", "mnist_cnn") or \
@@ -202,6 +239,72 @@ def validate(cfg: dict) -> None:
         raise ValueError("Unsupported defense_variant")
 
 
+def _validate_multi_attack(cfg: dict) -> None:
+    if cfg.get("schema_version") != 1:
+        raise ValueError("Multi-attack protocol requires schema_version=1")
+    if (cfg.get("dataset"), cfg.get("architecture")) != ("mnist", "mnist_cnn") or \
+            cfg.get("normalization") not in {"batch", "batch_no_running_stats"}:
+        raise ValueError("MNIST/CNN with tracked ('batch') or stateless "
+                         "('batch_no_running_stats') BatchNorm required")
+    if cfg.get("clients") != 20 or cfg.get("malicious_clients") != [0, 1, 2, 3]:
+        raise ValueError("Frozen 20-client / malicious-0-3 protocol required")
+    if cfg.get("groups") != [dict(group) for group in MULTI_ATTACK_GROUPS]:
+        raise ValueError("The eight paired groups are fixed")
+    if cfg.get("evaluation_attack") not in ATTACK_TYPES:
+        raise ValueError("evaluation_attack must be badnet, neurotoxin or pgd")
+    if cfg.get("warmup_rounds") != 0 or int(cfg.get("total_rounds", 0)) < 1:
+        raise ValueError("No warmup and a positive round budget are required")
+    snapshots = cfg.get("snapshots")
+    if (not isinstance(snapshots, list) or snapshots != sorted(set(snapshots))
+            or any(not isinstance(value, int) or not 1 <= value <= cfg["total_rounds"]
+                   for value in snapshots)):
+        raise ValueError("Invalid snapshots")
+    if cfg.get("max_client_samples") != 500 or cfg.get("drop_last") is not True:
+        raise ValueError("Frozen 500-example drop-last client loaders required")
+    if (cfg.get("reference_probe_size"), cfg.get("reference_gate_size"),
+            cfg.get("evaluator_validation_size")) != (300, 200, 2000):
+        raise ValueError("Frozen reference/validation partition required")
+    if cfg.get("round_lr_decay") != 0.99 or cfg.get("evaluation_order_seed") != 2042:
+        raise ValueError("Frozen learning-rate decay and evaluator order required")
+    if cfg.get("client") != {
+        "local_epochs": 2, "batch_size": 64, "optimizer": "sgd", "learning_rate": 0.1,
+        "momentum": 0.0, "weight_decay": 0.0001, "lr_scheduler": "none",
+    }:
+        raise ValueError("Client training recipe differs from the frozen profile")
+    attack = cfg.get("attack", {})
+    if (attack.get("malicious_fraction") != 0.2
+            or attack.get("backdoor_target_label") != 7
+            or attack.get("poison_fraction") != 0.5
+            or attack.get("reference_backdoor_dataset") != "mnist"
+            or attack.get("attack_start_round") != 1
+            or attack.get("attack_end_round") < cfg["total_rounds"]):
+        raise ValueError("Multi-attack mechanism differs from the frozen profile")
+    if attack.get("aggregation_aware_scaling") is not False:
+        raise ValueError("This pilot forbids upload amplification")
+    profiles = cfg.get("attack_profiles", {})
+    if not isinstance(profiles, dict) or set(profiles) - set(ATTACK_TYPES) \
+            or any(not isinstance(values, dict) for values in profiles.values()):
+        raise ValueError("attack_profiles must map known attacks to mappings")
+    for condition in ATTACK_TYPES:
+        validate_attack_config(pilot_attack_cfg(cfg, condition), 10)
+    neurotoxin = {**attack, **profiles.get("neurotoxin", {})}
+    if (neurotoxin.get("neurotoxin_mask_source") != "clean_gradient"
+            or neurotoxin.get("neurotoxin_aggregate_all_layer") is not False):
+        raise ValueError("Neurotoxin must use the local clean-gradient GradMask")
+    pgd = {**attack, **profiles.get("pgd", {})}
+    if (pgd.get("pgd_state_scope") != "parameters"
+            or pgd.get("pgd_radius_source") != "benign_update_norm"):
+        raise ValueError("PGD requires pgd_state_scope=parameters and "
+                         "pgd_radius_source=benign_update_norm")
+    settings = cfg.get("relation_graph", {}).get("settings")
+    if not isinstance(settings, dict) or settings != asdict(Settings()):
+        raise ValueError("relation_graph must use the frozen current default settings")
+    if cfg.get("device") not in {"cuda", "cpu"}:
+        raise ValueError("Unsupported device")
+    if cfg.get("defense_variant") not in (None, "group_zero_weight"):
+        raise ValueError("Unsupported defense_variant")
+
+
 def smoke_config(cfg: dict, rounds: int) -> dict:
     if not 1 <= rounds < cfg["total_rounds"]:
         raise ValueError("Smoke rounds must be positive and shorter than the formal budget")
@@ -214,7 +317,11 @@ def smoke_config(cfg: dict, rounds: int) -> dict:
 
 def client_train_summary(metrics: dict) -> dict:
     keys = ("train_loss", "train_accuracy", "local_epochs", "is_malicious", "attack_active",
-            "dba_fragment_index", "dba_poisoned_examples", "dba_total_examples", "dba_update_scaled")
+            "dba_fragment_index", "dba_poisoned_examples", "dba_total_examples",
+            "dba_update_scaled", "backdoor_poisoned_examples", "backdoor_eligible_examples",
+            "pgd_radius", "pgd_projection_count", "pgd_max_pre_projection_norm",
+            "pgd_final_update_norm", "pgd_clipped_epochs", "pgd_reference_norm",
+            "pgd_reference_available", "pgd_norm_scope", "pgd_radius_source")
     return {key: metrics[key] for key in keys if key in metrics}
 
 
@@ -242,12 +349,14 @@ class Engine:
         if any(len(loaders[0]) == 0 for loaders in loader_map.values()):
             raise ValueError("An empty client training loader")
         self.malicious = set(cfg["malicious_clients"])
+        self.evaluation_attack = cfg.get("evaluation_attack", EVALUATION_ATTACK)
+        self.pgd_reference = {group["name"]: None for group in cfg["groups"]}
         self.clients, self.defenses = {}, {}
         for group in cfg["groups"]:
             name, attack = group["name"], group["attack"]
             factory = make_client_fn(
                 lambda: self.model, loader_map, ClientConfig(**cfg["client"]),
-                attack_cfg=attack_cfg(cfg, attack),
+                attack_cfg=pilot_attack_cfg(cfg, attack),
                 malicious_ids=self.malicious if attack != "none" else set(),
                 device=device, experiment_seed=cfg["seed"])
             self.clients[name] = [factory(str(index)) for index in range(cfg["clients"])]
@@ -274,8 +383,10 @@ class Engine:
         self.model.load_state_dict(state)
         arrays = [value.copy() for value in get_parameters(self.model)]
         lr = cfg["client"]["learning_rate"] * cfg["round_lr_decay"] ** number
-        ins = FitIns(ndarrays_to_parameters(arrays), {
-            "server_round": number, "deterministic_client_training": True})
+        fit_config = {"server_round": number, "deterministic_client_training": True}
+        if attack_kind == "pgd" and self.pgd_reference[name] is not None:
+            fit_config[PGD_REFERENCE_CONFIG_KEY] = self.pgd_reference[name]
+        ins = FitIns(ndarrays_to_parameters(arrays), fit_config)
         updates, metrics, norms = [], [], []
         started = time.monotonic()
         for identity, client in enumerate(self.clients[name]):
@@ -292,6 +403,10 @@ class Engine:
             norms.append(float(np.sqrt(sum(
                 np.sum((values[index].astype(np.float64) - arrays[index].astype(np.float64)) ** 2)
                 for index in self.param_indices))))
+        if attack_kind == "pgd":
+            # Public benign-scale reference for the next round: the median
+            # client parameter-update norm of this completed round.
+            self.pgd_reference[name] = float(np.median(norms))
         client_seconds = time.monotonic() - started
 
         identities = [str(index) for index in range(cfg["clients"])]
@@ -313,9 +428,11 @@ class Engine:
 
         evaluation_started = time.monotonic()
         clean = clean_metrics(self.model, self.validation, self.device)
+        evaluation_attack = (attack_kind if attack_kind != "none"
+                             else self.evaluation_attack)
         asr = evaluate_targeted_asr(
             self.model, self.validation, self.device,
-            attack_cfg(cfg, EVALUATION_ATTACK))
+            pilot_attack_cfg(cfg, evaluation_attack))
         if not asr or not asr["asr_valid"] or asr["asr_total"] != 1800:
             raise ValueError("Invalid DBA ASR evaluation")
         evaluation_seconds = time.monotonic() - evaluation_started
@@ -521,6 +638,63 @@ def group_stats(records, malicious):
 
 
 def report(cfg, output, rows, completed):
+    if cfg.get("purpose") == MULTI_ATTACK_PURPOSE:
+        return _report_multi_attack(cfg, output, rows, completed)
+    return _report_dba(cfg, output, rows, completed)
+
+
+def _report_multi_attack(cfg, output, rows, completed):
+    summary = dict(
+        purpose=cfg["purpose"], seed=cfg["seed"], budget_rounds=cfg["total_rounds"],
+        completed_rounds=completed, groups={}, comparisons={},
+        attack_strength={}, defended_descriptive_checks={},
+        defense_evaluated=True, final_test_set_used=False,
+        normalization=cfg["normalization"],
+        defense_variant=cfg.get("defense_variant"),
+        interpretation=cfg.get("interpretation", ""),
+    )
+    attack_by_name = {group["name"]: group["attack"] for group in cfg["groups"]}
+    names = group_names(cfg)
+    for name in names:
+        if rows.get(name):
+            summary["groups"][name] = group_stats(
+                rows[name], attack_by_name[name] != "none")
+    clean_fed = group_name(cfg, "none", "fedavg")
+    clean_rg = group_name(cfg, "none", "relation_graph")
+    if rows.get(clean_fed) and rows.get(clean_rg):
+        summary["comparisons"]["clean_accuracy_delta_graph_minus_fedavg"] = (
+            rows[clean_rg][-1]["clean"]["accuracy"]
+            - rows[clean_fed][-1]["clean"]["accuracy"])
+        summary["comparisons"]["clean_last10_accuracy_delta_graph_minus_fedavg"] = (
+            float(np.mean([row["clean"]["accuracy"] for row in rows[clean_rg][-10:]]))
+            - float(np.mean([row["clean"]["accuracy"] for row in rows[clean_fed][-10:]])))
+    for attack in ATTACK_TYPES:
+        fed_name = group_name(cfg, attack, "fedavg")
+        rg_name = group_name(cfg, attack, "relation_graph")
+        fed, rg = rows.get(fed_name, []), rows.get(rg_name, [])
+        if fed and rg:
+            summary["comparisons"][f"{attack}_asr_delta_graph_minus_fedavg"] = (
+                rg[-1]["asr"]["asr"] - fed[-1]["asr"]["asr"])
+            summary["comparisons"][f"{attack}_last10_asr_delta_graph_minus_fedavg"] = (
+                float(np.mean([row["asr"]["asr"] for row in rg[-10:]]))
+                - float(np.mean([row["asr"]["asr"] for row in fed[-10:]])))
+            summary["comparisons"][f"{attack}_peak_asr_fedavg"] = max(
+                row["asr"]["asr"] for row in fed)
+            summary["comparisons"][f"{attack}_peak_asr_relation_graph"] = max(
+                row["asr"]["asr"] for row in rg)
+        if fed and rows.get(clean_fed):
+            summary["attack_strength"][attack] = qualification(
+                cfg, rows[clean_fed], fed, fed_name)
+        if rg and rows.get(clean_rg):
+            summary["defended_descriptive_checks"][attack] = qualification(
+                cfg, rows[clean_rg], rg, rg_name)
+    if all(rows.get(name) for name in names):
+        summary["completed_rounds"] = min(len(rows[name]) for name in names)
+    dump(output / "summary.json", summary)
+    return summary
+
+
+def _report_dba(cfg, output, rows, completed):
     summary = dict(
         purpose=cfg["purpose"], seed=cfg["seed"], budget_rounds=cfg["total_rounds"],
         completed_rounds=completed, groups={}, comparisons={},
@@ -562,9 +736,9 @@ def report(cfg, output, rows, completed):
     return summary
 
 
-def reconcile(output, completed):
+def reconcile(output, completed, names):
     rows, tails = {}, {}
-    for name in NAMES:
+    for name in names:
         for stem in (f"rounds_{name}", f"graph_{name}"):
             path = output / f"{stem}.jsonl"
             if not path.exists():
@@ -581,7 +755,7 @@ def reconcile(output, completed):
                 rows[name] = retained
     if tails:
         dump(output / f"interrupted_tails_{time.time_ns()}.json", tails)
-    for name in NAMES:
+    for name in names:
         rows.setdefault(name, [])
     return rows
 
@@ -627,6 +801,39 @@ def verify_smoke(output, cfg, engine, rows, bundle):
             checks["dba_only_four_malicious"] = all(
                 sum(client["is_malicious_evaluation_only"] for client in row["clients"]) == 4
                 for row in records)
+        elif attack in ATTACK_TYPES:
+            active = []
+            poison_counts = set()
+            eligible_counts = set()
+            for row in records:
+                for client in row["clients"]:
+                    if client["is_malicious_evaluation_only"]:
+                        train = client["train"]
+                        if train.get("attack_active") is not True:
+                            active.append((row["round"], client["client_id"]))
+                        poison_counts.add(train.get("backdoor_poisoned_examples"))
+                        eligible_counts.add(train.get("backdoor_eligible_examples"))
+            checks["attack_all_malicious_rounds_active"] = not active
+            checks["attack_only_four_malicious"] = all(
+                sum(client["is_malicious_evaluation_only"] for client in row["clients"]) == 4
+                for row in records)
+            checks["attack_poisoning_positive"] = all(
+                isinstance(value, (int, float)) and value > 0 for value in poison_counts)
+            checks["attack_eligible_positive"] = all(
+                isinstance(value, (int, float)) and value > 0 for value in eligible_counts)
+            if attack == "pgd":
+                first = [client["train"] for client in records[0]["clients"]
+                         if client["is_malicious_evaluation_only"]]
+                later = [client["train"] for row in records[1:] for client in row["clients"]
+                         if client["is_malicious_evaluation_only"]]
+                checks["pgd_first_round_unconstrained"] = all(
+                    train.get("pgd_projection_count") == 0
+                    and not train.get("pgd_reference_available")
+                    for train in first)
+                checks["pgd_projections_per_epoch"] = all(
+                    train.get("pgd_projection_count") == cfg["client"]["local_epochs"]
+                    and bool(train.get("pgd_reference_available"))
+                    for train in later)
         else:
             checks["no_attack_active"] = all(
                 client["train"].get("attack_active") in (None, False)
@@ -653,6 +860,7 @@ def verify_smoke(output, cfg, engine, rows, bundle):
 
 def run(cfg, output, data_dir, resume=False, max_rounds=None):
     validate(cfg)
+    names = group_names(cfg)
     if max_rounds is not None and not 1 <= max_rounds <= cfg["total_rounds"]:
         raise ValueError("--max-rounds must be inside the budget")
     if output.exists() != resume:
@@ -678,15 +886,15 @@ def run(cfg, output, data_dir, resume=False, max_rounds=None):
             raise ValueError("Resume requires identical sources")
         if manifest["dataset_inputs_sha256"] != dataset_inputs:
             raise ValueError("Dataset changed at resume")
-        if manifest["executed_groups"] != list(NAMES):
+        if manifest["executed_groups"] != list(names):
             raise ValueError("Resume groups changed")
         with np.load(output / "split_indices.npz", allow_pickle=False) as archive:
             indices = {key: archive[key].copy() for key in archive.files}
         bundle = load_checkpoint(output / "latest_bundle.pt")
         completed = bundle["completed_round"]
         states = bundle["states"]
-        rows = reconcile(output, completed)
-        for name in NAMES:
+        rows = reconcile(output, completed, names)
+        for name in names:
             expected = (rows[name][-1]["state_sha256"] if completed
                         else manifest["initial_state_sha256"])
             if state_hash(states[name]) != expected:
@@ -707,7 +915,7 @@ def run(cfg, output, data_dir, resume=False, max_rounds=None):
                         dict(round=0, state=initial_state, sha256=initial_hash))
         manifest = dict(
             created_unix=time.time(), pid=os.getpid(), seed=cfg["seed"],
-            groups=list(NAMES), executed_groups=list(NAMES),
+            groups=list(names), executed_groups=list(names),
             source_sha256=current_sources, attack_source_sha256=attack_source_hash(),
             dataset_inputs_sha256=dataset_inputs, initial_state_sha256=initial_hash,
             python=platform.python_version(), torch=str(torch.__version__),
@@ -732,25 +940,28 @@ def run(cfg, output, data_dir, resume=False, max_rounds=None):
                       sha256=hashlib.sha256(value.tobytes()).hexdigest(),
                       class_counts=np.bincount(np.asarray(labels)[value], minlength=10).tolist())
             for key, value in indices.items()})
-        states = {name: copy.deepcopy(initial_state) for name in NAMES}
-        if len({state_hash(states[name]) for name in NAMES}) != 1:
+        states = {name: copy.deepcopy(initial_state) for name in names}
+        if len({state_hash(states[name]) for name in names}) != 1:
             raise ValueError("Paired groups do not share the initial model")
-        for attack in ("none", "dba"):
+        for attack in sorted({group["attack"] for group in cfg["groups"]} | {"none"}):
             dump(output / f"contract_{attack}.json",
-                 attack_contract_payload(attack, asdict(attack_cfg(cfg, attack))))
-        rows, completed = {name: [] for name in NAMES}, 0
+                 attack_contract_payload(attack, asdict(pilot_attack_cfg(cfg, attack))))
+        rows, completed = {name: [] for name in names}, 0
 
     dump(output / "runtime_owner.json", dict(pid=os.getpid(), started_unix=time.time()))
     engine = Engine(cfg, indices, train, view, device)
     if resume:
-        for name in NAMES:
+        for name in names:
             load_defense_state(engine.defenses[name], bundle["defenses"][name])
+        saved_reference = bundle.get("pgd_reference", {})
+        engine.pgd_reference = {name: saved_reference.get(name) for name in names}
 
     def checkpoint(number):
         return dict(
             completed_round=number,
-            states={name: states[name] for name in NAMES},
-            defenses={name: defense_state(engine.defenses[name]) for name in NAMES},
+            states={name: states[name] for name in names},
+            defenses={name: defense_state(engine.defenses[name]) for name in names},
+            pgd_reference=dict(engine.pgd_reference),
             initial_state_sha256=manifest["initial_state_sha256"],
         )
 
@@ -758,7 +969,7 @@ def run(cfg, output, data_dir, resume=False, max_rounds=None):
         save_checkpoint(output / "latest_bundle.pt", checkpoint(0))
     summary = report(cfg, output, rows, completed)
     print(f"START relation_graph paired pilot seed={cfg['seed']} device={device}; "
-          f"{cfg['total_rounds']} rounds; groups={list(NAMES)}", flush=True)
+          f"{cfg['total_rounds']} rounds; groups={list(names)}", flush=True)
     for number in range(completed + 1, cfg["total_rounds"] + 1):
         check_stop(output)
         if source_hashes() != current_sources:
@@ -796,7 +1007,7 @@ def run(cfg, output, data_dir, resume=False, max_rounds=None):
             status(output, "paused", round=number, budget=cfg["total_rounds"])
             print(f"PAUSED after round {number}; resume with --resume", flush=True)
             return
-    last_completed = max((rows[name][-1]["round"] for name in NAMES if rows[name]),
+    last_completed = max((rows[name][-1]["round"] for name in names if rows[name]),
                          default=completed)
     if last_completed < cfg["total_rounds"]:
         status(output, "paused", round=last_completed, budget=cfg["total_rounds"])
@@ -805,7 +1016,7 @@ def run(cfg, output, data_dir, resume=False, max_rounds=None):
     bundle = load_checkpoint(output / "latest_bundle.pt")
     if bundle["completed_round"] != cfg["total_rounds"]:
         raise ValueError("Final checkpoint round mismatch")
-    for name in NAMES:
+    for name in names:
         if state_hash(bundle["states"][name]) != rows[name][-1]["state_sha256"]:
             raise ValueError(f"{name}: final checkpoint/log state mismatch")
         if defense_state(engine.defenses[name]) != bundle["defenses"][name]:

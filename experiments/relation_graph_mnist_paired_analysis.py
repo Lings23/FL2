@@ -296,6 +296,8 @@ def group_summary(records, malicious_ids):
 
 def anomalous_cases(records, details, malicious_ids):
     cases = []
+    malicious = set(malicious_ids)
+    malicious_principals = {str(value) for value in malicious}
     by_round = {row["round"]: row for row in records}
     for row in records:
         graph = row["graph"]
@@ -318,8 +320,8 @@ def anomalous_cases(records, details, malicious_ids):
             groups=groups,
             group_members=[group["principals"] for group in groups],
             downweighted_ids=down,
-            downweighted_malicious_ids=[value for value in down if value in malicious_ids],
-            groups_contain_malicious=any(set(group["principals"]) & malicious_ids
+            downweighted_malicious_ids=[value for value in down if value in malicious],
+            groups_contain_malicious=any(set(group["principals"]) & malicious_principals
                                          for group in groups),
             malicious_mean_ratio=mean(c["weight_ratio"] for c in mal),
             benign_mean_ratio=mean(c["weight_ratio"] for c in ben),
@@ -691,16 +693,17 @@ def report_markdown(summary: dict, cfg: dict, check: dict) -> str:
     first_asr = dba_fed["local_asr"]["first"]
     last_asr = dba_fed["local_asr"]["last"]
     if first_asr is not None and last_asr is not None:
-        lines.append("四个局部碎片在全部 120 轮均启用（0–3，每客户端 250 张投毒样本，无上传放大）；"
-                     f"局部碎片 ASR 均值也从第 1 轮 {pct(first_asr)} 降到第 120 轮 "
-                     f"{pct(last_asr)}，与全触发器 ASR 的衰减同向。")
+        lines.append(f"四个局部碎片在全部 {summary['budget_rounds']} 轮均启用"
+                     "（0–3，每客户端 250 张投毒样本，无上传放大）；"
+                     f"局部碎片 ASR 均值从第 1 轮 {pct(first_asr)} 变为第 "
+                     f"{summary['budget_rounds']} 轮 {pct(last_asr)}。")
     execution = dba_fed["malicious"]
     lines.append(f"执行检查：20/20 客户端每轮全参与，恶意客户端每轮 4/4 实际训练且 "
                  f"`attack_active=True`（{execution['active_client_rounds']}/"
                  f"{execution['client_rounds']} 恶意客户端-轮次），名义权重恒为 "
                  f"{pct(execution['nominal_weight'])}，恶意更新范数平均为正常客户端的 "
                  f"{num(execution['mean_update_norm_ratio'], 2)} 倍。"
-                 "因此 ASR 下降不是客户端漏选或恶意更新被压成零造成的。")
+                 "因此 ASR 变化不是客户端漏选或恶意更新被压成零造成的。")
     if (dba_fed["minimum"]["asr_round"] > dba_fed["peak"]["asr_round"]
             and dba_fed["final"]["asr"] > dba_fed["minimum"]["asr"] + 0.05):
         lines.append(f"ASR 在第 {dba_fed['minimum']['asr_round']} 轮降到最低 "
@@ -770,25 +773,30 @@ def report_markdown(summary: dict, cfg: dict, check: dict) -> str:
                              f"{case['anchor_weight']:.6f} |")
             anomaly = summary["anomalous_summary"]["dba_relation_graph"]
             lines.append(f"\n在 {len(cases)} 个异常轮次中，{anomaly['rounds_with_benign_only_groups']} 轮的"
-                         "确认子图完全由正常客户端组成；"
+                         "确认子图完全由正常客户端组成，"
+                         f"{anomaly['rounds_with_malicious_groups']} 轮至少包含一个恶意客户端；"
                          f"恶意客户端被降权的客户端-轮次为 "
                          f"{dba_rg['malicious']['downweighted_client_rounds']}。")
             if anomaly["rounds_with_benign_only_groups"] == len(cases):
-                lines.append("也就是说，图证据与实际恶意客户端不对应：图防御把正常客户端对误判为异常子图并降权，"
-                             "而 4 个 DBA 客户端在全部 120 轮中保留 100% 名义权重。"
-                             "因此本批的 ASR/ACC 差异不能归因于对恶意更新的抑制。")
+                lines.append("也就是说，图证据与实际恶意客户端不对应：图防御把正常客户端对误判为异常子图并降权。")
+                if dba_rg["malicious"]["downweighted_client_rounds"] == 0:
+                    lines.append(f"4 个 DBA 客户端在全部 {summary['budget_rounds']} 轮中未被降权。")
+                lines.append("因此本批的 ASR/ACC 差异不能归因于对恶意更新的抑制。")
                 sizes = [(len(group["principals"]), group.get("edges"))
                          for case in cases for group in case["groups"]]
                 if sizes and all(size == 2 for size, _ in sizes):
                     lines.append("从图结构看，本批确认的子图都是 2 个客户端、1 条边"
                                  "（density=1.0）；默认 `min_group_density=0.67` 不会排除这种"
                                  "两节点单边子图，这是误降权的直接结构原因之一。")
+            elif anomaly["rounds_with_malicious_groups"] == len(cases):
+                lines.append("所有确认的异常子图都包含恶意客户端，且正常客户端没有被误降权；"
+                             f"恶意客户端平均保留 {num(dba_rg['malicious']['mean_ratio'])} 的名义权重。")
             correspondence = summary["intervention_correspondence"]
             if correspondence.get("pearson_anchor_vs_next_asr_drop") is not None:
                 lines.append(f"\n干预强度（anchor weight）与下一轮 ASR 下降的 Pearson 相关系数为 "
                              f"{correspondence['pearson_anchor_vs_next_asr_drop']:+.3f}"
-                             f"（n={correspondence['active_rounds']}）。由于干预对象是正常客户端、"
-                             "样本只有 4 个干预轮次，该系数不能解释为防御效果。")
+                             f"（n={correspondence['active_rounds']}）。该系数只描述二者的伴随关系，"
+                             "不能单独解释为因果防御效果。")
         else:
             lines.append("虽然存在非零 anchor weight，但没有 `anomalous_structure` 状态；"
                          "干预来自证据不足或其他路径，需要结合 `graph_*.jsonl` 逐轮核对。")
@@ -806,7 +814,8 @@ def report_markdown(summary: dict, cfg: dict, check: dict) -> str:
                  f"涉及 {clean_rg['benign']['downweighted_rounds']} 轮。")
     if dba_rg["malicious"]:
         false_ids = sorted({value for case in summary["anomalous_cases"]["dba_relation_graph"]
-                            for value in case["downweighted_ids"]})
+                            for value in case["downweighted_ids"]
+                            if value not in set(cfg["malicious_clients"])})
         lines.append(f"- DBA 图防御组：恶意客户端被降权 "
                      f"{dba_rg['malicious']['downweighted_client_rounds']} 个客户端-轮次；"
                      f"正常客户端被误降权 {dba_rg['benign']['downweighted_client_rounds']} 个客户端-轮次"

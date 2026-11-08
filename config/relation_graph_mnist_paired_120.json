@@ -5,6 +5,7 @@
   "dataset": "mnist",
   "architecture": "mnist_cnn",
   "normalization": "batch",
+  "defense_variant": "group_zero_weight",
   "clients": 20,
   "malicious_clients": [0, 1, 2, 3],
   "groups": [

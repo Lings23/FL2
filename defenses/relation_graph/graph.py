@@ -126,6 +126,29 @@ def _conditional_reference(history, settings):
         bin_center = float(np.median(values))
         bin_scale = max(settings.residual_scale_floor,
                         1.4826 * float(np.median(np.abs(values - bin_center))))
+
+        # Closed-loop defense alternates between polluted and clean broadcast
+        # models, so pooling raw values across the history window produces a
+        # bimodal distribution whose MAD measures the regime shift rather than
+        # the within-round dispersion.  Cap the pooled scale by the median
+        # within-round MAD of non-anomalous positive edges.
+        by_round_pos = defaultdict(list)
+        for round_number, edge in entries:
+            if edge.task >= 0.0 and (edge.score is None or
+                                     edge.score <= settings.edge_z_threshold):
+                by_round_pos[round_number].append(edge.task)
+        round_mads = []
+        for round_values in by_round_pos.values():
+            if len(round_values) >= settings.min_reference_pairs:
+                array = np.asarray(round_values, dtype=np.float64)
+                median = float(np.median(array))
+                round_mads.append(
+                    1.4826 * float(np.median(np.abs(array - median))))
+        within_round_scale = (
+            max(settings.residual_scale_floor, float(np.median(round_mads)))
+            if round_mads else None
+        )
+
         if bin_center < global_center and global_center > 0.0:
             # Negative conflict edges must not drag a bin's reference below the
             # global task level; keep the bin calibrated against the positive pool.
@@ -136,9 +159,13 @@ def _conditional_reference(history, settings):
             center = float(np.median(pos_values))
             scale = max(settings.residual_scale_floor,
                         1.4826 * float(np.median(np.abs(pos_values - center))))
+            if within_round_scale is not None:
+                scale = min(scale, within_round_scale)
         else:
             center = bin_center
             scale = bin_scale
+            if within_round_scale is not None and center > 0.0:
+                scale = min(scale, within_round_scale)
 
         pos_share = len(pos_values) / max(1, total_pos)
         if pos_share < 0.20 and center > pos_center and pos_center > 0.0:
@@ -255,6 +282,14 @@ def assess(round_number, identities, current_edges, history, settings):
     for edge in current_edges:
         band = _bin(edge.backbone, settings.backbone_bins)
         stats = reference.get(band)
+        if stats is None and reference:
+            # Post-cold-start, an extreme bin can stay below min_reference_pairs
+            # (e.g. only the 1-3 clique edges in Bin 7 while the broadcast
+            # model is clean).  Borrow the nearest lower calibrated bin's
+            # statistics instead of dropping those edges to score=None.
+            lower = [value for value in sorted(reference) if value < band]
+            donor = lower[-1] if lower else min(reference)
+            stats = reference[donor]
         row = dict(left=edge.left, right=edge.right, backbone=edge.backbone, task=edge.task,
                    reference_center=None, reference_scale=None, reference_rounds=0, reference_pairs=0,
                    pair_reference_observations=0, residual=None, score=None, confirmations=0,
@@ -271,7 +306,10 @@ def assess(round_number, identities, current_edges, history, settings):
                 effective_limit = settings.pair_shift_limit * headroom
                 center += float(np.clip(shift, -effective_limit, effective_limit))
             residual = edge.task - center
-            headroom_factor = max(0.15, 1.0 - max(0.0, center) ** 2)
+            # Evaluate ceiling compression at the positive chord midpoint
+            # between the reference center and the observed task similarity.
+            mid_pos = max(0.0, 0.5 * (center + max(center, edge.task)))
+            headroom_factor = max(0.15, 1.0 - mid_pos ** 2)
             effective_scale = max(settings.residual_scale_floor * headroom_factor,
                                   scale * headroom_factor)
             score = residual / effective_scale

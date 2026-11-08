@@ -9,7 +9,9 @@ import pytest
 
 from config.config_loader import DefenseConfig, StrategyConfig
 from defenses.defense_base import FedAvgDefense, get_defense
-from defenses.relation_graph.graph import EdgeObservation, RoundObservation, assess
+from defenses.relation_graph.graph import (
+    EdgeObservation, RoundObservation, _conditional_reference, assess,
+)
 from defenses.relation_graph.settings import Settings
 
 
@@ -300,3 +302,60 @@ def test_bridge_node_is_pruned_from_dense_core():
     assert result.groups[0]["density"] == pytest.approx(1.0)
     assert all(result.risks[identity] > 0 for identity in clique)
     assert result.risks["4"] == 0.0
+
+
+def test_sparse_upper_bin_falls_back_to_nearest_calibrated_bin():
+    """A sparse Bin 7 clique borrows Bin 6's reference instead of scoring None."""
+    settings = Settings()
+    benign_pairs = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
+    boundary_pairs = [(0, 5), (1, 5), (2, 5), (0, 6), (1, 6), (2, 6),
+                      (0, 7), (1, 7), (2, 7)]
+    benign = [EdgeObservation(str(left), str(right), 0.65, 0.40)
+              for left, right in benign_pairs + boundary_pairs]
+    clique = [EdgeObservation(str(left), str(right), 0.90, 0.99)
+              for left, right in ((5, 6), (5, 7), (6, 7))]
+    history = [_frame(number, benign) for number in (1, 2, 3)]
+    reference, _, _ = _conditional_reference(tuple(history), settings)
+    assert 6 in reference
+    assert 7 not in reference
+
+    first = assess(4, IDS, _frame(4, benign + clique).edges,
+                   tuple(history), settings)
+    clique_rows = [row for row in first.edges if row["backbone"] == 0.90]
+    assert len(clique_rows) == 3
+    assert all(row["score"] is not None and row["score"] > settings.edge_z_threshold
+               for row in clique_rows)
+    assert all(row["reference_center"] == pytest.approx(reference[6][0])
+               for row in clique_rows)
+
+    second = assess(5, IDS, _frame(5, benign + clique).edges,
+                    tuple(history + [first.observation]), settings)
+    assert second.state == "anomalous_structure"
+    assert [group["principals"] for group in second.groups] == [["5", "6", "7"]]
+
+
+def test_closed_loop_regime_shift_does_not_inflate_within_round_scale():
+    """Pooled MAD across polluted/clean regimes must not inflate the scale."""
+    settings = Settings()
+    pairs = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
+    history = [
+        _frame(number, [EdgeObservation(str(left), str(right), 0.65, task)
+                        for left, right in pairs])
+        for number, task in ((1, 0.85), (2, 0.85), (3, 0.85),
+                             (4, 0.30), (5, 0.30), (6, 0.30))
+    ]
+    reference, _, _ = _conditional_reference(tuple(history), settings)
+    center, scale, _, _ = reference[6]
+    values = np.asarray([0.85] * 18 + [0.30] * 18)
+    pooled_scale = 1.4826 * float(np.median(np.abs(values - np.median(values))))
+    assert pooled_scale > 0.30
+    assert scale <= 0.06
+    assert scale < pooled_scale / 4
+
+    current = [EdgeObservation(str(left), str(right), 0.65, 0.30)
+               for left, right in pairs]
+    current.append(EdgeObservation("5", "6", 0.65, 0.99))
+    result = assess(7, IDS, _frame(7, current).edges, tuple(history), settings)
+    row = next(row for row in result.edges if row["left"] == "5")
+    assert row["score"] is not None and row["score"] > settings.edge_z_threshold
+    assert center > 0.5

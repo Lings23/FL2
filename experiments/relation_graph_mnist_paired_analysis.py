@@ -342,6 +342,10 @@ def summarize(run: Path, cfg: dict, rows: dict[str, list[dict]], check: dict) ->
         normalization=cfg.get("normalization"),
         defense_variant=cfg.get("defense_variant"),
         integrity=check, groups=group_summaries,
+        series={name: [dict(round=row["round"],
+                            accuracy=row["clean"]["accuracy"],
+                            asr=row["asr"]["asr"]) for row in rows[name]]
+                for name in NAMES},
     )
     cf, cg = rows["clean_fedavg"], rows["clean_relation_graph"]
     df, dg = rows["dba_fedavg"], rows["dba_relation_graph"]
@@ -655,6 +659,23 @@ def report_markdown(summary: dict, cfg: dict, check: dict) -> str:
                  "用作 `exceeds_clean_trigger_response` 的基线；它不是攻击成功。")
     lines.append("")
 
+    # Key-round trajectory. Full per-round values live in round_metrics.csv.
+    budget = cfg["total_rounds"]
+    series = {name: {item["round"]: item for item in summary["series"][name]}
+              for name in NAMES}
+    key_rounds = sorted({1, budget} | set(range(10, budget + 1, 10)))
+    lines.append("关键轮次轨迹（完整逐轮 ACC/ASR 见 `results/round_metrics.csv` 与 "
+                 "`accuracy_asr_curves.png`）：\n")
+    lines.append("| 轮次 | " + " | ".join(f"{name} ACC | {name} ASR" for name in NAMES) + " |")
+    lines.append("|---:|" + "---:|" * (2 * len(NAMES)))
+    for number in key_rounds:
+        cells = []
+        for name in NAMES:
+            item = series[name][number]
+            cells.extend((pct(item["accuracy"]), pct(item["asr"])))
+        lines.append(f"| {number} | " + " | ".join(cells) + " |")
+    lines.append("")
+
     # Q1
     lines.append("## 1. 无攻击时，图防御与 FedAvg 的差异\n")
     lines.append(f"最终准确率差（relation_graph − FedAvg）为 "
@@ -832,6 +853,27 @@ def report_markdown(summary: dict, cfg: dict, check: dict) -> str:
                   - dba_rg["malicious"]["downweighted_client_rounds"])
         lines.append(f"- DBA 图防御组：未被降权的恶意客户端-轮次为 {missed}"
                      f"（占 {100 * missed / dba_rg['malicious']['client_rounds']:.2f}%）。")
+    benign_total = (clean_rg["benign"]["client_rounds"]
+                    + dba_rg["benign"]["client_rounds"])
+    benign_fp = (clean_rg["benign"]["downweighted_client_rounds"]
+                 + dba_rg["benign"]["downweighted_client_rounds"])
+    lines.append(f"- 正常客户端误降权率：{benign_fp}/{benign_total} = "
+                 f"{pct(benign_fp / benign_total if benign_total else 0.0)}"
+                 f"（clean_relation_graph {clean_rg['benign']['downweighted_client_rounds']}/"
+                 f"{clean_rg['benign']['client_rounds']}，dba_relation_graph "
+                 f"{dba_rg['benign']['downweighted_client_rounds']}/"
+                 f"{dba_rg['benign']['client_rounds']}）。")
+    if dba_rg["malicious"]:
+        lines.append(f"- 恶意客户端降权率："
+                     f"{dba_rg['malicious']['downweighted_client_rounds']}/"
+                     f"{dba_rg['malicious']['client_rounds']} = "
+                     f"{pct(dba_rg['malicious']['downweighted_client_rounds'] / dba_rg['malicious']['client_rounds'])}。")
+    lines.append(f"- 恶意团伙确认轮次占比：dba_relation_graph "
+                 f"{dba_rg['graph']['confirmed_group_rounds']}/{summary['budget_rounds']} = "
+                 f"{pct(dba_rg['graph']['confirmed_group_rounds'] / summary['budget_rounds'])}；"
+                 f"clean_relation_graph {clean_rg['graph']['confirmed_group_rounds']}/"
+                 f"{summary['budget_rounds']} = "
+                 f"{pct(clean_rg['graph']['confirmed_group_rounds'] / summary['budget_rounds'])}。")
     lines.append("")
     lines.append("这些计数直接决定结论的适用范围：冷启动和证据不足轮次按设计回退到样本加权 FedAvg，"
                  "不构成防御失败；只有确认异常结构且实际降权后，ASR/ACC 的变化才可能与图证据对应。"

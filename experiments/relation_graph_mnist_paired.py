@@ -107,6 +107,8 @@ CRITICAL_SOURCES = (
 )
 EVALUATION_ATTACK = "dba"
 MULTI_ATTACK_PURPOSE = "relation_graph_mnist_multi_attack_paired"
+FOCUSED_ATTACK_PURPOSE = "relation_graph_mnist_focused_attack_paired"
+MULTI_ATTACK_PURPOSES = (MULTI_ATTACK_PURPOSE, FOCUSED_ATTACK_PURPOSE)
 ATTACK_TYPES = ("badnet", "neurotoxin", "pgd")
 MULTI_ATTACK_GROUPS = (
     dict(name="clean_fedavg", attack="none", defense="fedavg"),
@@ -115,6 +117,24 @@ MULTI_ATTACK_GROUPS = (
       for attack in ATTACK_TYPES
       for defense in ("fedavg", "relation_graph")),
 )
+
+
+def focused_groups(attack: str) -> list[dict]:
+    """Clean pair plus one attack pair, with per-group evaluation channels."""
+    if attack not in ATTACK_TYPES:
+        raise ValueError(f"Focused attack must be one of {ATTACK_TYPES}")
+    return [
+        dict(name="clean_fedavg", attack="none", defense="fedavg"),
+        dict(name="clean_relation_graph", attack="none", defense="relation_graph"),
+        dict(name=f"{attack}_fedavg", attack=attack, defense="fedavg"),
+        dict(name=f"{attack}_relation_graph", attack=attack, defense="relation_graph"),
+    ]
+
+
+def present_attacks(cfg: dict) -> tuple[str, ...]:
+    """Attack conditions instantiated by this protocol, in canonical order."""
+    return tuple(attack for attack in ATTACK_TYPES
+                 if any(group["attack"] == attack for group in cfg["groups"]))
 
 
 def group_names(cfg: dict) -> tuple[str, ...]:
@@ -128,7 +148,7 @@ def group_name(cfg: dict, attack: str, defense: str) -> str:
 
 def pilot_attack_cfg(cfg: dict, condition: str) -> AttackConfig:
     """Build an attack config, applying multi-attack profile overrides."""
-    if cfg.get("purpose") != MULTI_ATTACK_PURPOSE:
+    if cfg.get("purpose") not in MULTI_ATTACK_PURPOSES:
         return attack_cfg(cfg, condition)
     if condition == "none":
         return AttackConfig(**cfg["attack"], type="none", enabled=False)
@@ -181,6 +201,9 @@ def paired_model_factory(cfg: dict) -> torch.nn.Module:
 def validate(cfg: dict) -> None:
     if cfg.get("purpose") == MULTI_ATTACK_PURPOSE:
         _validate_multi_attack(cfg)
+        return
+    if cfg.get("purpose") == FOCUSED_ATTACK_PURPOSE:
+        _validate_focused_attack(cfg)
         return
     _validate_dba_pilot(cfg)
 
@@ -296,6 +319,85 @@ def _validate_multi_attack(cfg: dict) -> None:
             or pgd.get("pgd_radius_source") != "benign_update_norm"):
         raise ValueError("PGD requires pgd_state_scope=parameters and "
                          "pgd_radius_source=benign_update_norm")
+    settings = cfg.get("relation_graph", {}).get("settings")
+    if not isinstance(settings, dict) or settings != asdict(Settings()):
+        raise ValueError("relation_graph must use the frozen current default settings")
+    if cfg.get("device") not in {"cuda", "cpu"}:
+        raise ValueError("Unsupported device")
+    if cfg.get("defense_variant") not in (None, "group_zero_weight"):
+        raise ValueError("Unsupported defense_variant")
+
+
+def _validate_focused_attack(cfg: dict) -> None:
+    """Frozen clean+single-attack protocol with separate evaluation channels.
+
+    ``evaluation_channel="separate"`` records the contract already implemented
+    by ``Engine.fit_round``: the attack pair is scored with its own mechanism,
+    while the clean pair keeps the reference trigger (``evaluation_attack``).
+    """
+    if cfg.get("schema_version") != 1:
+        raise ValueError("Focused multi-attack protocol requires schema_version=1")
+    if cfg.get("evaluation_channel") != "separate":
+        raise ValueError("Focused protocol requires evaluation_channel='separate'")
+    if (cfg.get("dataset"), cfg.get("architecture")) != ("mnist", "mnist_cnn") or \
+            cfg.get("normalization") not in {"batch", "batch_no_running_stats"}:
+        raise ValueError("MNIST/CNN with tracked ('batch') or stateless "
+                         "('batch_no_running_stats') BatchNorm required")
+    if cfg.get("clients") != 20 or cfg.get("malicious_clients") != [0, 1, 2, 3]:
+        raise ValueError("Frozen 20-client / malicious-0-3 protocol required")
+    conditions = present_attacks(cfg)
+    if len(conditions) != 1:
+        raise ValueError("Focused protocol requires exactly one attack condition")
+    if cfg.get("groups") != focused_groups(conditions[0]):
+        raise ValueError("Focused groups must be the clean pair plus the attack pair")
+    if cfg.get("evaluation_attack") not in ATTACK_TYPES:
+        raise ValueError("evaluation_attack must be badnet, neurotoxin or pgd")
+    if cfg.get("warmup_rounds") != 0 or int(cfg.get("total_rounds", 0)) < 1:
+        raise ValueError("No warmup and a positive round budget are required")
+    snapshots = cfg.get("snapshots")
+    if (not isinstance(snapshots, list) or snapshots != sorted(set(snapshots))
+            or any(not isinstance(value, int) or not 1 <= value <= cfg["total_rounds"]
+                   for value in snapshots)):
+        raise ValueError("Invalid snapshots")
+    if cfg.get("max_client_samples") != 500 or cfg.get("drop_last") is not True:
+        raise ValueError("Frozen 500-example drop-last client loaders required")
+    if (cfg.get("reference_probe_size"), cfg.get("reference_gate_size"),
+            cfg.get("evaluator_validation_size")) != (300, 200, 2000):
+        raise ValueError("Frozen reference/validation partition required")
+    if cfg.get("round_lr_decay") != 0.99 or cfg.get("evaluation_order_seed") != 2042:
+        raise ValueError("Frozen learning-rate decay and evaluator order required")
+    if cfg.get("client") != {
+        "local_epochs": 2, "batch_size": 64, "optimizer": "sgd", "learning_rate": 0.1,
+        "momentum": 0.0, "weight_decay": 0.0001, "lr_scheduler": "none",
+    }:
+        raise ValueError("Client training recipe differs from the frozen profile")
+    attack = cfg.get("attack", {})
+    if (attack.get("malicious_fraction") != 0.2
+            or attack.get("backdoor_target_label") != 7
+            or attack.get("poison_fraction") != 0.5
+            or attack.get("reference_backdoor_dataset") != "mnist"
+            or attack.get("attack_start_round") != 1
+            or attack.get("attack_end_round") < cfg["total_rounds"]):
+        raise ValueError("Focused attack mechanism differs from the frozen profile")
+    if attack.get("aggregation_aware_scaling") is not False:
+        raise ValueError("This pilot forbids upload amplification")
+    profiles = cfg.get("attack_profiles", {})
+    if not isinstance(profiles, dict) or set(profiles) - set(ATTACK_TYPES) \
+            or any(not isinstance(values, dict) for values in profiles.values()):
+        raise ValueError("attack_profiles must map known attacks to mappings")
+    validate_attack_config(pilot_attack_cfg(cfg, "none"), 10)
+    validate_attack_config(pilot_attack_cfg(cfg, conditions[0]), 10)
+    if conditions[0] == "neurotoxin":
+        neurotoxin = {**attack, **profiles.get("neurotoxin", {})}
+        if (neurotoxin.get("neurotoxin_mask_source") != "clean_gradient"
+                or neurotoxin.get("neurotoxin_aggregate_all_layer") is not False):
+            raise ValueError("Neurotoxin must use the local clean-gradient GradMask")
+    if conditions[0] == "pgd":
+        pgd = {**attack, **profiles.get("pgd", {})}
+        if (pgd.get("pgd_state_scope") != "parameters"
+                or pgd.get("pgd_radius_source") != "benign_update_norm"):
+            raise ValueError("PGD requires pgd_state_scope=parameters and "
+                             "pgd_radius_source=benign_update_norm")
     settings = cfg.get("relation_graph", {}).get("settings")
     if not isinstance(settings, dict) or settings != asdict(Settings()):
         raise ValueError("relation_graph must use the frozen current default settings")
@@ -638,7 +740,7 @@ def group_stats(records, malicious):
 
 
 def report(cfg, output, rows, completed):
-    if cfg.get("purpose") == MULTI_ATTACK_PURPOSE:
+    if cfg.get("purpose") in MULTI_ATTACK_PURPOSES:
         return _report_multi_attack(cfg, output, rows, completed)
     return _report_dba(cfg, output, rows, completed)
 
@@ -668,7 +770,7 @@ def _report_multi_attack(cfg, output, rows, completed):
         summary["comparisons"]["clean_last10_accuracy_delta_graph_minus_fedavg"] = (
             float(np.mean([row["clean"]["accuracy"] for row in rows[clean_rg][-10:]]))
             - float(np.mean([row["clean"]["accuracy"] for row in rows[clean_fed][-10:]])))
-    for attack in ATTACK_TYPES:
+    for attack in present_attacks(cfg):
         fed_name = group_name(cfg, attack, "fedavg")
         rg_name = group_name(cfg, attack, "relation_graph")
         fed, rg = rows.get(fed_name, []), rows.get(rg_name, [])

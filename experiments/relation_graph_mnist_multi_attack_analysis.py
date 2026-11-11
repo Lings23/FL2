@@ -18,8 +18,8 @@ import numpy as np
 import torch
 
 from experiments.relation_graph_mnist_paired import (
-    ATTACK_TYPES, CRITICAL_SOURCES, group_name, group_names, source_hashes,
-    state_hash,
+    ATTACK_TYPES, CRITICAL_SOURCES, group_name, group_names, present_attacks,
+    source_hashes, state_hash,
 )
 
 COLORS = {
@@ -123,11 +123,17 @@ def integrity(run: Path, cfg: dict, rows: dict[str, list[dict]]) -> dict:
     clean_rg = group_name(cfg, "none", "relation_graph")
     checks["paired_round1_clean"] = (rows[clean_fed][0]["state_sha256"]
                                      == rows[clean_rg][0]["state_sha256"])
-    for attack in ATTACK_TYPES:
+    for attack in present_attacks(cfg):
         fed = group_name(cfg, attack, "fedavg")
         rg = group_name(cfg, attack, "relation_graph")
         checks[f"paired_round1_{attack}"] = (
             rows[fed][0]["state_sha256"] == rows[rg][0]["state_sha256"])
+    # Clean-vs-FedAvg identity is a result, not a run-integrity gate: a clean
+    # branch that fires is exactly what the defense comparison must expose.
+    clean_pairs = list(zip(rows[clean_fed], rows[clean_rg]))
+    clean_matches = sum(a["state_sha256"] == b["state_sha256"] for a, b in clean_pairs)
+    clean_divergences = [a["round"] for a, b in clean_pairs
+                         if a["state_sha256"] != b["state_sha256"]]
     with np.load(run / "split_indices.npz", allow_pickle=False) as archive:
         indices = {key: archive[key] for key in archive.files}
     with np.load(run / "evaluation_order.npz", allow_pickle=False) as archive:
@@ -145,7 +151,14 @@ def integrity(run: Path, cfg: dict, rows: dict[str, list[dict]]) -> dict:
                 status=status, bundle_round=bundle["completed_round"],
                 initial_state_sha256=manifest["initial_state_sha256"],
                 final_state_sha256={name: state_hash(bundle["states"][name])
-                                    for name in names})
+                                    for name in names},
+                clean_state_hash=dict(
+                    group=clean_rg, reference=clean_fed,
+                    matched_rounds=clean_matches, compared_rounds=len(clean_pairs),
+                    all_rounds_match=clean_matches == len(clean_pairs),
+                    first_divergence_round=(clean_divergences[0]
+                                            if clean_divergences else None),
+                    divergence_rounds=clean_divergences))
 
 
 def group_summary(records, malicious_ids):
@@ -258,7 +271,7 @@ def summarize(run: Path, cfg: dict, rows: dict[str, list[dict]], check: dict) ->
     clean_fed = group_name(cfg, "none", "fedavg")
     clean_rg = group_name(cfg, "none", "relation_graph")
     attacks = {}
-    for attack in ATTACK_TYPES:
+    for attack in present_attacks(cfg):
         fed_name = group_name(cfg, attack, "fedavg")
         rg_name = group_name(cfg, attack, "relation_graph")
         fed, rg = summaries[fed_name], summaries[rg_name]
@@ -324,6 +337,7 @@ def summarize(run: Path, cfg: dict, rows: dict[str, list[dict]], check: dict) ->
             identical_rounds=sum(a["state_sha256"] == b["state_sha256"]
                                  for a, b in zip(rows[clean_fed], rows[clean_rg])),
         ),
+        clean_hash=check["clean_state_hash"],
         series={name: [dict(round=row["round"],
                             accuracy=row["clean"]["accuracy"],
                             asr=row["asr"]["asr"]) for row in rows[name]]
@@ -437,7 +451,7 @@ def plot_all(run: Path, cfg: dict, rows: dict[str, list[dict]], out: Path) -> No
          "-" if "relation_graph" in name else "--")
         for name in names], "targeted ASR", "Reference-trigger ASR (1800 non-target)")
     _save(fig, out / "accuracy_asr_curves.png")
-    for attack in ATTACK_TYPES:
+    for attack in present_attacks(cfg):
         subset = [group_name(cfg, "none", "fedavg"),
                   group_name(cfg, "none", "relation_graph"),
                   group_name(cfg, attack, "fedavg"),
@@ -452,7 +466,7 @@ def plot_all(run: Path, cfg: dict, rows: dict[str, list[dict]], out: Path) -> No
             for name in subset], "targeted ASR", f"{ATTACK_LABEL[attack]}: targeted ASR")
         _save(fig, out / f"accuracy_asr_{attack}.png")
     fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True, constrained_layout=True)
-    for attack in ATTACK_TYPES:
+    for attack in present_attacks(cfg):
         name = group_name(cfg, attack, "relation_graph")
         axes[0].plot(rounds, [row["malicious_weight_summary"]["mean_weight_ratio"]
                               for row in rows[name]], color=COLORS[name],
@@ -478,18 +492,23 @@ def report_markdown(summary: dict, cfg: dict, check: dict) -> str:
     attacks = summary["attacks"]
     clean_fed = group_name(cfg, "none", "fedavg")
     clean_rg = group_name(cfg, "none", "relation_graph")
+    attacks_present = present_attacks(cfg)
+    attack_text = " / ".join(ATTACK_LABEL[attack] for attack in attacks_present)
     lines = []
-    lines.append("# 关系图闭环防御：MNIST 上 BadNet / Neurotoxin / PGD 配对实验（种子 42）\n")
-    lines.append(f"运行目录：`{summary['run']}`。八组各完成 "
+    lines.append(f"# 关系图闭环防御：MNIST 上 {attack_text} 配对实验（种子 42）\n")
+    lines.append(f"运行目录：`{summary['run']}`。{len(names)} 组各完成 "
                  f"{summary['completed_rounds']}/{summary['budget_rounds']} 轮。"
                  "评估使用 2000 张独立训练留出样本，目标 ASR 分母为 1800 张非目标类样本；"
                  "最终测试集未使用。协议为 IID 20 客户端、标准 tracked BatchNorm、"
-                 "`group_zero_weight` 闭环 relation-graph 防御。\n")
+                 "`group_zero_weight` 闭环 relation-graph 防御；评估通道分离："
+                 "攻击组使用各自攻击机制，清洁组使用 `evaluation_attack` 参考通道。\n")
     lines.append("攻击共享恶意客户端 0–3、目标类 7、50% 投毒与相同初始模型；"
-                 "BadNet、Neurotoxin、PGD 均为 AlignIns 参考后门触发器。"
-                 "Neurotoxin 使用本地 clean-gradient GradMask（keep ratio 0.25，逐层）；"
-                 "PGD 使用 parameter-scope 投影，半径 = 1.0 × 上一轮客户端参数更新范数中位数。"
-                 "清洁组的 ASR 是清洁模型对同一参考触发器的误响应。\n")
+                 "各攻击均为 AlignIns 参考后门触发器。"
+                 + ("Neurotoxin 使用本地 clean-gradient GradMask（keep ratio 0.25，逐层）。"
+                    if "neurotoxin" in attacks_present else "")
+                 + ("PGD 使用 parameter-scope 投影，半径 = 1.0 × 上一轮客户端参数更新范数中位数。"
+                    if "pgd" in attacks_present else "")
+                 + "清洁组的 ASR 是清洁模型对同一参考触发器的误响应。\n")
 
     lines.append("## 结果总览\n")
     lines.append("| 组 | 最终 ACC | 末 10 轮 ACC | 最终 ASR | 末 10 轮 ASR | 峰值 ASR（轮次） |")
@@ -502,7 +521,7 @@ def report_markdown(summary: dict, cfg: dict, check: dict) -> str:
     lines.append("")
 
     lines.append("## 结论摘要\n")
-    for attack in ATTACK_TYPES:
+    for attack in attacks_present:
         label = ATTACK_LABEL[attack]
         fed_name = group_name(cfg, attack, "fedavg")
         rg_name = group_name(cfg, attack, "relation_graph")
@@ -542,10 +561,23 @@ def report_markdown(summary: dict, cfg: dict, check: dict) -> str:
                  f"{summary['budget_rounds']}。"
                  f"清洁组正常客户端误降权 {g[clean_rg]['benign']['downweighted_client_rounds']}/"
                  f"{g[clean_rg]['benign']['client_rounds']} 个客户端-轮次。\n")
+    clean_hash = summary.get("clean_hash") or check.get("clean_state_hash")
+    if clean_hash:
+        matched = clean_hash["matched_rounds"]
+        total = clean_hash["compared_rounds"]
+        if clean_hash["all_rounds_match"]:
+            verdict = f"**{matched}/{total} 轮逐轮模型哈希完全一致**"
+        else:
+            divergences = clean_hash["divergence_rounds"]
+            shown = "、".join(str(value) for value in divergences[:20])
+            more = f" 等 {len(divergences)} 轮" if len(divergences) > 20 else ""
+            verdict = (f"**{matched}/{total} 轮一致；首次分歧在第 "
+                       f"{clean_hash['first_divergence_round']} 轮（{shown}{more}）**")
+        lines.append(f"清洁组与 FedAvg 的逐轮模型哈希校验：{verdict}。\n")
 
     key_rounds = sorted({1, summary["budget_rounds"]}
                         | set(range(10, summary["budget_rounds"] + 1, 10)))
-    for attack in ATTACK_TYPES:
+    for attack in attacks_present:
         label = ATTACK_LABEL[attack]
         fed = group_name(cfg, attack, "fedavg")
         rg = group_name(cfg, attack, "relation_graph")
@@ -566,9 +598,12 @@ def report_markdown(summary: dict, cfg: dict, check: dict) -> str:
                      f"{pct(g[rg]['last10']['accuracy'])} | "
                      f"{100 * entry['last10_accuracy_delta']:+.2f} pp |")
         for window in ("1-30", "31-60", "61-90", "91-120"):
-            lines.append(f"| {window} 轮平均 ASR | {pct(g[fed]['windows'][window]['asr'])} | "
-                         f"{pct(g[rg]['windows'][window]['asr'])} | "
-                         f"{100 * (g[rg]['windows'][window]['asr'] - g[fed]['windows'][window]['asr']):+.2f} pp |")
+            fed_window = g[fed]["windows"][window]["asr"]
+            rg_window = g[rg]["windows"][window]["asr"]
+            delta_text = ("—" if fed_window is None or rg_window is None
+                          else f"{100 * (rg_window - fed_window):+.2f} pp")
+            lines.append(f"| {window} 轮平均 ASR | {pct(fed_window)} | "
+                         f"{pct(rg_window)} | {delta_text} |")
         malicious = g[rg]["malicious"]
         if malicious:
             lines.append(f"| 恶意客户端降权率 | — | "
@@ -628,15 +663,22 @@ def report_markdown(summary: dict, cfg: dict, check: dict) -> str:
 
     lines.append("## 完整性与复现\n")
     lines.append(f"完整性检查：{'全部通过' if check['passed'] else '存在失败项，见 results/integrity.json'}。"
-                 f"八组共享初始状态哈希 `{check['initial_state_sha256'][:16]}…`；"
+                 f"{len(names)} 组共享初始状态哈希 `{check['initial_state_sha256'][:16]}…`；"
                  "清洁配对与各攻击配对的第 1 轮 state hash 均一致。"
                  "每组每轮保存全局模型、防御状态和真实聚合更新范数。\n")
     lines.append("## 限制\n")
     lines.append("- 单一随机种子（42）和 IID 20 客户端全参与协议；不能外推为多种子或非 IID 结论。")
-    lines.append("- Neurotoxin 使用本地 clean-gradient GradMask（非服务器 broadcast public-delta 版本）；"
-                 "PGD 使用 parameter-scope + benign-update-norm 半径的 tracked-BN 适配，"
-                 "不是对源实现的逐行复现。")
-    lines.append("- 三种攻击共享同一清洁对照组；清洁 ASR 为清洁模型对同一参考触发器的误响应。")
+    limitation = []
+    if "neurotoxin" in attacks_present:
+        limitation.append("Neurotoxin 使用本地 clean-gradient GradMask"
+                          "（非服务器 broadcast public-delta 版本）")
+    if "pgd" in attacks_present:
+        limitation.append("PGD 使用 parameter-scope + benign-update-norm 半径的 tracked-BN 适配，"
+                          "不是对源实现的逐行复现")
+    if limitation:
+        lines.append("- " + "；".join(limitation) + "。")
+    lines.append(f"- {len(attacks_present)} 种攻击共享同一清洁对照组；"
+                 "清洁 ASR 为清洁模型对同一参考触发器的误响应。")
     lines.append("- 最终测试集未使用；ACC/ASR 均来自 2000 张训练留出样本。")
     lines.append("")
     lines.append("## 产物\n")
@@ -682,7 +724,7 @@ def main():
         json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
     if out != run / "results":
         for name in ("accuracy_asr_curves.png",
-                     *(f"accuracy_asr_{attack}.png" for attack in ATTACK_TYPES),
+                     *(f"accuracy_asr_{attack}.png" for attack in present_attacks(cfg)),
                      "weight_and_graph_diagnostics.png", "round_metrics.csv",
                      "client_weights.csv"):
             source = run / "results" / name
